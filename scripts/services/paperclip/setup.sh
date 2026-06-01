@@ -505,7 +505,7 @@ cmd_stop() {
   if [[ "${NONINTERACTIVE:-}" != "1" ]] && [[ -t 0 ]]; then
     gum confirm "停止 Paperclip（PID ${pid}）？" || exit 0
   fi
-  kill -TERM "$pid" 2>/dev/null || true
+  kill -9 "$pid" 2>/dev/null || true
   local w=0
   while process_alive "$pid" && (( w < 30 )); do
     sleep 1
