@@ -8,7 +8,7 @@
 #   ./setup.sh              # gum 菜单
 #   ./setup.sh install      # 克隆/拉取源码并 pnpm install
 #   ./setup.sh update       # git pull + pnpm install
-#   ./setup.sh start        # 后台启动（pnpm paperclipai run）；无配置时会先非交互生成默认配置；默认轮询 /api/health 校验
+#   ./setup.sh start        # 后台启动（pnpm paperclipai run）；无配置时会先非交互生成默认配置；默认轮询 /instance/scheduler-heartbeats 校验
 #   ./setup.sh run          # 前台启动（同准备语义，终端附着；不写 PID；后台已在跑时拒绝）
 #   ./setup.sh fix-embedded-postgres [版本]  # 显式安装 @embedded-postgres/<当前平台>（pnpm 常漏装 optional 平台包）；版本可降级
 #   ./setup.sh onboard      # 上游首次配置（NONINTERACTIVE=1 时加 --yes）
@@ -24,7 +24,7 @@
 #   PAPERCLIP_INSTANCE_ID    实例 id（默认 default）
 #   NONINTERACTIVE=1         跳过 gum 确认；onboard 子命令使用 --yes
 #   PAPERCLIP_UNINSTALL_YES=1  非 TTY 卸载确认
-#   PAPERCLIP_START_HEALTH_TIMEOUT_SEC  start 时等待 /api/health 返回 200 的最长时间秒数（默认 60）
+#   PAPERCLIP_START_HEALTH_TIMEOUT_SEC  start 时等待 /instance/scheduler-heartbeats 返回 200 的最长时间秒数（默认 60）
 #   PAPERCLIP_SKIP_START_HEALTH_CHECK=1   仅确认进程存活，不请求 HTTP（不推荐）
 #   PAPERCLIP_EMBEDDED_POSTGRES_PLATFORM_VERSION  fix-embedded-postgres 默认使用的版本/SemVer 范围；命令行 [版本] 优先
 #   PAPERCLIP_EMBEDDED_POSTGRES_PLATFORM_PKG   非标准平台时指定完整包名，如 @embedded-postgres/linux-x64-gnu
@@ -66,13 +66,13 @@ usage() {
 命令:
   install     克隆 ${PAPERCLIP_REPO_URL} 到 ${PAPERCLIP_SRC}（已存在则 fetch 后 checkout 分支）并执行 pnpm install
   update      git pull 后 pnpm install
-  start       后台启动: cd 源码目录 && pnpm paperclipai run（日志 ${LOG_FILE}）；若无实例配置则先 onboard --yes；默认校验 /api/health
+  start       后台启动: cd 源码目录 && pnpm paperclipai run（日志 ${LOG_FILE}）；若无实例配置则先 onboard --yes；默认校验 /instance/scheduler-heartbeats
   run         前台启动: 同 start 的准备与端口环境，但终端附着、不写 PID；后台已在跑时拒绝
   fix-embedded-postgres [版本]  在源码根执行 pnpm add，安装/固定 @embedded-postgres/<本机平台>（可传降级版本，或设 PAPERCLIP_EMBEDDED_POSTGRES_PLATFORM_VERSION）
   onboard     首次配置（交互）；NONINTERACTIVE=1 时执行 onboard --yes
   stop        停止进程
   restart     stop 后 start
-  status      PID 与 HTTP 健康检查 http://0.0.0.0:${PAPERCLIP_PORT}/api/health
+  status      PID 与 HTTP 健康检查 http://0.0.0.0:${PAPERCLIP_PORT}/instance/scheduler-heartbeats
   uninstall   停止进程并删除 ${PAPERCLIP_SERVICE_HOME}（不可逆，有确认）
 
 说明: 上游在无实例 config（默认 ${PAPERCLIP_HOME}/instances/<id>/config.json）且非 TTY 时不会自动 onboard；start 会尝试用 script(1)+onboard --yes 生成配置。
@@ -238,7 +238,7 @@ process.stdout.write(name + "\t" + ver + "\n");
 }
 
 paperclip_curl_health_http_code() {
-  curl -sS -o /dev/null -w '%{http_code}' -m 3 "http://0.0.0.0:${PAPERCLIP_PORT}/api/health" 2>/dev/null || echo "000"
+  curl -sS -o /dev/null -w '%{http_code}' -m 3 "http://0.0.0.0:${PAPERCLIP_PORT}/instance/scheduler-heartbeats" 2>/dev/null || echo "000"
 }
 
 # 返回 0=健康；1=超时仍存活；2=进程已退出
@@ -257,7 +257,7 @@ paperclip_wait_ready() {
         return 0
       fi
     elif (( i >= 8 )); then
-      echo "[WARN] 未安装 curl，无法在启动后校验 /api/health；进程仍存活则视为启动成功。" >&2
+      echo "[WARN] 未安装 curl，无法在启动后校验 /instance/scheduler-heartbeats；进程仍存活则视为启动成功。" >&2
       return 0
     fi
     sleep 1
@@ -453,7 +453,7 @@ cmd_start() {
     echo "已启动 PID ${cpid}（已跳过 HTTP 健康检查）"
     return 0
   fi
-  echo "==> 等待 http://0.0.0.0:${PAPERCLIP_PORT}/api/health 就绪（最长 ${PAPERCLIP_START_HEALTH_TIMEOUT_SEC:-60}s）…" >&2
+  echo "==> 等待 http://0.0.0.0:${PAPERCLIP_PORT}/instance/scheduler-heartbeats 就绪（最长 ${PAPERCLIP_START_HEALTH_TIMEOUT_SEC:-60}s）…" >&2
   local wr=0
   paperclip_wait_ready "$cpid" || wr=$?
   if [[ "$wr" -eq 0 ]]; then
@@ -545,8 +545,8 @@ cmd_status() {
   fi
   if command -v curl >/dev/null 2>&1; then
     echo ""
-    echo "==> GET http://0.0.0.0:${PAPERCLIP_PORT}/api/health"
-    curl -sS -m 3 "http://0.0.0.0:${PAPERCLIP_PORT}/api/health" || echo "（无法连接，可能未启动或端口不同）"
+    echo "==> GET http://0.0.0.0:${PAPERCLIP_PORT}/instance/scheduler-heartbeats"
+    curl -sS -m 3 "http://0.0.0.0:${PAPERCLIP_PORT}/instance/scheduler-heartbeats" || echo "（无法连接，可能未启动或端口不同）"
     echo ""
   fi
 }
