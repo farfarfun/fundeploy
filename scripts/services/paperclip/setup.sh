@@ -344,8 +344,10 @@ cmd_update() {
   ensure_pnpm
   [[ -d "${PAPERCLIP_SRC}/.git" ]] || die "未找到源码目录，请先 install"
   require_git
-  echo "==> git pull …" >&2
-  git -C "${PAPERCLIP_SRC}" pull --ff-only || git -C "${PAPERCLIP_SRC}" pull
+  echo "==> 强制更新: 丢弃本地变更…" >&2
+  git -C "${PAPERCLIP_SRC}" fetch origin
+  git -C "${PAPERCLIP_SRC}" reset --hard "origin/${PAPERCLIP_GIT_BRANCH}"
+  git -C "${PAPERCLIP_SRC}" clean -fd
   echo "==> pnpm install …" >&2
   (cd "${PAPERCLIP_SRC}" && pnpm install)
   echo "更新完成。"
