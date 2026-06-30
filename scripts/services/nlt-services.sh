@@ -66,6 +66,19 @@ proc_alive() {
   [[ -n "${1:-}" ]] && kill -0 "$1" 2>/dev/null
 }
 
+listener_pid_for_port() {
+  local port="$1"
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -tiTCP:"${port}" -sTCP:LISTEN -n -P 2>/dev/null | head -1
+    return 0
+  fi
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltnp "( sport = :${port} )" 2>/dev/null | awk -F 'pid=' 'NR>1 && NF>1 {split($2,a,","); print a[1]; exit}'
+    return 0
+  fi
+  echo ""
+}
+
 status_word() {
   if proc_alive "$1"; then
     echo "运行中"
@@ -145,8 +158,10 @@ cmd_status() {
   pid_cel_f="$(read_pid_file "${CELERY_RUN}/flower.pid")"
 
   PAPERCLIP_SERVICE_HOME="${PAPERCLIP_SERVICE_HOME:-${HOME}/opt/paperclip}"
-  PAPERCLIP_PORT="${PAPERCLIP_PORT:-8804}"
+  PAPERCLIP_PORT="${PAPERCLIP_PORT:-18804}"
+  PAPERCLIP_PUBLIC_PORT="${PAPERCLIP_PUBLIC_PORT:-8804}"
   pid_pc="$(read_pid_file "${PAPERCLIP_SERVICE_HOME}/run/paperclip.pid")"
+  pc_listener_pid="$(listener_pid_for_port "${PAPERCLIP_PORT}")"
 
   CODE_SERVER_SERVICE_HOME="${CODE_SERVER_SERVICE_HOME:-${HOME}/opt/code-server}"
   CODE_SERVER_BIND="${CODE_SERVER_BIND:-127.0.0.1:8080}"
@@ -188,10 +203,10 @@ cmd_status() {
       "${cel_probe}"
     _status_csv_line \
       "paperclip" \
-      "$(status_word "$pid_pc")" \
-      "${pid_pc:--}" \
-      "${PAPERCLIP_PORT} /api/health" \
-      "$(http_probe "http://127.0.0.1:${PAPERCLIP_PORT}/api/health")"
+      "$(if proc_alive "$pid_pc" || [[ -n "$pc_listener_pid" ]]; then echo "运行中"; else echo "未运行"; fi)" \
+      "${pid_pc:--}${pc_listener_pid:+ / listen:${pc_listener_pid}}" \
+      "${PAPERCLIP_PUBLIC_PORT} -> 127.0.0.1:${PAPERCLIP_PORT}" \
+      "$(http_probe "http://127.0.0.1:${PAPERCLIP_PUBLIC_PORT}/api/health")"
     _status_csv_line \
       "code-server" \
       "$(status_word "$pid_cs")" \

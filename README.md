@@ -1,6 +1,6 @@
 # nltdeploy
 
-用于在本机快速准备开发环境的 Bash 脚本集合：pip 镜像、Python/uv 虚拟环境、Airflow 3、Celery、[Paperclip](https://github.com/paperclipai/paperclip)（AI 编排，源码安装）、[code-server](https://github.com/coder/code-server)（浏览器内 VS Code，官方 standalone 包）、[new-api](https://github.com/QuantumNous/new-api)（LLM 网关，GitHub Release 预编译二进制）、常用 CLI（如 gum）、以及 GitHub 克隆网络修复。各脚本尽量自包含，可单独 `curl … | bash` 使用；内容已同步到 [Gitee 同名仓库](https://gitee.com/farfarfun/nltdeploy)，国内网络可改用下方 Gitee 的 raw 地址。
+用于在本机快速准备开发环境的 Bash 脚本集合：pip 镜像、Python/uv 虚拟环境、Airflow 3、Celery、[Paperclip](https://github.com/paperclipai/paperclip)（AI 编排，官方 `npx` 安装/运行）、[code-server](https://github.com/coder/code-server)（浏览器内 VS Code，官方 standalone 包）、[new-api](https://github.com/QuantumNous/new-api)（LLM 网关，GitHub Release 预编译二进制）、常用 CLI（如 gum）、以及 GitHub 克隆网络修复。各脚本尽量自包含，可单独 `curl … | bash` 使用；内容已同步到 [Gitee 同名仓库](https://gitee.com/farfarfun/nltdeploy)，国内网络可改用下方 Gitee 的 raw 地址。
 
 ## 项目概述
 
@@ -12,7 +12,7 @@
 - **utils**：安装 **gum**（`~/opt/gum`）与可选 shell 别名（`ll` / `la` / `lla`）。
 - **github-net**：诊断并修复「网页能开但 `git clone` 失败」的常见 HTTPS/SSH 问题。
 - **download**（`nlt-download`）：对 GitHub 族 HTTPS 下载 URL 做可选镜像/前缀改写后再 `curl`（环境变量驱动，默认不改写）；仓库内 **new-api / code-server / gum 安装路径** 等已统一经 `_nlt_github_download_curl` / `nlt-github-download.sh` 调用（见 `scripts/tools/download/README.md`）。
-- **paperclip**：从 **GitHub 克隆** [paperclipai/paperclip](https://github.com/paperclipai/paperclip) 源码、`pnpm install`，并以 **`pnpm paperclipai run`** 启停；默认安装根 `~/opt/paperclip`，**默认工作区** **`~/opt/paperclip/workspace`**（环境变量 **`PAPERCLIP_WORKSPACE`**，可改）。`start` 会在实例就绪后尽量把上游 **`~/.paperclip/instances/<id>/workspaces`** 符号链接到该目录（若该 `workspaces` 已非空则跳过）。数据目录另见上游 `~/.paperclip/…`。无实例配置时 **`start` 会先非交互执行 `onboard --yes`**（依赖 `script(1)`）；也可手动 **`nlt-paperclip onboard`**（或 `NONINTERACTIVE=1 nlt-paperclip onboard`）。**`run`** 为同准备下的前台附着（不写 PID；后台已在跑时拒绝）。
+- **paperclip**：直接按上游官方 Quickstart 使用 **`npx paperclipai@latest`**，不再克隆源码、不依赖 `pnpm`。`install` 只做 **Node.js 20+** / **socat** 预检查与 CLI 缓存预热；`onboard` 对应官方 **`npx paperclipai onboard --yes`**；`start` / `run` 对应 **`npx paperclipai run`**。默认内部监听 **`127.0.0.1:18804`**，`start` 时会额外拉起 **`socat`**，把 **`0.0.0.0:8804`** 转发到 **`127.0.0.1:18804`**，便于公网访问；`run` 为前台附着，**不启动 socat**。脚本健康检查统一走 **`/api/health`**。默认服务目录 `~/opt/paperclip` 仅存放日志/PID/npm 缓存；默认数据目录遵循上游，为 **`~/.paperclip`**（可用 **`PAPERCLIP_HOME`** 覆盖）。若你的全局 `~/.npmrc` 指向私有 registry，可设置 **`PAPERCLIP_NPM_REGISTRY=https://registry.npmjs.org`**。
 - **code-server**：从 **GitHub Releases** 下载官方 **standalone** 压缩包并解压到 `~/opt/code-server`；`nohup` 后台运行，默认绑定 `127.0.0.1:8080`；无需本机 Node.js。**`run`** 为前台附着（`PASSWORD` 与 `start` 一致；不写 PID；后台已在跑时拒绝）。
 - **new-api**：从 **GitHub Releases** 下载 [QuantumNous/new-api](https://github.com/QuantumNous/new-api) 的预编译二进制到 `~/opt/new-api/bin`；数据目录默认 `~/opt/new-api/data`（SQLite 等），默认 **HTTP 端口 8801**；解析版本时会跳过无附件的 nightly，fallback `v0.12.6`。**`run`** 为前台 `PORT` 启动（不写 PID；后台已在跑时拒绝）。
 - **services**（`nlt-services.sh`）：**`nlt-services`** 总入口——**`status`** 汇总各常驻服务 PID/端口/HTTP 探测；**`install`** 先选 **安装 / 卸载** 再选模块（或 `install add|remove <模块>`）；卸载不含 celery、utils（上游无 uninstall）。
@@ -300,7 +300,7 @@ curl -LsSf https://gitee.com/farfarfun/nltdeploy/raw/master/scripts/tools/github
 | `tools/github-net` | `setup.sh` | GitHub 克隆通道诊断与修复 |
 | `services/airflow` | `setup.sh` | Airflow 3 安装与日常运维封装（含前台 `run`） |
 | `services/celery` | `setup.sh` | Celery 安装与进程管理（含前台 `run` / `run-*`） |
-| `services/paperclip` | `setup.sh` | 克隆 [paperclipai/paperclip](https://github.com/paperclipai/paperclip)、pnpm 安装与启停（含 `run`） |
+| `services/paperclip` | `setup.sh` | 通过官方 `npx paperclipai@latest` 安装/启停（含 `run`） |
 | `services/code-server` | `setup.sh` | 下载 [coder/code-server](https://github.com/coder/code-server) standalone 包并启停（含 `run`） |
 | `services/new-api` | `setup.sh` | 下载 [QuantumNous/new-api](https://github.com/QuantumNous/new-api) Release 二进制并启停（含 `run`） |
 | `services/`（根） | `nlt-services.sh` | **`nlt-services`**：`status`；`install` 安装/卸载分流与各 `nlt-*` 对接 |
@@ -336,7 +336,7 @@ curl -LsSf https://gitee.com/farfarfun/nltdeploy/raw/master/scripts/tools/github
 - **系统**：macOS、Linux（Windows 建议 WSL）。
 - **Shell**：Bash 3.2+；**`curl`** 通常必需。
 - **`python-env`** 会在需要时安装 **uv**，无需事先安装。
-- **Paperclip**：需要 **Node.js 20+**；脚本会尝试用 **corepack** 准备 **pnpm 9+**（见 `scripts/services/paperclip/setup.sh`）。
+- **Paperclip**：需要 **Node.js 20+**，并且系统里的 Node 发行版需自带 **npm/npx**；后台公网映射依赖 **`socat`**（见 `scripts/services/paperclip/setup.sh`）。
 - **code-server**：需要 **`curl`** 与 **`tar`**；安装与运行 **不依赖** 本机 Node（见 `scripts/services/code-server/setup.sh`）。
 - **new-api**：需要 **`curl`**；自动选版依赖 **`python3`**（若无则使用脚本内 fallback 版本号）。详见 `scripts/services/new-api/setup.sh` 与 [官方文档](https://docs.newapi.pro/)。
 
