@@ -1,6 +1,6 @@
 # nltdeploy
 
-用于在本机快速准备开发环境的 Bash 脚本集合：pip 镜像、Python/uv 虚拟环境、Airflow 3、Celery、[Paperclip](https://github.com/paperclipai/paperclip)（AI 编排，官方 `npx` 安装/运行）、[code-server](https://github.com/coder/code-server)（浏览器内 VS Code，官方 standalone 包）、[new-api](https://github.com/QuantumNous/new-api)（LLM 网关，GitHub Release 预编译二进制）、常用 CLI（如 gum）、以及 GitHub 克隆网络修复。各脚本尽量自包含，可单独 `curl … | bash` 使用；内容已同步到 [Gitee 同名仓库](https://gitee.com/farfarfun/nltdeploy)，国内网络可改用下方 Gitee 的 raw 地址。
+用于在本机快速准备开发环境的 Bash 脚本集合：pip 镜像、Python/uv 虚拟环境、Airflow 3、Celery、[Paperclip](https://github.com/paperclipai/paperclip)（AI 编排，官方 `npx` 安装/运行）、[code-server](https://github.com/coder/code-server)（浏览器内 VS Code，官方 standalone 包）、[new-api](https://github.com/QuantumNous/new-api)（LLM 网关，GitHub Release 预编译二进制）、[sub2api](https://github.com/Wei-Shaw/sub2api)（AI 网关，GitHub Release 预编译二进制）、常用 CLI（如 gum）、以及 GitHub 克隆网络修复。各脚本尽量自包含，可单独 `curl … | bash` 使用；内容已同步到 [Gitee 同名仓库](https://gitee.com/farfarfun/nltdeploy)，国内网络可改用下方 Gitee 的 raw 地址。
 
 ## 项目概述
 
@@ -16,6 +16,7 @@
 - **paperclip**：直接按上游官方 Quickstart 使用 **`npx paperclipai@latest`**，不再克隆源码、不依赖 `pnpm`。`install` 只做 **Node.js 20+** / **socat** 预检查与 CLI 缓存预热；`onboard` 对应官方 **`npx paperclipai onboard --yes`**；`start` / `run` 对应 **`npx paperclipai run`**。默认内部监听 **`127.0.0.1:18804`**，`start` 时会额外拉起 **`socat`**，把 **`0.0.0.0:8804`** 转发到 **`127.0.0.1:18804`**，便于公网访问；`run` 为前台附着，**不启动 socat**。脚本健康检查统一走 **`/api/health`**。默认服务目录 `~/opt/paperclip` 仅存放日志/PID/npm 缓存；默认数据目录遵循上游，为 **`~/.paperclip`**（可用 **`PAPERCLIP_HOME`** 覆盖）。若你的全局 `~/.npmrc` 指向私有 registry，可设置 **`PAPERCLIP_NPM_REGISTRY=https://registry.npmjs.org`**。
 - **code-server**：从 **GitHub Releases** 下载官方 **standalone** 压缩包并解压到 `~/opt/code-server`；`nohup` 后台运行，默认绑定 `127.0.0.1:8080`；无需本机 Node.js。**`run`** 为前台附着（`PASSWORD` 与 `start` 一致；不写 PID；后台已在跑时拒绝）。
 - **new-api**：从 **GitHub Releases** 下载 [QuantumNous/new-api](https://github.com/QuantumNous/new-api) 的预编译二进制到 `~/opt/new-api/bin`；数据目录默认 `~/opt/new-api/data`（SQLite 等），默认 **HTTP 端口 8801**；解析版本时会跳过无附件的 nightly，fallback `v0.12.6`。**`run`** 为前台 `PORT` 启动（不写 PID；后台已在跑时拒绝）。
+- **sub2api**：从 **GitHub Releases** 下载 [Wei-Shaw/sub2api](https://github.com/Wei-Shaw/sub2api) 的预编译二进制到 `~/opt/sub2api/bin`；默认监听 **`127.0.0.1:8802`**，保留上游 `deploy/` 文档到 `~/opt/sub2api/deploy`。运行时默认导出 `DATA_DIR=~/opt/sub2api/data`，并自动加载 `~/opt/sub2api/data/sub2api.env`（若存在）中的 `DATABASE_*` / `REDIS_*` / `JWT_SECRET` 等环境变量；示例配置会落到 `~/opt/sub2api/data/config.example.yaml`。**`run`** 为前台启动（不写 PID；后台已在跑时拒绝）。
 - **services**（`nlt-services.sh`）：**`nlt-services`** 总入口——**`status`** 汇总各常驻服务 PID/端口/HTTP 探测；**`install`** 先选 **安装 / 卸载** 再选模块（或 `install add|remove <模块>`）；卸载不含 celery、utils（上游无 uninstall）。
 
 仓库内脚本按 **`scripts/dev/`**（开发环境统一入口）、**`scripts/tools/`**（工具 / 环境）与 **`scripts/services/`**（常驻服务 + 聚合入口）分层存放，详见下文「目录结构」。
@@ -109,6 +110,7 @@ bash tests/progress_smoke.sh
 | `nlt-paperclip` | `scripts/services/paperclip/setup.sh` 全量子命令；`install` / `onboard` / `start` / `run` 等；无参为 gum 菜单 |
 | `nlt-code-server` | `scripts/services/code-server/setup.sh` 全量子命令；`install`（下载解压官方包）、`start` / `run` 等；无参为 gum 菜单 |
 | `nlt-new-api` | `scripts/services/new-api/setup.sh` 全量子命令；`install` / `update` 下载 Release 二进制；`start` / `run` 等；无参为 gum 菜单 |
+| `nlt-sub2api` | `scripts/services/sub2api/setup.sh` 全量子命令；`install` / `update` 下载 Release 二进制与 deploy 资料；`start` / `run` / `status` / `uninstall`；无参为 gum 菜单 |
 
 ## 目录结构
 
@@ -165,11 +167,13 @@ nltdeploy/
 │       │   └── setup.sh                # Paperclip 源码克隆与 pnpm 服务启停
 │       ├── code-server/
 │       │   └── setup.sh                # code-server 官方包下载与启停
-│       └── new-api/
-│           └── setup.sh                # new-api Release 二进制与启停
+│       ├── new-api/
+│       │   └── setup.sh                # new-api Release 二进制与启停
+│       └── sub2api/
+│           └── setup.sh                # sub2api Release 二进制与启停
 ```
 
-**`scripts/dev/`** 放 **`nlt-dev`** 与 Go/Rust/Node/pnpm 等 **语言工具链** 脚本；**`scripts/tools/`** 放 pip、Python 环境、gum/别名、GitHub 网络、端口查杀等 **工具向** 脚本；**`scripts/services/`** 放 Airflow、Celery、Paperclip、code-server、new-api 等 **服务向** 脚本及 **`nlt-services.sh`** 聚合入口。建议已装 `install.sh` 的用户优先 **`nlt-dev`** 配 pip/Python，再按需装 services；除 pip-sources / python-env 外可按需独立执行。
+**`scripts/dev/`** 放 **`nlt-dev`** 与 Go/Rust/Node/pnpm 等 **语言工具链** 脚本；**`scripts/tools/`** 放 pip、Python 环境、gum/别名、GitHub 网络、端口查杀等 **工具向** 脚本；**`scripts/services/`** 放 Airflow、Celery、Paperclip、code-server、new-api、sub2api 等 **服务向** 脚本及 **`nlt-services.sh`** 聚合入口。建议已装 `install.sh` 的用户优先 **`nlt-dev`** 配 pip/Python，再按需装 services；除 pip-sources / python-env 外可按需独立执行。
 
 ## 快速开始
 
@@ -307,6 +311,7 @@ curl -LsSf https://gitee.com/farfarfun/nltdeploy/raw/master/scripts/tools/github
 | `services/paperclip` | `setup.sh` | 通过官方 `npx paperclipai@latest` 安装/启停（含 `run`） |
 | `services/code-server` | `setup.sh` | 下载 [coder/code-server](https://github.com/coder/code-server) standalone 包并启停（含 `run`） |
 | `services/new-api` | `setup.sh` | 下载 [QuantumNous/new-api](https://github.com/QuantumNous/new-api) Release 二进制并启停（含 `run`） |
+| `services/sub2api` | `setup.sh` | 下载 [Wei-Shaw/sub2api](https://github.com/Wei-Shaw/sub2api) Release 二进制并启停（含 `run`） |
 | `services/`（根） | `nlt-services.sh` | **`nlt-services`**：`status`；`install` 安装/卸载分流与各 `nlt-*` 对接 |
 
 子目录中的详细说明：
@@ -332,7 +337,7 @@ curl -LsSf https://gitee.com/farfarfun/nltdeploy/raw/master/scripts/tools/github
 - **`NLTDEPLOY_RAW_BASE`**：覆盖拉取本仓库 raw 脚本的根 URL（优先于 `nltdeploy_RAW_BASE`）。见上一节「通过 curl 执行时的公共约定」。
 - **`utils`** 另有 `GUM_HOME`、`GUM_TAG`、`GUM_USE_BREW`、`SKIP_GUM_SHELL_PROFILE`、`SKIP_UTILS_SHELL_ALIASES` 等，见 `scripts/tools/utils/setup.sh` 头部。
 
-各专项脚本（Airflow、Celery、GitHub、Paperclip、code-server、new-api）的专有变量以各自文件头注释为准。
+各专项脚本（Airflow、Celery、GitHub、Paperclip、code-server、new-api、sub2api）的专有变量以各自文件头注释为准。
 
 ## 前置要求
 
@@ -343,6 +348,7 @@ curl -LsSf https://gitee.com/farfarfun/nltdeploy/raw/master/scripts/tools/github
 - **Paperclip**：需要 **Node.js 20+**，并且系统里的 Node 发行版需自带 **npm/npx**；后台公网映射依赖 **`socat`**（见 `scripts/services/paperclip/setup.sh`）。
 - **code-server**：需要 **`curl`** 与 **`tar`**；安装与运行 **不依赖** 本机 Node（见 `scripts/services/code-server/setup.sh`）。
 - **new-api**：需要 **`curl`**；自动选版依赖 **`python3`**（若无则使用脚本内 fallback 版本号）。详见 `scripts/services/new-api/setup.sh` 与 [官方文档](https://docs.newapi.pro/)。
+- **sub2api**：需要 **`curl`**、**`tar`**、**`gzip`**；服务本身依赖外部 **PostgreSQL 15+** 与 **Redis 7+**。脚本只负责二进制安装与生命周期管理，数据库/Redis 连接需通过 `config.yaml` 或 `sub2api.env` 提供。
 
 ## 故障排除
 
@@ -359,6 +365,7 @@ chmod +x scripts/tools/github-net/setup.sh
 chmod +x scripts/services/paperclip/setup.sh
 chmod +x scripts/services/code-server/setup.sh
 chmod +x scripts/services/new-api/setup.sh
+chmod +x scripts/services/sub2api/setup.sh
 chmod +x scripts/services/nlt-services.sh
 ```
 

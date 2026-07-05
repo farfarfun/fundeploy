@@ -9,7 +9,7 @@
 #   nlt-services install remove <名> # 卸载类（uninstall 与 remove 同义）
 #   nlt-services help
 #
-# 模块名: airflow, celery, paperclip, code-server, new-api,
+# 模块名: airflow, celery, paperclip, code-server, new-api, sub2api,
 #         pip-sources, python-env, utils, github-net, cockpit-tools
 # 卸载不支持: celery、utils（脚本未提供 uninstall）
 #
@@ -33,7 +33,7 @@ usage() {
   无参数：gum 菜单（status / install / help / quit）。
 
 命令:
-  status [--no-http]    汇总 Airflow、Celery、Paperclip、code-server、new-api（gum table -p）
+  status [--no-http]    汇总 Airflow、Celery、Paperclip、code-server、new-api、sub2api（gum table -p）
   install               无参：gum 先选「安装 / 卸载」，再选模块。
   install add <模块>    安装（add 可写 install）
   install remove <模块> 卸载（remove 可写 uninstall；celery/utils 不支持）
@@ -202,6 +202,12 @@ cmd_status() {
   pid_na="$(read_pid_file "${NEW_API_SERVICE_HOME}/run/new-api.pid")"
   na_listener_pid="$(listener_pid_for_port "${NEW_API_PORT}")"
 
+  SUB2API_SERVICE_HOME="${SUB2API_SERVICE_HOME:-${HOME}/opt/sub2api}"
+  SUB2API_HOST="${SUB2API_HOST:-127.0.0.1}"
+  SUB2API_PORT="${SUB2API_PORT:-8802}"
+  pid_s2a="$(read_pid_file "${SUB2API_SERVICE_HOME}/run/sub2api.pid")"
+  s2a_listener_pid="$(listener_pid_for_port "${SUB2API_PORT}")"
+
   local ts flower_url cel_wbf cel_pids cel_probe
   ts="$(date '+%Y-%m-%d %H:%M:%S %z')"
 
@@ -250,13 +256,19 @@ cmd_status() {
       "$(service_pid_display "$pid_na" "$na_listener_pid")" \
       "${NEW_API_PORT} → 127.0.0.1:${NEW_API_PORT}" \
       "$(http_probe "http://127.0.0.1:${NEW_API_PORT}/")"
+    _status_csv_line \
+      "sub2api" \
+      "$(service_state_from_pid_and_port "$pid_s2a" "$s2a_listener_pid")" \
+      "$(service_pid_display "$pid_s2a" "$s2a_listener_pid")" \
+      "${SUB2API_PORT} → ${SUB2API_HOST}:${SUB2API_PORT}" \
+      "$(http_probe "http://${SUB2API_HOST}:${SUB2API_PORT}/health")"
   } | _render_status_table_from_csv
 
   echo ""
   echo "说明:"
   echo "  • celery 状态列 wbf 为 worker / beat / flower：√ 运行中，× 未运行；与 Airflow 同机时请区分 FLOWER_PORT。"
-  echo "  • 安装路径: airflow ${AIRFLOW_HOME} | celery ${CELERY_HOME} | paperclip ${PAPERCLIP_SERVICE_HOME} | code-server ${CODE_SERVER_SERVICE_HOME} | new-api ${NEW_API_SERVICE_HOME}"
-  echo "  • 详情: nlt-airflow / nlt-celery / nlt-paperclip / nlt-code-server / nlt-new-api 各 status"
+  echo "  • 安装路径: airflow ${AIRFLOW_HOME} | celery ${CELERY_HOME} | paperclip ${PAPERCLIP_SERVICE_HOME} | code-server ${CODE_SERVER_SERVICE_HOME} | new-api ${NEW_API_SERVICE_HOME} | sub2api ${SUB2API_SERVICE_HOME}"
+  echo "  • 详情: nlt-airflow / nlt-celery / nlt-paperclip / nlt-code-server / nlt-new-api / nlt-sub2api 各 status"
   echo ""
   echo "工具（无统一守护进程）: nlt-dev（推荐入口）/ nlt-pip-sources / nlt-python-env / nlt-utils / nlt-github-net / nlt-cockpit-tools — 请用各命令单独查看。"
   echo ""
@@ -265,7 +277,7 @@ cmd_status() {
 # 是否支持 uninstall（上游脚本有该子命令）
 _module_supports_uninstall() {
   case "$1" in
-    airflow | paperclip | code-server | new-api | pip-sources | python-env | github-net | cockpit-tools) return 0 ;;
+    airflow | paperclip | code-server | new-api | sub2api | pip-sources | python-env | github-net | cockpit-tools) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -283,6 +295,7 @@ _dispatch_install_or_remove() {
       paperclip) exec "${NLT_BIN}/nlt-paperclip" uninstall ;;
       code-server) exec "${NLT_BIN}/nlt-code-server" uninstall ;;
       new-api) exec "${NLT_BIN}/nlt-new-api" uninstall ;;
+      sub2api) exec "${NLT_BIN}/nlt-sub2api" uninstall ;;
       pip-sources) exec "${NLT_BIN}/nlt-pip-sources" uninstall ;;
       python-env) exec "${NLT_BIN}/nlt-python-env" uninstall ;;
       github-net) exec "${NLT_BIN}/nlt-github-net" uninstall ;;
@@ -297,6 +310,7 @@ _dispatch_install_or_remove() {
     paperclip) exec "${NLT_BIN}/nlt-paperclip" install ;;
     code-server) exec "${NLT_BIN}/nlt-code-server" install ;;
     new-api) exec "${NLT_BIN}/nlt-new-api" install ;;
+    sub2api) exec "${NLT_BIN}/nlt-sub2api" install ;;
     pip-sources) exec "${NLT_BIN}/nlt-pip-sources" ;;
     python-env) exec "${NLT_BIN}/nlt-python-env" ;;
     utils) exec "${NLT_BIN}/nlt-utils" ;;
@@ -328,11 +342,11 @@ cmd_install() {
 
     if [[ "$action" == "add" ]]; then
       name="$(gum choose --header "选择要安装 / 初始化的模块" \
-        "airflow" "celery" "paperclip" "code-server" "new-api" \
+        "airflow" "celery" "paperclip" "code-server" "new-api" "sub2api" \
         "pip-sources" "python-env" "utils" "github-net" "cockpit-tools" "取消")" || return 0
     else
       name="$(gum choose --header "选择要卸载的模块（celery、utils 请手动清理）" \
-        "airflow" "paperclip" "code-server" "new-api" \
+        "airflow" "paperclip" "code-server" "new-api" "sub2api" \
         "pip-sources" "python-env" "github-net" "cockpit-tools" "取消")" || return 0
     fi
     [[ -z "$name" || "$name" == "取消" ]] && return 0
@@ -348,7 +362,7 @@ cmd_install() {
         [[ "${NONINTERACTIVE:-}" == "1" ]] && die "请指定模块: nlt-services install add <模块>"
         _nlt_ensure_gum || exit 1
         name="$(gum choose --header "选择要安装 / 初始化的模块" \
-          "airflow" "celery" "paperclip" "code-server" "new-api" \
+          "airflow" "celery" "paperclip" "code-server" "new-api" "sub2api" \
           "pip-sources" "python-env" "utils" "github-net" "cockpit-tools" "取消")" || return 0
         [[ -z "$name" || "$name" == "取消" ]] && return 0
       fi
@@ -361,7 +375,7 @@ cmd_install() {
         [[ "${NONINTERACTIVE:-}" == "1" ]] && die "请指定模块: nlt-services install remove <模块>"
         _nlt_ensure_gum || exit 1
         name="$(gum choose --header "选择要卸载的模块" \
-          "airflow" "paperclip" "code-server" "new-api" \
+          "airflow" "paperclip" "code-server" "new-api" "sub2api" \
           "pip-sources" "python-env" "github-net" "cockpit-tools" "取消")" || return 0
         [[ -z "$name" || "$name" == "取消" ]] && return 0
       fi

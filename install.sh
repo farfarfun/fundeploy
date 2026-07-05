@@ -303,7 +303,7 @@ do_install_or_update() {
     "${LIBEXEC}/dev/go" "${LIBEXEC}/dev/rust" "${LIBEXEC}/dev/nodejs" "${LIBEXEC}/dev/pnpm" "${LIBEXEC}/dev/uv" \
     "${LIBEXEC}/download" "${LIBEXEC}/cockpit-tools" \
     "${LIBEXEC}/airflow" "${LIBEXEC}/celery" "${LIBEXEC}/utils" "${LIBEXEC}/github-net" \
-    "${LIBEXEC}/paperclip" "${LIBEXEC}/code-server" "${LIBEXEC}/new-api" \
+    "${LIBEXEC}/paperclip" "${LIBEXEC}/code-server" "${LIBEXEC}/new-api" "${LIBEXEC}/sub2api" \
     "${LIBEXEC}/services" \
     "${LIBEXEC}/lib"
 
@@ -388,6 +388,10 @@ do_install_or_update() {
     "${SCRIPTS}/new-api/setup.sh" \
     "${SCRIPTS}/new-api/new-api-setup.sh"
 
+  _nlt_cp_first "${LIBEXEC}/sub2api/setup.sh" \
+    "${SCRIPTS}/services/sub2api/setup.sh" \
+    "${SCRIPTS}/sub2api/setup.sh"
+
   _nlt_cp_first "${LIBEXEC}/services/nlt-services.sh" \
     "${SCRIPTS}/services/nlt-services.sh" \
     "${SCRIPTS}/services/services.sh" \
@@ -408,6 +412,7 @@ do_install_or_update() {
   _emit_wrapper nlt-paperclip paperclip/setup.sh
   _emit_wrapper nlt-code-server code-server/setup.sh
   _emit_wrapper nlt-new-api new-api/setup.sh
+  _emit_wrapper nlt-sub2api sub2api/setup.sh
   rm -rf "${LIBEXEC}/build"
   rm -f "${NLTDEPLOY_ROOT}/bin/nlt-build"
   rm -f \
@@ -416,7 +421,8 @@ do_install_or_update() {
     "${NLTDEPLOY_ROOT}/bin/nlt-celery-update" \
     "${NLTDEPLOY_ROOT}/bin/nlt-paperclip-install" \
     "${NLTDEPLOY_ROOT}/bin/nlt-code-server-install" \
-    "${NLTDEPLOY_ROOT}/bin/nlt-new-api-install"
+    "${NLTDEPLOY_ROOT}/bin/nlt-new-api-install" \
+    "${NLTDEPLOY_ROOT}/bin/nlt-sub2api-install"
 
   if [[ "${NLTDEPLOY_SKIP_PROFILE_HINT:-}" != "1" ]]; then
     echo ""
