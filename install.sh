@@ -301,7 +301,7 @@ do_install_or_update() {
     "${NLTDEPLOY_ROOT}/share/nltdeploy" "${NLTDEPLOY_ROOT}/etc/nltdeploy"
   mkdir -p "${LIBEXEC}/pip-sources" "${LIBEXEC}/python-env" "${LIBEXEC}/port-kill" \
     "${LIBEXEC}/dev/go" "${LIBEXEC}/dev/rust" "${LIBEXEC}/dev/nodejs" "${LIBEXEC}/dev/pnpm" "${LIBEXEC}/dev/uv" \
-    "${LIBEXEC}/download" \
+    "${LIBEXEC}/download" "${LIBEXEC}/cockpit-tools" \
     "${LIBEXEC}/airflow" "${LIBEXEC}/celery" "${LIBEXEC}/utils" "${LIBEXEC}/github-net" \
     "${LIBEXEC}/paperclip" "${LIBEXEC}/code-server" "${LIBEXEC}/new-api" \
     "${LIBEXEC}/services" \
