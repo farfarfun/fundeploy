@@ -103,6 +103,19 @@ process_alive() {
   kill -0 "$1" 2>/dev/null
 }
 
+listener_pid_for_port() {
+  local port="$1"
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -tiTCP:"${port}" -sTCP:LISTEN -n -P 2>/dev/null | head -1
+    return 0
+  fi
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltnp "( sport = :${port} )" 2>/dev/null | awk -F 'pid=' 'NR>1 && NF>1 {split($2,a,","); print a[1]; exit}'
+    return 0
+  fi
+  echo ""
+}
+
 read_pid() {
   if [[ ! -f "$PID_FILE" ]]; then
     echo ""
@@ -258,6 +271,12 @@ cmd_start() {
     echo "new-api 已在运行（PID ${existing}）。重启请: $0 restart" >&2
     exit 1
   fi
+  local effective_port listener_pid
+  effective_port="$(_new_api_effective_port)"
+  listener_pid="$(listener_pid_for_port "${effective_port}")"
+  if [[ -n "$listener_pid" ]]; then
+    die "端口 ${effective_port} 已被 PID ${listener_pid} 占用，请先执行 $0 stop 或手动清理。"
+  fi
   rm -f "$PID_FILE"
   echo "==> 启动 new-api，必须先 cd 到数据目录再启动（否则 godotenv 找不到 .env）；日志 ${LOG_FILE}" >&2
   if [[ -f "${NEW_API_DATA_DIR}/.env" ]] && [[ "${NEW_API_FORCE_SCRIPT_PORT:-}" != "1" ]]; then
@@ -320,25 +339,30 @@ cmd_run() {
 cmd_stop() {
   local pid
   pid="$(read_pid)"
+  local effective_port listener_pid
+  effective_port="$(_new_api_effective_port)"
+  listener_pid="$(listener_pid_for_port "${effective_port}")"
   if [[ -z "$pid" ]]; then
     echo "未找到 PID，视为未运行。" >&2
     rm -f "$PID_FILE"
-    return 0
-  fi
-  if ! process_alive "$pid"; then
+  elif ! process_alive "$pid"; then
     rm -f "$PID_FILE"
-    return 0
   fi
-  if [[ "${NONINTERACTIVE:-}" != "1" ]] && [[ -t 0 ]]; then
+  if [[ -n "$pid" || -n "$listener_pid" ]] && [[ "${NONINTERACTIVE:-}" != "1" ]] && [[ -t 0 ]]; then
     gum confirm "停止 new-api（PID ${pid}）？" || exit 0
   fi
-  kill -TERM "$pid" 2>/dev/null || true
-  local w=0
-  while process_alive "$pid" && (( w < 20 )); do
-    sleep 1
-    w=$((w + 1))
-  done
-  process_alive "$pid" && kill -KILL "$pid" 2>/dev/null || true
+  if [[ -n "$pid" ]] && process_alive "$pid"; then
+    kill -TERM "$pid" 2>/dev/null || true
+    local w=0
+    while process_alive "$pid" && (( w < 20 )); do
+      sleep 1
+      w=$((w + 1))
+    done
+    process_alive "$pid" && kill -KILL "$pid" 2>/dev/null || true
+  fi
+  if [[ -n "$listener_pid" ]] && { [[ -z "$pid" ]] || [[ "$listener_pid" != "$pid" ]]; }; then
+    kill -TERM "$listener_pid" 2>/dev/null || true
+  fi
   rm -f "$PID_FILE"
   echo "已停止。"
 }
@@ -351,12 +375,21 @@ cmd_restart() {
 cmd_status() {
   local pid
   pid="$(read_pid)"
+  local effective_port listener_pid
+  effective_port="$(_new_api_effective_port)"
+  listener_pid="$(listener_pid_for_port "${effective_port}")"
   echo "NEW_API_SERVICE_HOME=${NEW_API_SERVICE_HOME}"
   echo "NEW_API_DATA_DIR=${NEW_API_DATA_DIR}"
   echo "NEW_API_PORT=${NEW_API_PORT}（无 .env 或未解析时用；实际监听见下）"
-  echo "探测端口（.env 优先）: $(_new_api_effective_port)"
+  echo "探测端口（.env 优先）: ${effective_port}"
   if [[ -n "$pid" ]] && process_alive "$pid"; then
-    echo "状态: 运行中 PID ${pid}"
+    if [[ -n "$listener_pid" && "$listener_pid" != "$pid" ]]; then
+      echo "状态: 运行中 PID ${pid}（监听进程 PID ${listener_pid}）"
+    else
+      echo "状态: 运行中 PID ${pid}"
+    fi
+  elif [[ -n "$listener_pid" ]]; then
+    echo "状态: 监听中（PID 文件缺失/失效，监听进程 PID ${listener_pid}）"
   else
     echo "状态: 未运行"
     rm -f "$PID_FILE"
@@ -366,8 +399,8 @@ cmd_status() {
   fi
   if command -v curl >/dev/null 2>&1; then
     echo ""
-    echo "==> 探测 http://127.0.0.1:$(_new_api_effective_port)/"
-    curl -sS -m 3 -o /dev/null -w "HTTP %{http_code}\n" "http://127.0.0.1:$(_new_api_effective_port)/" || echo "（无法连接）"
+    echo "==> 探测 http://127.0.0.1:${effective_port}/"
+    curl -sS -m 3 -o /dev/null -w "HTTP %{http_code}\n" "http://127.0.0.1:${effective_port}/" || echo "（无法连接）"
   fi
 }
 

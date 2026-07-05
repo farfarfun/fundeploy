@@ -12,6 +12,7 @@
 - **utils**：安装 **gum**（`~/opt/gum`）与可选 shell 别名（`ll` / `la` / `lla`）。
 - **github-net**：诊断并修复「网页能开但 `git clone` 失败」的常见 HTTPS/SSH 问题。
 - **download**（`nlt-download`）：对 GitHub 族 HTTPS 下载 URL 做可选镜像/前缀改写后再 `curl`（环境变量驱动，默认不改写）；仓库内 **new-api / code-server / gum 安装路径** 等已统一经 `_nlt_github_download_curl` / `nlt-github-download.sh` 调用（见 `scripts/tools/download/README.md`）。
+- **cockpit-tools**（`nlt-cockpit-tools`）：下载并安装 [jlcodes99/cockpit-tools](https://github.com/jlcodes99/cockpit-tools) 官方 Linux **AppImage** 到 `~/opt/cockpit-tools`，附带 `run` 前台启动与用户级 `.desktop` 入口。
 - **paperclip**：直接按上游官方 Quickstart 使用 **`npx paperclipai@latest`**，不再克隆源码、不依赖 `pnpm`。`install` 只做 **Node.js 20+** / **socat** 预检查与 CLI 缓存预热；`onboard` 对应官方 **`npx paperclipai onboard --yes`**；`start` / `run` 对应 **`npx paperclipai run`**。默认内部监听 **`127.0.0.1:18804`**，`start` 时会额外拉起 **`socat`**，把 **`0.0.0.0:8804`** 转发到 **`127.0.0.1:18804`**，便于公网访问；`run` 为前台附着，**不启动 socat**。脚本健康检查统一走 **`/api/health`**。默认服务目录 `~/opt/paperclip` 仅存放日志/PID/npm 缓存；默认数据目录遵循上游，为 **`~/.paperclip`**（可用 **`PAPERCLIP_HOME`** 覆盖）。若你的全局 `~/.npmrc` 指向私有 registry，可设置 **`PAPERCLIP_NPM_REGISTRY=https://registry.npmjs.org`**。
 - **code-server**：从 **GitHub Releases** 下载官方 **standalone** 压缩包并解压到 `~/opt/code-server`；`nohup` 后台运行，默认绑定 `127.0.0.1:8080`；无需本机 Node.js。**`run`** 为前台附着（`PASSWORD` 与 `start` 一致；不写 PID；后台已在跑时拒绝）。
 - **new-api**：从 **GitHub Releases** 下载 [QuantumNous/new-api](https://github.com/QuantumNous/new-api) 的预编译二进制到 `~/opt/new-api/bin`；数据目录默认 `~/opt/new-api/data`（SQLite 等），默认 **HTTP 端口 8801**；解析版本时会跳过无附件的 nightly，fallback `v0.12.6`。**`run`** 为前台 `PORT` 启动（不写 PID；后台已在跑时拒绝）。
@@ -102,6 +103,7 @@ bash tests/progress_smoke.sh
 | `nlt-utils`（可接子参数，如 `gum`、`all`） | `scripts/tools/utils/setup.sh` … |
 | `nlt-github-net` | `scripts/tools/github-net/setup.sh`（无参 gum；可 `install` / `update` / `reinstall` / `uninstall`） |
 | `nlt-download` | `scripts/tools/download/setup.sh`（`curl` / `resolve-url`；可选 GitHub URL 镜像；与 `scripts/lib/nlt-github-download.sh` 同源；无参 gum；`NONINTERACTIVE=1` + `install` 跑自测） |
+| `nlt-cockpit-tools` | `scripts/tools/cockpit-tools/setup.sh`（Linux 官方 AppImage 下载/更新/重装/卸载；`run` 前台启动；写入 `~/.local/share/applications/cockpit-tools.desktop`） |
 | `nlt-port-kill` | `scripts/tools/port-kill/setup.sh`（`kill` / `list`；可 `source … --lib` 调用 `nlt_kill_port`；无参 gum；`NONINTERACTIVE=1` 跳过确认） |
 | `nlt-services` | `scripts/services/nlt-services.sh`（无参 gum；`status`；`install` 先选安装或卸载；非交互：`install add <模块>` / `install remove <模块>`；`status --no-http`） |
 | `nlt-paperclip` | `scripts/services/paperclip/setup.sh` 全量子命令；`install` / `onboard` / `start` / `run` 等；无参为 gum 菜单 |
@@ -149,6 +151,8 @@ nltdeploy/
 │   │   │   ├── setup.sh                # nlt-download：GitHub 友好 curl 包装
 │   │   │   ├── selftest.sh
 │   │   │   └── README.md
+│   │   ├── cockpit-tools/
+│   │   │   └── setup.sh                # cockpit-tools Linux AppImage 安装/运行
 │   │   └── port-kill/
 │   │       └── setup.sh                # 按端口查杀进程（可 source 复用）
 │   └── services/                       # 常驻服务与聚合入口

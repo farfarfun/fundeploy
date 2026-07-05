@@ -370,6 +370,9 @@ do_install_or_update() {
   _nlt_cp_first "${LIBEXEC}/download/selftest.sh" \
     "${SCRIPTS}/tools/download/selftest.sh"
 
+  _nlt_cp_first "${LIBEXEC}/cockpit-tools/setup.sh" \
+    "${SCRIPTS}/tools/cockpit-tools/setup.sh"
+
   _nlt_cp_first "${LIBEXEC}/paperclip/setup.sh" \
     "${SCRIPTS}/services/paperclip/setup.sh" \
     "${SCRIPTS}/paperclip/setup.sh" \
@@ -397,6 +400,7 @@ do_install_or_update() {
   _emit_wrapper nlt-github-net github-net/setup.sh
   _emit_wrapper nlt-port-kill port-kill/setup.sh
   _emit_wrapper nlt-download download/setup.sh
+  _emit_wrapper nlt-cockpit-tools cockpit-tools/setup.sh
   _emit_wrapper nlt-services services/nlt-services.sh
 
   _emit_wrapper nlt-airflow airflow/setup.sh

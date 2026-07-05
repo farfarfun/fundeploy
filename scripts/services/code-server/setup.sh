@@ -79,6 +79,19 @@ process_alive() {
   kill -0 "$1" 2>/dev/null
 }
 
+listener_pid_for_port() {
+  local port="$1"
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -tiTCP:"${port}" -sTCP:LISTEN -n -P 2>/dev/null | head -1
+    return 0
+  fi
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltnp "( sport = :${port} )" 2>/dev/null | awk -F 'pid=' 'NR>1 && NF>1 {split($2,a,","); print a[1]; exit}'
+    return 0
+  fi
+  echo ""
+}
+
 read_pid() {
   if [[ ! -f "$PID_FILE" ]]; then
     echo ""
@@ -179,6 +192,11 @@ cmd_start() {
     echo "code-server 已在运行（PID ${existing}）。重启请: $0 restart" >&2
     exit 1
   fi
+  local listener_pid
+  listener_pid="$(listener_pid_for_port "${CODE_SERVER_PORT}")"
+  if [[ -n "$listener_pid" ]]; then
+    die "端口 ${CODE_SERVER_PORT} 已被 PID ${listener_pid} 占用，请先执行 $0 stop 或手动清理。"
+  fi
   rm -f "$PID_FILE"
   echo "==> 启动 code-server，绑定 ${CODE_SERVER_BIND}，日志: ${LOG_FILE}" >&2
   pushd "${HOME}" >/dev/null
@@ -219,25 +237,29 @@ cmd_run() {
 cmd_stop() {
   local pid
   pid="$(read_pid)"
+  local listener_pid
+  listener_pid="$(listener_pid_for_port "${CODE_SERVER_PORT}")"
   if [[ -z "$pid" ]]; then
     echo "未找到 PID，视为未运行。" >&2
     rm -f "$PID_FILE"
-    return 0
-  fi
-  if ! process_alive "$pid"; then
+  elif ! process_alive "$pid"; then
     rm -f "$PID_FILE"
-    return 0
   fi
-  if [[ "${NONINTERACTIVE:-}" != "1" ]] && [[ -t 0 ]]; then
+  if [[ -n "$pid" || -n "$listener_pid" ]] && [[ "${NONINTERACTIVE:-}" != "1" ]] && [[ -t 0 ]]; then
     gum confirm "停止 code-server（PID ${pid}）？" || exit 0
   fi
-  kill -TERM "$pid" 2>/dev/null || true
-  local w=0
-  while process_alive "$pid" && (( w < 20 )); do
-    sleep 1
-    w=$((w + 1))
-  done
-  process_alive "$pid" && kill -KILL "$pid" 2>/dev/null || true
+  if [[ -n "$pid" ]] && process_alive "$pid"; then
+    kill -TERM "$pid" 2>/dev/null || true
+    local w=0
+    while process_alive "$pid" && (( w < 20 )); do
+      sleep 1
+      w=$((w + 1))
+    done
+    process_alive "$pid" && kill -KILL "$pid" 2>/dev/null || true
+  fi
+  if [[ -n "$listener_pid" ]] && { [[ -z "$pid" ]] || [[ "$listener_pid" != "$pid" ]]; }; then
+    kill -TERM "$listener_pid" 2>/dev/null || true
+  fi
   rm -f "$PID_FILE"
   echo "已停止。"
 }
@@ -250,10 +272,18 @@ cmd_restart() {
 cmd_status() {
   local pid
   pid="$(read_pid)"
+  local listener_pid
+  listener_pid="$(listener_pid_for_port "${CODE_SERVER_PORT}")"
   echo "CODE_SERVER_SERVICE_HOME=${CODE_SERVER_SERVICE_HOME}"
   echo "CODE_SERVER_BIND=${CODE_SERVER_BIND}"
   if [[ -n "$pid" ]] && process_alive "$pid"; then
-    echo "状态: 运行中 PID ${pid}"
+    if [[ -n "$listener_pid" && "$listener_pid" != "$pid" ]]; then
+      echo "状态: 运行中 PID ${pid}（监听进程 PID ${listener_pid}）"
+    else
+      echo "状态: 运行中 PID ${pid}"
+    fi
+  elif [[ -n "$listener_pid" ]]; then
+    echo "状态: 监听中（PID 文件缺失/失效，监听进程 PID ${listener_pid}）"
   else
     echo "状态: 未运行"
     rm -f "$PID_FILE"

@@ -10,7 +10,7 @@
 #   nlt-services help
 #
 # 模块名: airflow, celery, paperclip, code-server, new-api,
-#         pip-sources, python-env, utils, github-net
+#         pip-sources, python-env, utils, github-net, cockpit-tools
 # 卸载不支持: celery、utils（脚本未提供 uninstall）
 #
 # NONINTERACTIVE=1 且无参数时打印 help 并退出（不进入 gum）。
@@ -41,7 +41,7 @@ usage() {
 
 说明:
   - status 与各域默认路径、环境变量一致，详见各服务脚本头部。
-  - pip-sources / python-env / utils / github-net 无统一守护进程，status 中仅文末提示。
+  - pip-sources / python-env / utils / github-net / cockpit-tools 无统一守护进程，status 中仅文末提示。
 EOF
 }
 
@@ -77,6 +77,33 @@ listener_pid_for_port() {
     return 0
   fi
   echo ""
+}
+
+service_state_from_pid_and_port() {
+  local pid="${1:-}"
+  local listener_pid="${2:-}"
+  if proc_alive "$pid" || [[ -n "$listener_pid" ]]; then
+    echo "运行中"
+  else
+    echo "未运行"
+  fi
+}
+
+service_pid_display() {
+  local pid="${1:-}"
+  local listener_pid="${2:-}"
+  if [[ -n "$pid" ]]; then
+    printf '%s' "$pid"
+    if [[ -n "$listener_pid" && "$listener_pid" != "$pid" ]]; then
+      printf ' / listen:%s' "$listener_pid"
+    fi
+    return
+  fi
+  if [[ -n "$listener_pid" ]]; then
+    printf 'listen:%s' "$listener_pid"
+    return
+  fi
+  printf '%s' '-'
 }
 
 status_word() {
@@ -148,6 +175,7 @@ cmd_status() {
   DEFAULT_AIRFLOW_PORT="8806"
   AIRFLOW_PORT="${AIRFLOW__WEBSERVER__WEB_SERVER_PORT:-$DEFAULT_AIRFLOW_PORT}"
   airflow_pid="$(read_pid_file "$AIRFLOW_PID_FILE")"
+  airflow_listener_pid="$(listener_pid_for_port "${AIRFLOW_PORT}")"
 
   CELERY_HOME="${CELERY_HOME:-${HOME}/opt/celery}"
   CELERY_RUN="${CELERY_HOME}/run"
@@ -167,10 +195,12 @@ cmd_status() {
   CODE_SERVER_BIND="${CODE_SERVER_BIND:-127.0.0.1:8080}"
   CODE_SERVER_PORT="${CODE_SERVER_PORT:-${CODE_SERVER_BIND##*:}}"
   pid_cs="$(read_pid_file "${CODE_SERVER_SERVICE_HOME}/run/code-server.pid")"
+  cs_listener_pid="$(listener_pid_for_port "${CODE_SERVER_PORT}")"
 
   NEW_API_SERVICE_HOME="${NEW_API_SERVICE_HOME:-${HOME}/opt/new-api}"
   NEW_API_PORT="${NEW_API_PORT:-8801}"
   pid_na="$(read_pid_file "${NEW_API_SERVICE_HOME}/run/new-api.pid")"
+  na_listener_pid="$(listener_pid_for_port "${NEW_API_PORT}")"
 
   local ts flower_url cel_wbf cel_pids cel_probe
   ts="$(date '+%Y-%m-%d %H:%M:%S %z')"
@@ -183,6 +213,7 @@ cmd_status() {
   cel_probe="$(http_probe "$flower_url")"
   cel_wbf="$(_mark_alive "$pid_cel_w")$(_mark_alive "$pid_cel_b")$(_mark_alive "$pid_cel_f")"
   cel_pids="${pid_cel_w:--}/${pid_cel_b:--}/${pid_cel_f:--}"
+  cel_flower_listener_pid="$(listener_pid_for_port "${FLOWER_PORT}")"
 
   echo "nltdeploy 服务概览  ${ts}"
   echo ""
@@ -191,32 +222,32 @@ cmd_status() {
   {
     _status_csv_line \
       "airflow" \
-      "$(status_word "$airflow_pid")" \
-      "${airflow_pid:--}" \
+      "$(service_state_from_pid_and_port "$airflow_pid" "$airflow_listener_pid")" \
+      "$(service_pid_display "$airflow_pid" "$airflow_listener_pid")" \
       "${AIRFLOW_PORT} → 127.0.0.1:${AIRFLOW_PORT}" \
       "$(http_probe "http://127.0.0.1:${AIRFLOW_PORT}/")"
     _status_csv_line \
       "celery" \
       "wbf ${cel_wbf}" \
-      "${cel_pids}" \
+      "${cel_pids}${cel_flower_listener_pid:+ / flower-listen:${cel_flower_listener_pid}}" \
       "flower ${FLOWER_PORT} (${FLOWER_ADDRESS})" \
       "${cel_probe}"
     _status_csv_line \
       "paperclip" \
-      "$(if proc_alive "$pid_pc" || [[ -n "$pc_listener_pid" ]]; then echo "运行中"; else echo "未运行"; fi)" \
-      "${pid_pc:--}${pc_listener_pid:+ / listen:${pc_listener_pid}}" \
+      "$(service_state_from_pid_and_port "$pid_pc" "$pc_listener_pid")" \
+      "$(service_pid_display "$pid_pc" "$pc_listener_pid")" \
       "${PAPERCLIP_PUBLIC_PORT} -> 127.0.0.1:${PAPERCLIP_PORT}" \
       "$(http_probe "http://127.0.0.1:${PAPERCLIP_PUBLIC_PORT}/api/health")"
     _status_csv_line \
       "code-server" \
-      "$(status_word "$pid_cs")" \
-      "${pid_cs:--}" \
+      "$(service_state_from_pid_and_port "$pid_cs" "$cs_listener_pid")" \
+      "$(service_pid_display "$pid_cs" "$cs_listener_pid")" \
       "${CODE_SERVER_BIND}" \
       "$(http_probe "http://127.0.0.1:${CODE_SERVER_PORT}/")"
     _status_csv_line \
       "new-api" \
-      "$(status_word "$pid_na")" \
-      "${pid_na:--}" \
+      "$(service_state_from_pid_and_port "$pid_na" "$na_listener_pid")" \
+      "$(service_pid_display "$pid_na" "$na_listener_pid")" \
       "${NEW_API_PORT} → 127.0.0.1:${NEW_API_PORT}" \
       "$(http_probe "http://127.0.0.1:${NEW_API_PORT}/")"
   } | _render_status_table_from_csv
@@ -227,14 +258,14 @@ cmd_status() {
   echo "  • 安装路径: airflow ${AIRFLOW_HOME} | celery ${CELERY_HOME} | paperclip ${PAPERCLIP_SERVICE_HOME} | code-server ${CODE_SERVER_SERVICE_HOME} | new-api ${NEW_API_SERVICE_HOME}"
   echo "  • 详情: nlt-airflow / nlt-celery / nlt-paperclip / nlt-code-server / nlt-new-api 各 status"
   echo ""
-  echo "工具（无统一守护进程）: nlt-dev（推荐入口）/ nlt-pip-sources / nlt-python-env / nlt-utils / nlt-github-net — 请用各命令单独查看。"
+  echo "工具（无统一守护进程）: nlt-dev（推荐入口）/ nlt-pip-sources / nlt-python-env / nlt-utils / nlt-github-net / nlt-cockpit-tools — 请用各命令单独查看。"
   echo ""
 }
 
 # 是否支持 uninstall（上游脚本有该子命令）
 _module_supports_uninstall() {
   case "$1" in
-    airflow | paperclip | code-server | new-api | pip-sources | python-env | github-net) return 0 ;;
+    airflow | paperclip | code-server | new-api | pip-sources | python-env | github-net | cockpit-tools) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -255,6 +286,7 @@ _dispatch_install_or_remove() {
       pip-sources) exec "${NLT_BIN}/nlt-pip-sources" uninstall ;;
       python-env) exec "${NLT_BIN}/nlt-python-env" uninstall ;;
       github-net) exec "${NLT_BIN}/nlt-github-net" uninstall ;;
+      cockpit-tools) exec "${NLT_BIN}/nlt-cockpit-tools" uninstall ;;
       *) die "内部错误: remove ${name}" ;;
     esac
   fi
@@ -269,6 +301,7 @@ _dispatch_install_or_remove() {
     python-env) exec "${NLT_BIN}/nlt-python-env" ;;
     utils) exec "${NLT_BIN}/nlt-utils" ;;
     github-net) exec "${NLT_BIN}/nlt-github-net" ;;
+    cockpit-tools) exec "${NLT_BIN}/nlt-cockpit-tools" install ;;
     *) die "未知模块: ${name}（见 nlt-services help）" ;;
   esac
 }
@@ -296,11 +329,11 @@ cmd_install() {
     if [[ "$action" == "add" ]]; then
       name="$(gum choose --header "选择要安装 / 初始化的模块" \
         "airflow" "celery" "paperclip" "code-server" "new-api" \
-        "pip-sources" "python-env" "utils" "github-net" "取消")" || return 0
+        "pip-sources" "python-env" "utils" "github-net" "cockpit-tools" "取消")" || return 0
     else
       name="$(gum choose --header "选择要卸载的模块（celery、utils 请手动清理）" \
         "airflow" "paperclip" "code-server" "new-api" \
-        "pip-sources" "python-env" "github-net" "取消")" || return 0
+        "pip-sources" "python-env" "github-net" "cockpit-tools" "取消")" || return 0
     fi
     [[ -z "$name" || "$name" == "取消" ]] && return 0
     _dispatch_install_or_remove "$action" "$name"
@@ -316,7 +349,7 @@ cmd_install() {
         _nlt_ensure_gum || exit 1
         name="$(gum choose --header "选择要安装 / 初始化的模块" \
           "airflow" "celery" "paperclip" "code-server" "new-api" \
-          "pip-sources" "python-env" "utils" "github-net" "取消")" || return 0
+          "pip-sources" "python-env" "utils" "github-net" "cockpit-tools" "取消")" || return 0
         [[ -z "$name" || "$name" == "取消" ]] && return 0
       fi
       _dispatch_install_or_remove "add" "$name"
@@ -329,7 +362,7 @@ cmd_install() {
         _nlt_ensure_gum || exit 1
         name="$(gum choose --header "选择要卸载的模块" \
           "airflow" "paperclip" "code-server" "new-api" \
-          "pip-sources" "python-env" "github-net" "取消")" || return 0
+          "pip-sources" "python-env" "github-net" "cockpit-tools" "取消")" || return 0
         [[ -z "$name" || "$name" == "取消" ]] && return 0
       fi
       _dispatch_install_or_remove "remove" "$name"

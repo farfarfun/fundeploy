@@ -325,6 +325,19 @@ process_alive() {
   kill -0 "$pid" 2>/dev/null
 }
 
+listener_pid_for_port() {
+  local port="$1"
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -tiTCP:"${port}" -sTCP:LISTEN -n -P 2>/dev/null | head -1
+    return 0
+  fi
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltnp "( sport = :${port} )" 2>/dev/null | awk -F 'pid=' 'NR>1 && NF>1 {split($2,a,","); print a[1]; exit}'
+    return 0
+  fi
+  echo ""
+}
+
 read_pid() {
   if [[ ! -f "$PID_FILE" ]]; then
     echo ""
@@ -336,11 +349,17 @@ read_pid() {
 cmd_start() {
   require_venv_airflow
   ensure_dirs
+  export AIRFLOW__WEBSERVER__WEB_SERVER_PORT="${AIRFLOW__WEBSERVER__WEB_SERVER_PORT:-$DEFAULT_AIRFLOW_PORT}"
   local existing
   existing="$(read_pid)"
   if [[ -n "$existing" ]] && process_alive "$existing"; then
     echo "standalone 已在运行（PID ${existing}）。如需重启请执行: $0 restart" >&2
     exit 1
+  fi
+  local listener_pid
+  listener_pid="$(listener_pid_for_port "${AIRFLOW__WEBSERVER__WEB_SERVER_PORT}")"
+  if [[ -n "$listener_pid" ]]; then
+    die "端口 ${AIRFLOW__WEBSERVER__WEB_SERVER_PORT} 已被 PID ${listener_pid} 占用，请先执行 $0 stop 或手动清理。"
   fi
   activate_venv
   local airflow_cmd="${AIRFLOW_VENV}/bin/airflow"
@@ -354,7 +373,6 @@ cmd_start() {
   export AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG="${AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG:-4}"
   export AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG="${AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG:-2}"
   export AIRFLOW__API__WORKERS="${AIRFLOW__API__WORKERS:-2}"
-  export AIRFLOW__WEBSERVER__WEB_SERVER_PORT="${AIRFLOW__WEBSERVER__WEB_SERVER_PORT:-$DEFAULT_AIRFLOW_PORT}"
   local log_file="${LOG_DIR}/standalone.out.log"
   say_info "==> 启动 airflow standalone（日志: ${log_file}）..."
   # 先激活 venv，再显式调用 venv 内 airflow；nohup 保留 $! 为主进程
@@ -393,44 +411,49 @@ cmd_run() {
 # 第二个参数为 1 时跳过确认（供 uninstall 在已二次确认后调用）
 _stop_standalone_impl() {
   local _no_confirm="${1:-0}"
+  export AIRFLOW__WEBSERVER__WEB_SERVER_PORT="${AIRFLOW__WEBSERVER__WEB_SERVER_PORT:-$DEFAULT_AIRFLOW_PORT}"
   local pid
   pid="$(read_pid)"
+  local listener_pid
+  listener_pid="$(listener_pid_for_port "${AIRFLOW__WEBSERVER__WEB_SERVER_PORT}")"
   if [[ -z "$pid" ]]; then
     echo "未找到 PID 文件（${PID_FILE}），视为未启动。" >&2
     rm -f "$PID_FILE"
-    return 0
-  fi
-  if ! process_alive "$pid"; then
+  elif ! process_alive "$pid"; then
     echo "PID ${pid} 不存在，清理 PID 文件。"
     rm -f "$PID_FILE"
-    return 0
   fi
-  if [[ "${_no_confirm}" != "1" ]]; then
+  if [[ -n "$pid" || -n "$listener_pid" ]] && [[ "${_no_confirm}" != "1" ]]; then
     if ! confirm_yes "确认停止 standalone（PID ${pid}）？"; then
       say_warn "已取消 stop。"
       return 0
     fi
   fi
-  local pgid
-  pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ' || true)"
-  say_info "==> 停止 standalone（PID ${pid}, PGID ${pgid:-n/a}）..."
-  if [[ -n "$pgid" ]] && [[ "$pgid" =~ ^[0-9]+$ ]]; then
-    kill -TERM "-${pgid}" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
-  else
-    kill -TERM "$pid" 2>/dev/null || true
-  fi
-  local waited=0
-  while process_alive "$pid" && (( waited < 30 )); do
-    sleep 1
-    waited=$((waited + 1))
-  done
-  if process_alive "$pid"; then
-    echo "优雅停止超时，发送 KILL..."
+  if [[ -n "$pid" ]] && process_alive "$pid"; then
+    local pgid
+    pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ' || true)"
+    say_info "==> 停止 standalone（PID ${pid}, PGID ${pgid:-n/a}）..."
     if [[ -n "$pgid" ]] && [[ "$pgid" =~ ^[0-9]+$ ]]; then
-      kill -KILL "-${pgid}" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+      kill -TERM "-${pgid}" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
     else
-      kill -KILL "$pid" 2>/dev/null || true
+      kill -TERM "$pid" 2>/dev/null || true
     fi
+    local waited=0
+    while process_alive "$pid" && (( waited < 30 )); do
+      sleep 1
+      waited=$((waited + 1))
+    done
+    if process_alive "$pid"; then
+      echo "优雅停止超时，发送 KILL..."
+      if [[ -n "$pgid" ]] && [[ "$pgid" =~ ^[0-9]+$ ]]; then
+        kill -KILL "-${pgid}" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+      else
+        kill -KILL "$pid" 2>/dev/null || true
+      fi
+    fi
+  fi
+  if [[ -n "$listener_pid" ]] && { [[ -z "$pid" ]] || [[ "$listener_pid" != "$pid" ]]; }; then
+    kill -TERM "$listener_pid" 2>/dev/null || true
   fi
   rm -f "$PID_FILE"
   echo "已停止。"
@@ -509,13 +532,24 @@ cmd_restart() {
 
 cmd_status() {
   require_venv_airflow
+  export AIRFLOW__WEBSERVER__WEB_SERVER_PORT="${AIRFLOW__WEBSERVER__WEB_SERVER_PORT:-$DEFAULT_AIRFLOW_PORT}"
   local pid
   pid="$(read_pid)"
+  local listener_pid
+  listener_pid="$(listener_pid_for_port "${AIRFLOW__WEBSERVER__WEB_SERVER_PORT}")"
   if [[ -z "$pid" ]]; then
-    echo "PID 文件: 无"
+    if [[ -n "$listener_pid" ]]; then
+      echo "PID 文件: 无（监听进程 PID ${listener_pid}）"
+    else
+      echo "PID 文件: 无"
+    fi
   else
     if process_alive "$pid"; then
-      echo "PID 文件: ${pid}（运行中）"
+      if [[ -n "$listener_pid" && "$listener_pid" != "$pid" ]]; then
+        echo "PID 文件: ${pid}（运行中；监听进程 PID ${listener_pid}）"
+      else
+        echo "PID 文件: ${pid}（运行中）"
+      fi
     else
       echo "PID 文件: ${pid}（进程不存在，可删除 ${PID_FILE} 后重新 start）"
     fi
