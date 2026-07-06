@@ -10,14 +10,14 @@
 #   ./setup.sh install -v v0.1.144
 #   ./setup.sh rollback -v v0.1.143
 #   ./setup.sh list-versions
-#   ./setup.sh start        # 后台启动（默认绑定 127.0.0.1:8802）
+#   ./setup.sh start        # 后台启动（默认绑定 0.0.0.0:8802）
 #   ./setup.sh run          # 前台启动（不写 PID；后台已在跑时拒绝）
 #   ./setup.sh stop | restart | status | uninstall
 #
 # 环境变量：
 #   SUB2API_SERVICE_HOME   安装根（默认 ~/opt/sub2api），内含 bin/sub2api、deploy/、data/
 #   SUB2API_DATA_DIR       数据目录（默认 ${SUB2API_SERVICE_HOME}/data）；会向程序导出 DATA_DIR
-#   SUB2API_HOST           监听地址（默认 127.0.0.1）
+#   SUB2API_HOST           监听地址（默认 0.0.0.0）
 #   SUB2API_PORT           监听端口（默认 8802）
 #   SUB2API_VERSION        指定版本，如 0.1.144 / v0.1.144；不设则取 GitHub latest
 #   SUB2API_GITHUB_REPO    owner/repo（默认 Wei-Shaw/sub2api）
@@ -52,7 +52,7 @@ fi
 SUB2API_GITHUB_REPO="${SUB2API_GITHUB_REPO:-Wei-Shaw/sub2api}"
 SUB2API_SERVICE_HOME="${SUB2API_SERVICE_HOME:-${HOME}/opt/sub2api}"
 SUB2API_DATA_DIR="${SUB2API_DATA_DIR:-${SUB2API_SERVICE_HOME}/data}"
-SUB2API_HOST="${SUB2API_HOST:-127.0.0.1}"
+SUB2API_HOST="${SUB2API_HOST:-0.0.0.0}"
 SUB2API_PORT="${SUB2API_PORT:-8802}"
 SUB2API_ENV_FILE="${SUB2API_ENV_FILE:-${SUB2API_DATA_DIR}/sub2api.env}"
 SUB2API_CONFIG_EXAMPLE_DEST="${SUB2API_CONFIG_EXAMPLE_DEST:-${SUB2API_DATA_DIR}/config.example.yaml}"
@@ -161,8 +161,9 @@ _fetch_release_json_for_tag() {
 }
 
 _fetch_releases_json() {
+  local page="${1:-1}"
   require_curl
-  _nlt_github_download_curl -fsSL "https://api.github.com/repos/${SUB2API_GITHUB_REPO}/releases?per_page=20"
+  _nlt_github_download_curl -fsSL "https://api.github.com/repos/${SUB2API_GITHUB_REPO}/releases?per_page=100&page=${page}"
 }
 
 _resolve_tag() {
@@ -264,11 +265,49 @@ _verify_checksum_if_available() {
 }
 
 list_versions() {
-  local json tags
-  json="$(_fetch_releases_json)" || die "获取 release 列表失败"
-  tags="$(printf '%s' "$json" | sed -n 's/.*"tag_name": *"\(v[0-9][0-9.]*\)".*/\1/p' | head -20)"
-  [[ -n "$tags" ]] || die "未解析到可用版本"
-  printf '%s\n' "$tags"
+  local page=1 json tags any=0
+  while :; do
+    json="$(_fetch_releases_json "$page")" || die "获取 release 列表失败"
+    tags="$(printf '%s' "$json" | sed -n 's/.*"tag_name": *"\(v[0-9][0-9.]*\)".*/\1/p')"
+    [[ -n "$tags" ]] || break
+    printf '%s\n' "$tags"
+    any=1
+    page=$((page + 1))
+  done
+  [[ "$any" == "1" ]] || die "未解析到可用版本"
+}
+
+choose_rollback_version() {
+  local versions chosen
+  versions="$(list_versions)" || return 1
+  [[ -n "$versions" ]] || return 1
+
+  if [[ -t 0 && -t 1 ]]; then
+    if _nlt_ensure_gum >/dev/null 2>&1; then
+      chosen="$(printf '%s\n' "$versions" | gum choose --header "选择要回滚的 sub2api 版本")" || return 1
+      [[ -n "$chosen" ]] || return 1
+      printf '%s\n' "$chosen"
+      return 0
+    fi
+
+    local options=()
+    while IFS= read -r line; do
+      [[ -n "$line" ]] && options+=("$line")
+    done <<<"$versions"
+    [[ "${#options[@]}" -gt 0 ]] || return 1
+    echo "请选择要回滚的 sub2api 版本：" >&2
+    select chosen in "${options[@]}"; do
+      [[ -n "${chosen:-}" ]] || {
+        echo "无效选择，请重试。" >&2
+        continue
+      }
+      printf '%s\n' "$chosen"
+      return 0
+    done
+  fi
+
+  printf '%s\n' "$versions" >&2
+  return 1
 }
 
 _maybe_seed_example_config() {
@@ -367,9 +406,13 @@ cmd_update() {
 
 cmd_rollback() {
   if [[ -z "${SUB2API_VERSION:-}" ]]; then
-    echo "可回滚版本：" >&2
-    list_versions >&2 || true
-    die "rollback 需要 -v VERSION 或 --version VERSION"
+    if [[ -t 0 && -t 1 ]]; then
+      SUB2API_VERSION="$(choose_rollback_version)" || exit 1
+    else
+      echo "可回滚版本：" >&2
+      list_versions >&2 || true
+      die "rollback 需要 -v VERSION 或 --version VERSION"
+    fi
   fi
   ensure_dirs
   echo "==> 回滚 Sub2API 到 ${SUB2API_VERSION}…" >&2
