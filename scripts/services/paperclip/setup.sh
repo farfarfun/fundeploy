@@ -17,6 +17,7 @@
 #   PAPERCLIP_PORT           Paperclip 监听端口（默认 8804；启动时 export PORT 同值）
 #   PAPERCLIP_HOST           Paperclip 监听地址（默认 0.0.0.0）
 #   PAPERCLIP_DATABASE_URL   数据库连接串（默认 postgresql://paperclip:paperclip@localhost:5432/paperclip）
+#   PAPERCLIP_AUTH_DISABLE_SIGN_UP  是否禁止注册（默认 true）
 #   PAPERCLIP_NPM_REGISTRY   npm registry（默认 https://registry.npmjs.org）
 #   PAPERCLIP_NPM_PACKAGE    npm 包规格（默认 paperclipai@latest）
 #   PAPERCLIP_NPM_CACHE      npm 缓存目录（默认 ${PAPERCLIP_SERVICE_HOME}/npm-cache）
@@ -44,6 +45,7 @@ PAPERCLIP_HOME="${PAPERCLIP_HOME:-${HOME}/.paperclip}"
 PAPERCLIP_PORT="${PAPERCLIP_PORT:-8804}"
 PAPERCLIP_HOST="${PAPERCLIP_HOST:-0.0.0.0}"
 PAPERCLIP_DATABASE_URL="${PAPERCLIP_DATABASE_URL:-postgresql://paperclip:paperclip@localhost:5432/paperclip}"
+PAPERCLIP_AUTH_DISABLE_SIGN_UP="${PAPERCLIP_AUTH_DISABLE_SIGN_UP:-true}"
 PAPERCLIP_NPM_REGISTRY="${PAPERCLIP_NPM_REGISTRY:-https://registry.npmjs.org}"
 PAPERCLIP_NPM_PACKAGE="${PAPERCLIP_NPM_PACKAGE:-paperclipai@latest}"
 PAPERCLIP_NPM_CACHE="${PAPERCLIP_NPM_CACHE:-${PAPERCLIP_SERVICE_HOME}/npm-cache}"
@@ -75,6 +77,7 @@ usage() {
   - 默认数据目录为 ${PAPERCLIP_HOME}（官方默认 ~/.paperclip）
   - 默认监听地址: http://${PAPERCLIP_HOST}:${PAPERCLIP_PORT}
   - 默认导出 DATABASE_URL=${PAPERCLIP_DATABASE_URL}
+  - 默认导出 PAPERCLIP_AUTH_DISABLE_SIGN_UP=${PAPERCLIP_AUTH_DISABLE_SIGN_UP}
   - 健康检查: /api/health
   - 若你的全局 ~/.npmrc 指向私有 registry，可设置:
       PAPERCLIP_NPM_REGISTRY=https://registry.npmjs.org
@@ -118,9 +121,32 @@ paperclip_export_runtime_env() {
   export HOST="${PAPERCLIP_HOST}"
   export PORT="${PAPERCLIP_PORT}"
   export DATABASE_URL="${PAPERCLIP_DATABASE_URL}"
+  export PAPERCLIP_AUTH_DISABLE_SIGN_UP="${PAPERCLIP_AUTH_DISABLE_SIGN_UP}"
   export PAPERCLIP_HOME
   export npm_config_registry="${PAPERCLIP_NPM_REGISTRY}"
   export npm_config_cache="${PAPERCLIP_NPM_CACHE}"
+}
+
+paperclip_prompt_sign_up_policy() {
+  if command -v gum >/dev/null 2>&1; then
+    local pick
+    pick="$(gum choose --header "选择注册策略" "不允许注册（默认）" "允许注册")" || return 1
+    case "$pick" in
+      "允许注册") PAPERCLIP_AUTH_DISABLE_SIGN_UP="false" ;;
+      *) PAPERCLIP_AUTH_DISABLE_SIGN_UP="true" ;;
+    esac
+    return 0
+  fi
+
+  echo "请选择注册策略：" >&2
+  echo "  1) 不允许注册（默认）" >&2
+  echo "  2) 允许注册" >&2
+  local sel
+  read -r -p "输入 1-2 [1]: " sel
+  case "${sel:-1}" in
+    2) PAPERCLIP_AUTH_DISABLE_SIGN_UP="false" ;;
+    *) PAPERCLIP_AUTH_DISABLE_SIGN_UP="true" ;;
+  esac
 }
 
 paperclip_npx() {
@@ -204,6 +230,7 @@ cmd_start() {
   rm -f "$PID_FILE"
   echo "==> 启动 Paperclip（npx ${PAPERCLIP_NPM_PACKAGE} run），日志: ${LOG_FILE}" >&2
   echo "    监听: http://${PAPERCLIP_HOST}:${PAPERCLIP_PORT}" >&2
+  echo "    允许注册: $( [[ "${PAPERCLIP_AUTH_DISABLE_SIGN_UP}" == "true" ]] && printf '%s' '否' || printf '%s' '是' )" >&2
   paperclip_export_runtime_env
   nohup npx --yes --registry "${PAPERCLIP_NPM_REGISTRY}" --package "${PAPERCLIP_NPM_PACKAGE}" paperclipai run >>"${LOG_FILE}" 2>&1 &
   local cpid=$!
@@ -245,6 +272,7 @@ cmd_run() {
   fi
   echo "==> 前台启动 Paperclip（npx ${PAPERCLIP_NPM_PACKAGE} run），按 Ctrl+C 结束；不写 PID。" >&2
   echo "    监听: http://${PAPERCLIP_HOST}:${PAPERCLIP_PORT}" >&2
+  echo "    允许注册: $( [[ "${PAPERCLIP_AUTH_DISABLE_SIGN_UP}" == "true" ]] && printf '%s' '否' || printf '%s' '是' )" >&2
   exec env \
     HOST="${PAPERCLIP_HOST}" \
     PORT="${PAPERCLIP_PORT}" \
@@ -303,6 +331,7 @@ cmd_status() {
   echo "PAPERCLIP_PORT=${PAPERCLIP_PORT}"
   echo "PAPERCLIP_HOST=${PAPERCLIP_HOST}"
   echo "PAPERCLIP_DATABASE_URL=${PAPERCLIP_DATABASE_URL}"
+  echo "PAPERCLIP_AUTH_DISABLE_SIGN_UP=${PAPERCLIP_AUTH_DISABLE_SIGN_UP}"
   echo "PAPERCLIP_NPM_PACKAGE=${PAPERCLIP_NPM_PACKAGE}"
   echo "PAPERCLIP_NPM_REGISTRY=${PAPERCLIP_NPM_REGISTRY}"
   echo "LOG_FILE=${LOG_FILE}"
@@ -384,6 +413,9 @@ interactive_main() {
     case "$pick" in
       quit) break ;;
       help) usage; continue ;;
+      start | run | restart)
+        paperclip_prompt_sign_up_policy || continue
+        ;;
     esac
     ( dispatch "$pick" )
     echo ""
