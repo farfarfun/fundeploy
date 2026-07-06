@@ -16,6 +16,20 @@ _nlt_gum_utils_setup_url() {
   printf '%s\n' "$(_nltdeploy_raw_base)/scripts/tools/utils/setup.sh"
 }
 
+# 返回监听指定 TCP 端口的首个 PID；未找到时输出空串。
+_nlt_listener_pid_for_port() {
+  local port="$1"
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -tiTCP:"${port}" -sTCP:LISTEN -n -P 2>/dev/null | head -1
+    return 0
+  fi
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltnp "( sport = :${port} )" 2>/dev/null | awk -F 'pid=' 'NR>1 && NF>1 {split($2,a,","); print a[1]; exit}'
+    return 0
+  fi
+  echo ""
+}
+
 # 已安装 gum 则立即返回；否则拉取 scripts/tools/utils/setup.sh 安装（不单独做「仅检测并报错」）。
 _nlt_ensure_gum() {
   export PATH="${HOME}/opt/gum/bin:${PATH}"

@@ -21,7 +21,15 @@ usage() {
 无参数:
   交互式终端下会先询问「安装」「更新」或「卸载」（有 gum 则用 gum）。
   非交互（管道、无 TTY）或无参数且 NONINTERACTIVE=1 时必须写明子命令，例如:
-    curl -LsSf …/install.sh | bash -s -- install
+    curl -LsSf https://raw.githubusercontent.com/farfarfun/nltdeploy/HEAD/install.sh | bash -s -- install
+
+远端安装:
+  GitHub:
+    curl -LsSf https://raw.githubusercontent.com/farfarfun/nltdeploy/HEAD/install.sh | bash -s -- install
+  Gitee:
+    curl -LsSf https://gitee.com/farfarfun/nltdeploy/raw/master/install.sh | bash -s -- install
+  更新:
+    curl -LsSf https://raw.githubusercontent.com/farfarfun/nltdeploy/HEAD/install.sh | bash -s -- update
 
 环境变量:
   NLTDEPLOY_ROOT              安装根目录（默认 ~/.local/nltdeploy）

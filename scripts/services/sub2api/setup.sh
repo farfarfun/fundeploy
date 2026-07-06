@@ -102,16 +102,7 @@ die() { echo "错误: $*" >&2; exit 1; }
 process_alive() { kill -0 "$1" 2>/dev/null; }
 
 listener_pid_for_port() {
-  local port="$1"
-  if command -v lsof >/dev/null 2>&1; then
-    lsof -tiTCP:"${port}" -sTCP:LISTEN -n -P 2>/dev/null | head -1
-    return 0
-  fi
-  if command -v ss >/dev/null 2>&1; then
-    ss -ltnp "( sport = :${port} )" 2>/dev/null | awk -F 'pid=' 'NR>1 && NF>1 {split($2,a,","); print a[1]; exit}'
-    return 0
-  fi
-  echo ""
+  _nlt_listener_pid_for_port "$1"
 }
 
 read_pid() {

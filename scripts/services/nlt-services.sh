@@ -67,16 +67,7 @@ proc_alive() {
 }
 
 listener_pid_for_port() {
-  local port="$1"
-  if command -v lsof >/dev/null 2>&1; then
-    lsof -tiTCP:"${port}" -sTCP:LISTEN -n -P 2>/dev/null | head -1
-    return 0
-  fi
-  if command -v ss >/dev/null 2>&1; then
-    ss -ltnp "( sport = :${port} )" 2>/dev/null | awk -F 'pid=' 'NR>1 && NF>1 {split($2,a,","); print a[1]; exit}'
-    return 0
-  fi
-  echo ""
+  _nlt_listener_pid_for_port "$1"
 }
 
 service_state_from_pid_and_port() {
@@ -186,8 +177,8 @@ cmd_status() {
   pid_cel_f="$(read_pid_file "${CELERY_RUN}/flower.pid")"
 
   PAPERCLIP_SERVICE_HOME="${PAPERCLIP_SERVICE_HOME:-${HOME}/opt/paperclip}"
-  PAPERCLIP_PORT="${PAPERCLIP_PORT:-18804}"
-  PAPERCLIP_PUBLIC_PORT="${PAPERCLIP_PUBLIC_PORT:-8804}"
+  PAPERCLIP_PORT="${PAPERCLIP_PORT:-8804}"
+  PAPERCLIP_HOST="${PAPERCLIP_HOST:-0.0.0.0}"
   pid_pc="$(read_pid_file "${PAPERCLIP_SERVICE_HOME}/run/paperclip.pid")"
   pc_listener_pid="$(listener_pid_for_port "${PAPERCLIP_PORT}")"
 
@@ -242,8 +233,8 @@ cmd_status() {
       "paperclip" \
       "$(service_state_from_pid_and_port "$pid_pc" "$pc_listener_pid")" \
       "$(service_pid_display "$pid_pc" "$pc_listener_pid")" \
-      "${PAPERCLIP_PUBLIC_PORT} -> 127.0.0.1:${PAPERCLIP_PORT}" \
-      "$(http_probe "http://127.0.0.1:${PAPERCLIP_PUBLIC_PORT}/api/health")"
+      "${PAPERCLIP_HOST}:${PAPERCLIP_PORT}" \
+      "$(http_probe "http://127.0.0.1:${PAPERCLIP_PORT}/api/health")"
     _status_csv_line \
       "code-server" \
       "$(service_state_from_pid_and_port "$pid_cs" "$cs_listener_pid")" \
