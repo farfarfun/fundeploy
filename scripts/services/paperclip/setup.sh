@@ -16,6 +16,7 @@
 #   PAPERCLIP_HOME           上游数据目录（默认 ~/.paperclip，遵循官方默认）
 #   PAPERCLIP_PORT           Paperclip 监听端口（默认 8804；启动时 export PORT 同值）
 #   PAPERCLIP_HOST           Paperclip 监听地址（默认 0.0.0.0）
+#   PAPERCLIP_DATABASE_URL   数据库连接串（默认 postgresql://paperclip:paperclip@localhost:5432/paperclip）
 #   PAPERCLIP_NPM_REGISTRY   npm registry（默认 https://registry.npmjs.org）
 #   PAPERCLIP_NPM_PACKAGE    npm 包规格（默认 paperclipai@latest）
 #   PAPERCLIP_NPM_CACHE      npm 缓存目录（默认 ${PAPERCLIP_SERVICE_HOME}/npm-cache）
@@ -42,6 +43,7 @@ PAPERCLIP_SERVICE_HOME="${PAPERCLIP_SERVICE_HOME:-${HOME}/opt/paperclip}"
 PAPERCLIP_HOME="${PAPERCLIP_HOME:-${HOME}/.paperclip}"
 PAPERCLIP_PORT="${PAPERCLIP_PORT:-8804}"
 PAPERCLIP_HOST="${PAPERCLIP_HOST:-0.0.0.0}"
+PAPERCLIP_DATABASE_URL="${PAPERCLIP_DATABASE_URL:-postgresql://paperclip:paperclip@localhost:5432/paperclip}"
 PAPERCLIP_NPM_REGISTRY="${PAPERCLIP_NPM_REGISTRY:-https://registry.npmjs.org}"
 PAPERCLIP_NPM_PACKAGE="${PAPERCLIP_NPM_PACKAGE:-paperclipai@latest}"
 PAPERCLIP_NPM_CACHE="${PAPERCLIP_NPM_CACHE:-${PAPERCLIP_SERVICE_HOME}/npm-cache}"
@@ -72,6 +74,7 @@ usage() {
   - 脚本遵循官方 Quickstart：npx paperclipai onboard --yes / run
   - 默认数据目录为 ${PAPERCLIP_HOME}（官方默认 ~/.paperclip）
   - 默认监听地址: http://${PAPERCLIP_HOST}:${PAPERCLIP_PORT}
+  - 默认导出 DATABASE_URL=${PAPERCLIP_DATABASE_URL}
   - 健康检查: /api/health
   - 若你的全局 ~/.npmrc 指向私有 registry，可设置:
       PAPERCLIP_NPM_REGISTRY=https://registry.npmjs.org
@@ -114,6 +117,7 @@ require_node() {
 paperclip_export_runtime_env() {
   export HOST="${PAPERCLIP_HOST}"
   export PORT="${PAPERCLIP_PORT}"
+  export DATABASE_URL="${PAPERCLIP_DATABASE_URL}"
   export PAPERCLIP_HOME
   export npm_config_registry="${PAPERCLIP_NPM_REGISTRY}"
   export npm_config_cache="${PAPERCLIP_NPM_CACHE}"
@@ -298,6 +302,7 @@ cmd_status() {
   echo "PAPERCLIP_HOME=${PAPERCLIP_HOME}"
   echo "PAPERCLIP_PORT=${PAPERCLIP_PORT}"
   echo "PAPERCLIP_HOST=${PAPERCLIP_HOST}"
+  echo "PAPERCLIP_DATABASE_URL=${PAPERCLIP_DATABASE_URL}"
   echo "PAPERCLIP_NPM_PACKAGE=${PAPERCLIP_NPM_PACKAGE}"
   echo "PAPERCLIP_NPM_REGISTRY=${PAPERCLIP_NPM_REGISTRY}"
   echo "LOG_FILE=${LOG_FILE}"
