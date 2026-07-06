@@ -8,6 +8,7 @@
 #   ./setup.sh install      # 下载二进制与 deploy 资料到 ${SUB2API_SERVICE_HOME}
 #   ./setup.sh update       # 重新下载（同 install）
 #   ./setup.sh install -v v0.1.144
+#   ./setup.sh rollback -v v0.1.143
 #   ./setup.sh list-versions
 #   ./setup.sh start        # 后台启动（默认绑定 127.0.0.1:8802）
 #   ./setup.sh run          # 前台启动（不写 PID；后台已在跑时拒绝）
@@ -76,6 +77,7 @@ usage() {
   start              后台启动（日志 ${LOG_FILE}；默认 ${SUB2API_HOST}:${SUB2API_PORT}）
   run                前台启动（同环境；不写 PID；后台已在跑时拒绝）
   stop / restart / status
+  rollback          回滚到指定版本（必须配合 -v/--version）
   list-versions      列出最近的 release tag
   uninstall          停止并删除 ${SUB2API_SERVICE_HOME}
 
@@ -363,6 +365,13 @@ cmd_update() {
   _download_install
 }
 
+cmd_rollback() {
+  [[ -n "${SUB2API_VERSION:-}" ]] || die "rollback 需要 -v VERSION 或 --version VERSION"
+  ensure_dirs
+  echo "==> 回滚 Sub2API 到 ${SUB2API_VERSION}…" >&2
+  _download_install
+}
+
 cmd_start() {
   [[ -x "${SUB2API_BIN}" ]] || die "未安装，请先: $0 install"
   ensure_dirs
@@ -489,13 +498,14 @@ interactive_main() {
   set +e
   while true; do
     local pick
-    pick="$(gum choose --header "sub2api" "install" "update" "start" "run" "stop" "restart" "status" "list-versions" "uninstall" "help" "quit")" || break
+    pick="$(gum choose --header "sub2api" "install" "update" "rollback" "start" "run" "stop" "restart" "status" "list-versions" "uninstall" "help" "quit")" || break
     [[ -z "$pick" ]] && break
     case "$pick" in
       quit) break ;;
       help) usage; echo "" ;;
       install) cmd_install ;;
       update) cmd_update ;;
+      rollback) cmd_rollback ;;
       start) cmd_start ;;
       run) cmd_run ;;
       stop) cmd_stop ;;
@@ -541,6 +551,7 @@ main() {
   case "$cmd" in
     install) cmd_install ;;
     update) cmd_update ;;
+    rollback) cmd_rollback ;;
     start) cmd_start ;;
     run) cmd_run ;;
     stop) cmd_stop ;;
