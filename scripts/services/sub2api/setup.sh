@@ -77,7 +77,7 @@ usage() {
   start              后台启动（日志 ${LOG_FILE}；默认 ${SUB2API_HOST}:${SUB2API_PORT}）
   run                前台启动（同环境；不写 PID；后台已在跑时拒绝）
   stop / restart / status
-  rollback          回滚到指定版本（必须配合 -v/--version）
+  rollback          回滚到指定版本；未指定时列出可用版本
   list-versions      列出最近的 release tag
   uninstall          停止并删除 ${SUB2API_SERVICE_HOME}
 
@@ -366,7 +366,11 @@ cmd_update() {
 }
 
 cmd_rollback() {
-  [[ -n "${SUB2API_VERSION:-}" ]] || die "rollback 需要 -v VERSION 或 --version VERSION"
+  if [[ -z "${SUB2API_VERSION:-}" ]]; then
+    echo "可回滚版本：" >&2
+    list_versions >&2 || true
+    die "rollback 需要 -v VERSION 或 --version VERSION"
+  fi
   ensure_dirs
   echo "==> 回滚 Sub2API 到 ${SUB2API_VERSION}…" >&2
   _download_install
