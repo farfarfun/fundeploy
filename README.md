@@ -93,7 +93,6 @@ nlt-port-kill list 8080
 ```bash
 nlt-sub2api install
 nlt-sub2api install -v v0.1.144
-nlt-sub2api rollback -v v0.1.143
 nlt-sub2api list-versions
 nlt-sub2api start
 nlt-sub2api status

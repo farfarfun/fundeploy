@@ -8,7 +8,6 @@
 #   ./setup.sh install      # 下载二进制与 deploy 资料到 ${SUB2API_SERVICE_HOME}
 #   ./setup.sh update       # 重新下载（同 install）
 #   ./setup.sh install -v v0.1.144
-#   ./setup.sh rollback -v v0.1.143
 #   ./setup.sh list-versions
 #   ./setup.sh start        # 后台启动（默认绑定 0.0.0.0:8802）
 #   ./setup.sh run          # 前台启动（不写 PID；后台已在跑时拒绝）
@@ -19,6 +18,8 @@
 #   SUB2API_DATA_DIR       数据目录（默认 ${SUB2API_SERVICE_HOME}/data）；会向程序导出 DATA_DIR
 #   SUB2API_HOST           监听地址（默认 0.0.0.0）
 #   SUB2API_PORT           监听端口（默认 8802）
+#   SUB2API_RUN_MODE       运行模式（默认 simple）
+#   SUB2API_SIMPLE_MODE_CONFIRM  简易模式生产确认（默认 true）
 #   SUB2API_VERSION        指定版本，如 0.1.144 / v0.1.144；不设则取 GitHub latest
 #   SUB2API_GITHUB_REPO    owner/repo（默认 Wei-Shaw/sub2api）
 #   SUB2API_ENV_FILE       可选环境变量文件（默认 ${SUB2API_DATA_DIR}/sub2api.env）
@@ -54,6 +55,8 @@ SUB2API_SERVICE_HOME="${SUB2API_SERVICE_HOME:-${HOME}/opt/sub2api}"
 SUB2API_DATA_DIR="${SUB2API_DATA_DIR:-${SUB2API_SERVICE_HOME}/data}"
 SUB2API_HOST="${SUB2API_HOST:-0.0.0.0}"
 SUB2API_PORT="${SUB2API_PORT:-8802}"
+SUB2API_RUN_MODE="${SUB2API_RUN_MODE:-simple}"
+SUB2API_SIMPLE_MODE_CONFIRM="${SUB2API_SIMPLE_MODE_CONFIRM:-true}"
 SUB2API_ENV_FILE="${SUB2API_ENV_FILE:-${SUB2API_DATA_DIR}/sub2api.env}"
 SUB2API_CONFIG_EXAMPLE_DEST="${SUB2API_CONFIG_EXAMPLE_DEST:-${SUB2API_DATA_DIR}/config.example.yaml}"
 
@@ -73,16 +76,16 @@ usage() {
 
 命令:
   install / update   从 GitHub Releases 下载二进制到 ${SUB2API_SERVICE_HOME}
-                     可配合 -v/--version 指定版本；默认 latest
+                     可配合 -v/--version 指定版本；交互模式默认列版本并预选 latest
   start              后台启动（日志 ${LOG_FILE}；默认 ${SUB2API_HOST}:${SUB2API_PORT}）
   run                前台启动（同环境；不写 PID；后台已在跑时拒绝）
   stop / restart / status
-  rollback          回滚到指定版本；未指定时列出可用版本
   list-versions      列出最近的 release tag
   uninstall          停止并删除 ${SUB2API_SERVICE_HOME}
 
 说明:
   - 程序启动前会导出 DATA_DIR=${SUB2API_DATA_DIR}
+  - 默认导出 RUN_MODE=${SUB2API_RUN_MODE}、SIMPLE_MODE_CONFIRM=${SUB2API_SIMPLE_MODE_CONFIRM}
   - 若 ${SUB2API_ENV_FILE} 存在，将自动 source，可放 DATABASE_* / REDIS_* / JWT_SECRET 等
   - install 会额外保留上游 deploy/ 文档，并在缺失时写入示例配置 ${SUB2API_CONFIG_EXAMPLE_DEST}
   - install / update 默认会尝试校验 release 附带的 checksums.txt
@@ -277,37 +280,50 @@ list_versions() {
   [[ "$any" == "1" ]] || die "未解析到可用版本"
 }
 
-choose_rollback_version() {
-  local versions chosen
+choose_install_version() {
+  local versions latest chosen
   versions="$(list_versions)" || return 1
-  [[ -n "$versions" ]] || return 1
+  latest="$(printf '%s\n' "$versions" | head -1)"
+  [[ -n "$latest" ]] || return 1
 
   if [[ -t 0 && -t 1 ]]; then
     if _nlt_ensure_gum >/dev/null 2>&1; then
-      chosen="$(printf '%s\n' "$versions" | gum choose --header "选择要回滚的 sub2api 版本")" || return 1
-      [[ -n "$chosen" ]] || return 1
+      chosen="$(printf '%s\n' "$versions" | gum choose --header "选择要安装的 sub2api 版本（直接回车默认 ${latest}）")" || return 1
+      [[ -n "$chosen" ]] || chosen="$latest"
       printf '%s\n' "$chosen"
       return 0
     fi
 
     local options=()
+    local line
     while IFS= read -r line; do
       [[ -n "$line" ]] && options+=("$line")
     done <<<"$versions"
     [[ "${#options[@]}" -gt 0 ]] || return 1
-    echo "请选择要回滚的 sub2api 版本：" >&2
-    select chosen in "${options[@]}"; do
-      [[ -n "${chosen:-}" ]] || {
-        echo "无效选择，请重试。" >&2
-        continue
-      }
-      printf '%s\n' "$chosen"
-      return 0
+    echo "可安装版本：" >&2
+    local i=1
+    for line in "${options[@]}"; do
+      printf '  %d) %s\n' "$i" "$line" >&2
+      i=$((i + 1))
     done
+    read -r -p "选择版本 [1]: " chosen
+    [[ -z "$chosen" ]] && {
+      printf '%s\n' "$latest"
+      return 0
+    }
+    [[ "$chosen" =~ ^[0-9]+$ ]] || {
+      echo "错误: 请输入数字序号。" >&2
+      return 1
+    }
+    (( chosen >= 1 && chosen <= ${#options[@]} )) || {
+      echo "错误: 序号超出范围。" >&2
+      return 1
+    }
+    printf '%s\n' "${options[$((chosen - 1))]}"
+    return 0
   fi
 
-  printf '%s\n' "$versions" >&2
-  return 1
+  printf '%s\n' "$latest"
 }
 
 _maybe_seed_example_config() {
@@ -325,6 +341,8 @@ _maybe_seed_example_config() {
 # REDIS_HOST=127.0.0.1
 # REDIS_PORT=6379
 # REDIS_PASSWORD=
+# RUN_MODE=simple
+# SIMPLE_MODE_CONFIRM=true
 # JWT_SECRET=replace-with-random-secret
 # TOTP_ENCRYPTION_KEY=replace-with-random-secret
 # ADMIN_EMAIL=admin@sub2api.local
@@ -376,6 +394,8 @@ sub2api_export_runtime_env() {
   export DATA_DIR="${SUB2API_DATA_DIR}"
   export SERVER_HOST="${SUB2API_HOST}"
   export SERVER_PORT="${SUB2API_PORT}"
+  export RUN_MODE="${SUB2API_RUN_MODE}"
+  export SIMPLE_MODE_CONFIRM="${SUB2API_SIMPLE_MODE_CONFIRM}"
   export GIN_MODE="${GIN_MODE:-release}"
 }
 
@@ -396,26 +416,20 @@ sub2api_http_code() {
   curl -sS -o /dev/null -w '%{http_code}' -m 3 "http://${SUB2API_HOST}:${SUB2API_PORT}/health" 2>/dev/null || echo "000"
 }
 
-cmd_install() { ensure_dirs; _download_install; }
-
-cmd_update() {
+cmd_install() {
+  if [[ -z "${SUB2API_VERSION:-}" ]] && [[ -t 0 && -t 1 ]]; then
+    SUB2API_VERSION="$(choose_install_version)" || exit 1
+  fi
   ensure_dirs
-  echo "==> 更新 Sub2API（重新下载）…" >&2
   _download_install
 }
 
-cmd_rollback() {
-  if [[ -z "${SUB2API_VERSION:-}" ]]; then
-    if [[ -t 0 && -t 1 ]]; then
-      SUB2API_VERSION="$(choose_rollback_version)" || exit 1
-    else
-      echo "可回滚版本：" >&2
-      list_versions >&2 || true
-      die "rollback 需要 -v VERSION 或 --version VERSION"
-    fi
+cmd_update() {
+  if [[ -z "${SUB2API_VERSION:-}" ]] && [[ -t 0 && -t 1 ]]; then
+    SUB2API_VERSION="$(choose_install_version)" || exit 1
   fi
   ensure_dirs
-  echo "==> 回滚 Sub2API 到 ${SUB2API_VERSION}…" >&2
+  echo "==> 更新 Sub2API（重新下载）…" >&2
   _download_install
 }
 
@@ -545,14 +559,13 @@ interactive_main() {
   set +e
   while true; do
     local pick
-    pick="$(gum choose --header "sub2api" "install" "update" "rollback" "start" "run" "stop" "restart" "status" "list-versions" "uninstall" "help" "quit")" || break
+    pick="$(gum choose --header "sub2api" "install" "update" "start" "run" "stop" "restart" "status" "list-versions" "uninstall" "help" "quit")" || break
     [[ -z "$pick" ]] && break
     case "$pick" in
       quit) break ;;
       help) usage; echo "" ;;
       install) cmd_install ;;
       update) cmd_update ;;
-      rollback) cmd_rollback ;;
       start) cmd_start ;;
       run) cmd_run ;;
       stop) cmd_stop ;;
@@ -598,7 +611,6 @@ main() {
   case "$cmd" in
     install) cmd_install ;;
     update) cmd_update ;;
-    rollback) cmd_rollback ;;
     start) cmd_start ;;
     run) cmd_run ;;
     stop) cmd_stop ;;
