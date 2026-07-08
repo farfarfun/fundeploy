@@ -312,6 +312,7 @@ do_install_or_update() {
     "${LIBEXEC}/download" "${LIBEXEC}/cockpit-tools" \
     "${LIBEXEC}/airflow" "${LIBEXEC}/celery" "${LIBEXEC}/utils" "${LIBEXEC}/github-net" \
     "${LIBEXEC}/paperclip" "${LIBEXEC}/code-server" "${LIBEXEC}/new-api" "${LIBEXEC}/sub2api" \
+    "${LIBEXEC}/open-pencil" \
     "${LIBEXEC}/services" \
     "${LIBEXEC}/lib"
 
@@ -400,6 +401,10 @@ do_install_or_update() {
     "${SCRIPTS}/services/sub2api/setup.sh" \
     "${SCRIPTS}/sub2api/setup.sh"
 
+  _nlt_cp_first "${LIBEXEC}/open-pencil/setup.sh" \
+    "${SCRIPTS}/services/open-pencil/setup.sh" \
+    "${SCRIPTS}/open-pencil/setup.sh"
+
   _nlt_cp_first "${LIBEXEC}/services/nlt-services.sh" \
     "${SCRIPTS}/services/nlt-services.sh" \
     "${SCRIPTS}/services/services.sh" \
@@ -421,6 +426,7 @@ do_install_or_update() {
   _emit_wrapper nlt-code-server code-server/setup.sh
   _emit_wrapper nlt-new-api new-api/setup.sh
   _emit_wrapper nlt-sub2api sub2api/setup.sh
+  _emit_wrapper nlt-open-pencil open-pencil/setup.sh
   rm -rf "${LIBEXEC}/build"
   rm -f "${NLTDEPLOY_ROOT}/bin/nlt-build"
   rm -f \

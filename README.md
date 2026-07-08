@@ -5,6 +5,7 @@
 覆盖这些场景：
 - 开发环境：`pip` 镜像、`uv`、Python 虚拟环境、Go、Rust、Node.js、pnpm
 - 常驻服务：Airflow、Celery、Paperclip、code-server、new-api、sub2api
+- 桌面/AI 工具：OpenPencil（CLI + MCP + Tauri 桌面包）
 - 常用工具：gum、GitHub 下载加速、GitHub 网络诊断、按端口杀进程
 
 脚本尽量自包含，可在仓库内直接执行，也可 `curl | bash`。推荐先安装到本地 `~/.local/nltdeploy`，之后统一用 `nlt-*` 命令。
@@ -52,6 +53,7 @@ export PATH="$HOME/.local/nltdeploy/bin:$PATH"
 - `nlt-code-server`
 - `nlt-new-api`
 - `nlt-sub2api`
+- `nlt-open-pencil`（OpenPencil CLI + MCP，可选桌面 Tauri 安装包）
 - `nlt-services`
 
 ### 工具
