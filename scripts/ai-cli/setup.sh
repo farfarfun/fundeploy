@@ -30,6 +30,7 @@ _TOOLS=(claude codex cursor)
 usage() {
   cat <<'EOF'
 用法: nlt-ai-cli <工具|all> <install|update|uninstall|status|version> [args...]
+      nlt-ai-cli                    # 交互选择工具和动作
       nlt-ai-cli list
       nlt-ai-cli help
 
@@ -210,7 +211,50 @@ dispatch_one() {
   esac
 }
 
+_ai_menu_interactive() {
+  [[ -z "${NONINTERACTIVE:-}" ]] && [[ -t 0 ]] && [[ -t 2 ]]
+}
+
+_ai_pick_menu() {
+  local header="$1"
+  shift
+  local options=("$@")
+  if _nlt_has_gum && _ai_menu_interactive; then
+    local sel
+    sel="$(printf '%s\n' "${options[@]}" | gum filter --header "${header}" --height 8 --limit 1 --select-if-one)" || return 1
+    [[ -n "${sel}" ]] || return 1
+    printf '%s\n' "${sel}"
+    return 0
+  fi
+
+  local i=1 ans
+  printf '%s\n' "${header}" >&2
+  for ans in "${options[@]}"; do
+    printf '  %d) %s\n' "${i}" "${ans}" >&2
+    i=$((i + 1))
+  done
+  read -r -p "请选择编号: " ans
+  [[ "${ans}" =~ ^[0-9]+$ ]] || return 1
+  (( ans >= 1 && ans <= ${#options[@]} )) || return 1
+  printf '%s\n' "${options[ans - 1]}"
+}
+
+interactive_main() {
+  _nlt_interactive || { usage >&2; die "无参数模式需要交互式 TTY；非交互请显式传入工具和动作"; }
+
+  local tool action
+  tool="$(_ai_pick_menu "选择 AI CLI 工具" "${_TOOLS[@]}" all)" || die "未选择工具"
+  action="$(_ai_pick_menu "选择 ${tool} 动作" install upgrade uninstall status)" || die "未选择动作"
+
+  dispatch_one "${tool}" "${action}"
+}
+
 main() {
+  if [[ "$#" -eq 0 ]]; then
+    interactive_main
+    return 0
+  fi
+
   local tool="${1:-help}"
   case "${tool}" in
     help | -h | --help) usage; return 0 ;;

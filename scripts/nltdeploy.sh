@@ -5,6 +5,8 @@
 #   nltdeploy upgrade [--source github|gitee|local]   升级本安装（同步 libexec 与 bin）
 #   nltdeploy uninstall                               卸载 nltdeploy（删除 NLTDEPLOY_ROOT 并清理 PATH）
 #   nltdeploy tools <工具> <install|upgrade|uninstall> 透传给 nlt-tools
+#   nltdeploy dev|services|ai-cli|... [args]          透传给对应 nlt-* 入口
+#   nltdeploy list                                    列出顶层可用入口
 #   nltdeploy help
 #   nltdeploy                                         交互 TTY：gum 菜单；否则打印 help
 #
@@ -37,6 +39,14 @@ usage() {
   upgrade [--source github|gitee|local]   升级 nltdeploy（同步 libexec 与 bin）
   uninstall                               卸载 nltdeploy（删除安装目录并清理 PATH 片段）
   tools <工具> <install|upgrade|uninstall> 透传给 nlt-tools（工具类统一入口）
+  dev [args...]                           透传给 nlt-dev（开发环境统一入口）
+  services [args...]                      透传给 nlt-services（服务总览与安装入口）
+  ai-cli [args...]                        透传给 nlt-ai-cli（AI CLI 统一入口）
+  pip-sources | python-env | utils | github-net | port-kill | download | cockpit-tools
+                                           透传给对应 nlt-* 工具入口
+  airflow | celery | paperclip | code-server | new-api | sub2api | open-pencil
+                                           透传给对应 nlt-* 服务入口
+  list                                    列出所有可路由入口
   help / -h / --help                      本说明
 
 upgrade 源:
@@ -48,7 +58,72 @@ upgrade 源:
   nltdeploy upgrade --source gitee
   nltdeploy uninstall
   nltdeploy tools gum install
+  nltdeploy dev uv --help
+  nltdeploy services status --no-http
+  nltdeploy ai-cli list
 EOF
+}
+
+_entry_rel() {
+  case "$1" in
+    tools)          echo "tools/nlt-tools.sh" ;;
+    dev)            echo "dev/setup.sh" ;;
+    ai-cli)         echo "ai-cli/setup.sh" ;;
+    pip-sources)    echo "pip-sources/setup.sh" ;;
+    python-env)     echo "python-env/setup.sh" ;;
+    utils)          echo "utils/setup.sh" ;;
+    github-net)     echo "github-net/setup.sh" ;;
+    port-kill)      echo "port-kill/setup.sh" ;;
+    download)       echo "download/setup.sh" ;;
+    cockpit-tools)  echo "cockpit-tools/setup.sh" ;;
+    services)       echo "services/nlt-services.sh" ;;
+    airflow)        echo "airflow/setup.sh" ;;
+    celery)         echo "celery/setup.sh" ;;
+    paperclip)      echo "paperclip/setup.sh" ;;
+    code-server)    echo "code-server/setup.sh" ;;
+    new-api)        echo "new-api/setup.sh" ;;
+    sub2api)        echo "sub2api/setup.sh" ;;
+    open-pencil)    echo "open-pencil/setup.sh" ;;
+    *)              return 1 ;;
+  esac
+}
+
+_entry_bin() {
+  case "$1" in
+    tools) echo "nlt-tools" ;;
+    *)     echo "nlt-$1" ;;
+  esac
+}
+
+_entry_names() {
+  cat <<'EOF'
+tools
+dev
+ai-cli
+pip-sources
+python-env
+utils
+github-net
+port-kill
+download
+cockpit-tools
+services
+airflow
+celery
+paperclip
+code-server
+new-api
+sub2api
+open-pencil
+EOF
+}
+
+cmd_list() {
+  echo "可用入口（nltdeploy <入口> [args...]）:"
+  _entry_names | while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    printf '  %-14s -> %s\n' "$name" "$(_entry_bin "$name")"
+  done
 }
 
 # 解析可用的本地 install.sh（仓库内运行 / 已安装的 src 克隆 / libexec bundle）。
@@ -124,17 +199,22 @@ cmd_uninstall() {
   exec bash "${sh}" uninstall "$@"
 }
 
-cmd_tools() {
-  local bin="${NLTDEPLOY_ROOT}/bin/nlt-tools"
+cmd_entry() {
+  local name="$1"; shift
+  local rel bin c
+  rel="$(_entry_rel "${name}")" || die "未知入口: ${name}（nltdeploy list 查看）"
+  bin="${NLTDEPLOY_ROOT}/bin/$(_entry_bin "${name}")"
   if [[ -x "${bin}" ]]; then
     exec "${bin}" "$@"
   fi
-  # 仓库内直接运行时回退到源脚本。
-  local c
-  for c in "${SCRIPT_DIR}/tools/nlt-tools.sh" "${SCRIPT_DIR}/nlt-tools.sh"; do
+  # 仓库内直接运行时回退到源脚本；已安装 libexec 缺 wrapper 时也可回退。
+  for c in \
+    "${SCRIPT_DIR}/${rel}" \
+    "${SCRIPT_DIR}/../${rel}" \
+    "${NLTDEPLOY_ROOT}/libexec/nltdeploy/${rel}"; do
     [[ -f "$c" ]] && exec bash "$c" "$@"
   done
-  die "未找到 nlt-tools（请先安装：install.sh install）"
+  die "未找到 $(_entry_bin "${name}")（请先安装：install.sh install）"
 }
 
 interactive_main() {
@@ -143,11 +223,14 @@ interactive_main() {
   fi
   command -v gum >/dev/null 2>&1 || { usage; return 0; }
   local pick
-  pick="$(printf '%s\n' "upgrade" "uninstall" "tools" "help" "退出" | gum choose --header "nltdeploy")" || return 0
+  pick="$(printf '%s\n' "upgrade" "uninstall" "list" $(_entry_names) "help" "退出" | gum choose --header "nltdeploy")" || return 0
   case "${pick}" in
     upgrade)   cmd_upgrade ;;
     uninstall) cmd_uninstall ;;
-    tools)     cmd_tools ;;
+    list)      cmd_list ;;
+    tools|dev|ai-cli|pip-sources|python-env|utils|github-net|port-kill|download|cockpit-tools|services|airflow|celery|paperclip|code-server|new-api|sub2api|open-pencil)
+      cmd_entry "${pick}"
+      ;;
     help)      usage ;;
     *)         return 0 ;;
   esac
@@ -166,7 +249,10 @@ main() {
   case "$1" in
     upgrade|update) shift; cmd_upgrade "$@" ;;
     uninstall|remove) shift; cmd_uninstall "$@" ;;
-    tools) shift; cmd_tools "$@" ;;
+    list|--list) cmd_list ;;
+    tools|dev|ai-cli|pip-sources|python-env|utils|github-net|port-kill|download|cockpit-tools|services|airflow|celery|paperclip|code-server|new-api|sub2api|open-pencil)
+      cmd="$1"; shift; cmd_entry "${cmd}" "$@"
+      ;;
     help|-h|--help) usage ;;
     *) echo "未知命令: $1" >&2; usage >&2; exit 2 ;;
   esac

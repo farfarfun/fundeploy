@@ -18,7 +18,12 @@
   nltdeploy upgrade --source github     # 指定源：github / gitee / local
   nltdeploy uninstall                   # 卸载 nltdeploy
   nltdeploy tools gum install           # 透传给 nlt-tools
+  nltdeploy dev uv --help               # 透传给 nlt-dev
+  nltdeploy services status --no-http   # 透传给 nlt-services
+  nltdeploy ai-cli list                 # 透传给 nlt-ai-cli
+  nltdeploy list                        # 列出所有可路由入口
   ```
+  可路由入口覆盖安装器生成的主要 `nlt-*` 命令：`tools dev ai-cli pip-sources python-env utils github-net port-kill download cockpit-tools services airflow celery paperclip code-server new-api sub2api open-pencil`。
 - `nlt-tools`：工具类统一入口，每个工具支持 `install`（幂等，检测→未装则装）/ `upgrade` / `uninstall`。
   ```bash
   nlt-tools list
@@ -88,6 +93,7 @@ export PATH="$HOME/.local/nltdeploy/bin:$PATH"
 
 - `nlt-ai-cli`：统一安装 / 更新 / 卸载 Claude Code、Codex、Cursor 等 CLI 端 AI 工具；只走官方 package / installer，不支持源码安装。
   - 安装后入口在 `$HOME/.local/nltdeploy/bin/nlt-ai-cli`（或自定义 `NLTDEPLOY_ROOT/bin/nlt-ai-cli`）。
+  - 直接运行 `nlt-ai-cli` 会进入交互菜单：第一层选择工具，第二层选择 `install` / `upgrade` / `uninstall` / `status`。
   - 如果 shell 暂时找不到命令，先执行 `export PATH="$HOME/.local/nltdeploy/bin:$PATH"`，再运行 `nlt-ai-cli list`。
 
 ## 目录结构

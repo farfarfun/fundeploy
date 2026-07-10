@@ -9,8 +9,8 @@ export NLTDEPLOY_SKIP_GIT_PULL=1
 bash "${ROOT}/install.sh" install
 bash "${ROOT}/install.sh" update
 for f in \
-  nlt-dev nlt-ai-cli nlt-pip-sources nlt-python-env nlt-utils nlt-github-net nlt-port-kill nlt-download nlt-services \
-  nlt-airflow nlt-celery nlt-paperclip nlt-code-server nlt-new-api nlt-open-pencil
+  nltdeploy nlt-tools nlt-dev nlt-ai-cli nlt-pip-sources nlt-python-env nlt-utils nlt-github-net nlt-port-kill nlt-download nlt-services \
+  nlt-airflow nlt-celery nlt-paperclip nlt-code-server nlt-new-api nlt-sub2api nlt-open-pencil
 do
   [[ -x "${NLTDEPLOY_ROOT}/bin/${f}" ]] || { echo "missing: bin/${f}" >&2; exit 1; }
   bash -n "${NLTDEPLOY_ROOT}/bin/${f}" || exit 1
@@ -36,6 +36,12 @@ bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/dev/rust/setup.sh" || exit 1
 bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/dev/nodejs/setup.sh" || exit 1
 bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/dev/pnpm/setup.sh" || exit 1
 bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/dev/uv/setup.sh" || exit 1
+out="$(NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" list)"
+grep -q "services" <<<"${out}" || exit 1
+out="$(NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" tools list)"
+grep -q "python-env" <<<"${out}" || exit 1
+NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" dev --help >/dev/null || exit 1
+NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" services status --no-http >/dev/null || exit 1
 NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nlt-dev" --help >/dev/null || exit 1
 NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nlt-dev" uv --help >/dev/null || exit 1
 NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nlt-ai-cli" --help >/dev/null || exit 1
