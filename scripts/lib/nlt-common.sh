@@ -7,6 +7,12 @@ _NLT_COMMON_LOADED=1
 _NLT_COMMON_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=nlt-github-download.sh
 source "${_NLT_COMMON_LIB_DIR}/nlt-github-download.sh"
+# 统一交互主题（纯装饰层，幂等；缺失则跳过，不影响任何业务逻辑）。
+# 凡是 source 本文件的域/服务脚本据此即可用 nlt_ui_* 与统一 gum 主题。
+if [[ -f "${_NLT_COMMON_LIB_DIR}/nlt-ui.sh" ]]; then
+  # shellcheck source=nlt-ui.sh
+  source "${_NLT_COMMON_LIB_DIR}/nlt-ui.sh"
+fi
 
 _nltdeploy_raw_base() {
   printf '%s\n' "${NLTDEPLOY_RAW_BASE:-${nltdeploy_RAW_BASE:-https://raw.githubusercontent.com/farfarfun/nltdeploy/HEAD}}"

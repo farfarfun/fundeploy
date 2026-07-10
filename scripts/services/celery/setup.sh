@@ -627,9 +627,14 @@ dispatch() {
 }
 
 interactive_main() {
-  gum style --bold --foreground 212 "Celery 本地助手"
-  gum style "CELERY_HOME=${CELERY_HOME}"
-  gum style "CELERY_BROKER_URL=${CELERY_BROKER_URL}"
+  declare -F nlt_ui_apply_theme >/dev/null 2>&1 && nlt_ui_apply_theme
+  if declare -F nlt_ui_banner >/dev/null 2>&1; then
+    nlt_ui_banner "Celery 本地助手" "CELERY_HOME=${CELERY_HOME}" "CELERY_BROKER_URL=${CELERY_BROKER_URL}"
+  else
+    gum style --bold --foreground 212 "Celery 本地助手"
+    gum style "CELERY_HOME=${CELERY_HOME}"
+    gum style "CELERY_BROKER_URL=${CELERY_BROKER_URL}"
+  fi
   echo ""
   set +e
   while true; do

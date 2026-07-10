@@ -374,9 +374,14 @@ dispatch() {
 }
 
 interactive_main() {
-  gum style --bold --foreground 212 "OpenPencil 本地部署（open-pencil/open-pencil）"
-  gum style "安装目录: ${OPEN_PENCIL_SERVICE_HOME}"
-  gum style "CLI: ${OPEN_PENCIL_CLI_PACKAGE}  MCP: ${OPEN_PENCIL_MCP_PACKAGE}  版本: ${OPEN_PENCIL_VERSION}"
+  declare -F nlt_ui_apply_theme >/dev/null 2>&1 && nlt_ui_apply_theme
+  if declare -F nlt_ui_banner >/dev/null 2>&1; then
+    nlt_ui_banner "OpenPencil 本地部署（open-pencil/open-pencil）" "安装目录: ${OPEN_PENCIL_SERVICE_HOME}" "CLI: ${OPEN_PENCIL_CLI_PACKAGE}  MCP: ${OPEN_PENCIL_MCP_PACKAGE}  版本: ${OPEN_PENCIL_VERSION}"
+  else
+    gum style --bold --foreground 212 "OpenPencil 本地部署（open-pencil/open-pencil）"
+    gum style "安装目录: ${OPEN_PENCIL_SERVICE_HOME}"
+    gum style "CLI: ${OPEN_PENCIL_CLI_PACKAGE}  MCP: ${OPEN_PENCIL_MCP_PACKAGE}  版本: ${OPEN_PENCIL_VERSION}"
+  fi
   echo ""
   set +e
   while true; do

@@ -435,9 +435,14 @@ dispatch() {
 }
 
 interactive_main() {
-  gum style --bold --foreground 212 "new-api 本地服务（QuantumNous/new-api）"
-  gum style "安装目录: ${NEW_API_SERVICE_HOME}"
-  gum style "数据目录: ${NEW_API_DATA_DIR}  端口: ${NEW_API_PORT}"
+  declare -F nlt_ui_apply_theme >/dev/null 2>&1 && nlt_ui_apply_theme
+  if declare -F nlt_ui_banner >/dev/null 2>&1; then
+    nlt_ui_banner "new-api 本地服务（QuantumNous/new-api）" "安装目录: ${NEW_API_SERVICE_HOME}" "数据目录: ${NEW_API_DATA_DIR}  端口: ${NEW_API_PORT}"
+  else
+    gum style --bold --foreground 212 "new-api 本地服务（QuantumNous/new-api）"
+    gum style "安装目录: ${NEW_API_SERVICE_HOME}"
+    gum style "数据目录: ${NEW_API_DATA_DIR}  端口: ${NEW_API_PORT}"
+  fi
   echo ""
   set +e
   while true; do

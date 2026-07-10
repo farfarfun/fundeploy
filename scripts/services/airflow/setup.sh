@@ -765,8 +765,13 @@ dispatch() {
 }
 
 interactive_main() {
-  gum style --bold --foreground 212 "Airflow 本地助手"
-  gum style "AIRFLOW_HOME=${AIRFLOW_HOME}"
+  declare -F nlt_ui_apply_theme >/dev/null 2>&1 && nlt_ui_apply_theme
+  if declare -F nlt_ui_banner >/dev/null 2>&1; then
+    nlt_ui_banner "Airflow 本地助手" "AIRFLOW_HOME=${AIRFLOW_HOME}"
+  else
+    gum style --bold --foreground 212 "Airflow 本地助手"
+    gum style "AIRFLOW_HOME=${AIRFLOW_HOME}"
+  fi
   set +e
   while true; do
     local pick

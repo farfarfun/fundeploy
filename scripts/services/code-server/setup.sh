@@ -329,9 +329,14 @@ dispatch() {
 }
 
 interactive_main() {
-  gum style --bold --foreground 212 "code-server 本地服务（coder/code-server）"
-  gum style "安装目录: ${CODE_SERVER_SERVICE_HOME}"
-  gum style "绑定: ${CODE_SERVER_BIND}"
+  declare -F nlt_ui_apply_theme >/dev/null 2>&1 && nlt_ui_apply_theme
+  if declare -F nlt_ui_banner >/dev/null 2>&1; then
+    nlt_ui_banner "code-server 本地服务（coder/code-server）" "安装目录: ${CODE_SERVER_SERVICE_HOME}" "绑定: ${CODE_SERVER_BIND}"
+  else
+    gum style --bold --foreground 212 "code-server 本地服务（coder/code-server）"
+    gum style "安装目录: ${CODE_SERVER_SERVICE_HOME}"
+    gum style "绑定: ${CODE_SERVER_BIND}"
+  fi
   echo ""
   set +e
   while true; do

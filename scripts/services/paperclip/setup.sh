@@ -400,9 +400,14 @@ dispatch() {
 }
 
 interactive_main() {
-  gum style --bold --foreground 212 "Paperclip 本地服务（官方 npx 方式）"
-  gum style "PAPERCLIP_HOME=${PAPERCLIP_HOME}"
-  gum style "PAPERCLIP_NPM_PACKAGE=${PAPERCLIP_NPM_PACKAGE}"
+  declare -F nlt_ui_apply_theme >/dev/null 2>&1 && nlt_ui_apply_theme
+  if declare -F nlt_ui_banner >/dev/null 2>&1; then
+    nlt_ui_banner "Paperclip 本地服务（官方 npx 方式）" "PAPERCLIP_HOME=${PAPERCLIP_HOME}" "PAPERCLIP_NPM_PACKAGE=${PAPERCLIP_NPM_PACKAGE}"
+  else
+    gum style --bold --foreground 212 "Paperclip 本地服务（官方 npx 方式）"
+    gum style "PAPERCLIP_HOME=${PAPERCLIP_HOME}"
+    gum style "PAPERCLIP_NPM_PACKAGE=${PAPERCLIP_NPM_PACKAGE}"
+  fi
   echo ""
   set +e
   while true; do

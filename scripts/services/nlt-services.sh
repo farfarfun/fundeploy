@@ -382,6 +382,10 @@ cmd_install() {
 
 interactive_main() {
   _nlt_ensure_gum || exit 1
+  declare -F nlt_ui_apply_theme >/dev/null 2>&1 && nlt_ui_apply_theme
+  if declare -F nlt_ui_banner >/dev/null 2>&1; then
+    nlt_ui_banner "nlt-services" "本机服务安装 / 状态 / 卸载" "↑/↓ 选择 · Enter 确认 · Esc/q 退出" >&2
+  fi
   set +e
   while true; do
     local pick

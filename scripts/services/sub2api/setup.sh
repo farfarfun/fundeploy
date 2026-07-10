@@ -547,6 +547,10 @@ cmd_uninstall() {
 
 interactive_main() {
   _nlt_ensure_gum || exit 1
+  declare -F nlt_ui_apply_theme >/dev/null 2>&1 && nlt_ui_apply_theme
+  if declare -F nlt_ui_banner >/dev/null 2>&1; then
+    nlt_ui_banner "sub2api 本地服务" "安装目录: ${SUB2API_SERVICE_HOME}" "↑/↓ 选择 · Enter 确认 · Esc/q 退出" >&2
+  fi
   set +e
   while true; do
     local pick

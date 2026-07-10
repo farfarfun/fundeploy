@@ -65,6 +65,21 @@ _pick_menu() {
   else
     return 1
   fi
+  if declare -F nlt_ui_banner >/dev/null 2>&1; then
+    nlt_ui_banner "nlt-dev" "本机开发环境工具（语言 / 包管理器）" "↑/↓ 选择 · Enter 确认 · Esc/q 退出" >&2
+  fi
+  if declare -F nlt_ui_choose >/dev/null 2>&1; then
+    nlt_ui_choose "选择要配置的开发工具" \
+      "pip（pip 源 / 镜像）" \
+      "uv（Astral 安装器）" \
+      "python（uv / 虚拟环境）" \
+      "go" \
+      "rust（rustup）" \
+      "nodejs" \
+      "pnpm" \
+      "取消"
+    return $?
+  fi
   gum choose --header "nlt-dev — 选择工具" \
     "pip（pip 源 / 镜像）" \
     "uv（Astral 安装器）" \
