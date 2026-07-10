@@ -308,6 +308,7 @@ do_install_or_update() {
   mkdir -p "${NLTDEPLOY_ROOT}/bin" "${LIBEXEC}" \
     "${NLTDEPLOY_ROOT}/share/nltdeploy" "${NLTDEPLOY_ROOT}/etc/nltdeploy"
   mkdir -p "${LIBEXEC}/pip-sources" "${LIBEXEC}/python-env" "${LIBEXEC}/port-kill" \
+    "${LIBEXEC}/ai-cli" \
     "${LIBEXEC}/dev/go" "${LIBEXEC}/dev/rust" "${LIBEXEC}/dev/nodejs" "${LIBEXEC}/dev/pnpm" "${LIBEXEC}/dev/uv" \
     "${LIBEXEC}/download" "${LIBEXEC}/cockpit-tools" \
     "${LIBEXEC}/airflow" "${LIBEXEC}/celery" "${LIBEXEC}/utils" "${LIBEXEC}/github-net" \
@@ -323,6 +324,9 @@ do_install_or_update() {
 
   _nlt_cp_first "${LIBEXEC}/lib/nlt-progress.sh" \
     "${SCRIPTS}/lib/nlt-progress.sh"
+
+  _nlt_cp_first "${LIBEXEC}/lib/nlt-install.sh" \
+    "${SCRIPTS}/lib/nlt-install.sh"
 
   _nlt_cp_first "${LIBEXEC}/lib/nlt-github-download.sh" \
     "${SCRIPTS}/lib/nlt-github-download.sh"
@@ -344,6 +348,9 @@ do_install_or_update() {
 
   _nlt_cp_first "${LIBEXEC}/dev/uv/setup.sh" \
     "${SCRIPTS}/dev/uv/setup.sh"
+
+  _nlt_cp_first "${LIBEXEC}/ai-cli/setup.sh" \
+    "${SCRIPTS}/ai-cli/setup.sh"
 
   _nlt_cp_first "${LIBEXEC}/pip-sources/setup.sh" \
     "${SCRIPTS}/tools/pip-sources/setup.sh" \
@@ -423,6 +430,7 @@ do_install_or_update() {
     "${SCRIPTS}/../install.sh"
 
   _emit_wrapper nlt-dev dev/setup.sh
+  _emit_wrapper nlt-ai-cli ai-cli/setup.sh
   _emit_wrapper nlt-pip-sources pip-sources/setup.sh
   _emit_wrapper nlt-python-env python-env/setup.sh
   _emit_wrapper nlt-utils utils/setup.sh

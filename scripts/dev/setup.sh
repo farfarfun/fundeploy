@@ -23,12 +23,12 @@ usage() {
 
   推荐主入口（替代在文档中单独强调 nlt-pip-sources / nlt-python-env）:
     pip | pip-sources     pip 镜像与源配置（委派到 pip-sources）
-    uv                    Astral 官方脚本安装 / 升级 uv（与 python-env 内嵌安装并存；对外请走本入口）
+    uv                    uv 多方式安装 / 升级 / 卸载（默认包管理器，source 到 ~/opt）
     python | python-env   uv 与 Python 虚拟环境（委派到 python-env；会按需自动装 uv）
-    go                    Go 官方包安装（scripts/dev/go/setup.sh）
-    rust                  rustup 安装 / 升级（scripts/dev/rust/setup.sh）
-    nodejs                Node.js 官方包（scripts/dev/nodejs/setup.sh）
-    pnpm                  启用 pnpm（scripts/dev/pnpm/setup.sh）
+    go                    Go 多方式安装 / 升级 / 卸载（默认包管理器，source 到 ~/opt）
+    rust                  Rust 多方式安装 / 升级 / 卸载（默认包管理器，source 到 ~/opt）
+    nodejs                Node.js 多方式安装 / 升级 / 卸载（默认包管理器，source 到 ~/opt）
+    pnpm                  pnpm 多方式安装 / 升级 / 卸载（默认包管理器，source 到 ~/opt）
 
 无子命令时：若已安装 gum 则弹出选择菜单；否则打印本说明。
 
