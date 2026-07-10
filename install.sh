@@ -262,7 +262,7 @@ _emit_wrapper() {
   {
     printf '%s\n' '#!/usr/bin/env bash'
     printf '%s\n' 'set -euo pipefail'
-    printf '%s\n' 'NLTDEPLOY_ROOT="${NLTDEPLOY_ROOT:-${HOME}/.local/nltdeploy}"'
+    printf 'NLTDEPLOY_ROOT=${NLTDEPLOY_ROOT:-%q}\n' "${NLTDEPLOY_ROOT}"
     if [[ $# -gt 0 ]]; then
       printf 'exec "${NLTDEPLOY_ROOT}/libexec/nltdeploy/%s"' "$rel"
       local a
@@ -464,6 +464,8 @@ do_install_or_update() {
   if [[ "${NLTDEPLOY_SKIP_PROFILE_HINT:-}" != "1" ]]; then
     echo ""
     echo "已安装到: ${NLTDEPLOY_ROOT}"
+    echo "AI CLI 入口: ${NLTDEPLOY_ROOT}/bin/nlt-ai-cli"
+    echo "PATH 生效后可运行: nlt-ai-cli list"
     _nlt_install_path_to_profiles
     echo ""
     echo "若不想自动写入 shell 配置，可设置 NLTDEPLOY_SKIP_PROFILE_HINT=1"

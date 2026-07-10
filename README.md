@@ -87,6 +87,8 @@ export PATH="$HOME/.local/nltdeploy/bin:$PATH"
 ### AI CLI
 
 - `nlt-ai-cli`：统一安装 / 更新 / 卸载 Claude Code、Codex、Cursor 等 CLI 端 AI 工具；只走官方 package / installer，不支持源码安装。
+  - 安装后入口在 `$HOME/.local/nltdeploy/bin/nlt-ai-cli`（或自定义 `NLTDEPLOY_ROOT/bin/nlt-ai-cli`）。
+  - 如果 shell 暂时找不到命令，先执行 `export PATH="$HOME/.local/nltdeploy/bin:$PATH"`，再运行 `nlt-ai-cli list`。
 
 ## 目录结构
 
