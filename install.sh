@@ -314,6 +314,7 @@ do_install_or_update() {
     "${LIBEXEC}/paperclip" "${LIBEXEC}/code-server" "${LIBEXEC}/new-api" "${LIBEXEC}/sub2api" \
     "${LIBEXEC}/open-pencil" \
     "${LIBEXEC}/services" \
+    "${LIBEXEC}/tools" \
     "${LIBEXEC}/lib"
 
   _nlt_cp_first "${LIBEXEC}/lib/nlt-common.sh" \
@@ -410,6 +411,17 @@ do_install_or_update() {
     "${SCRIPTS}/services/services.sh" \
     "${SCRIPTS}/10-services/services.sh"
 
+  # 顶层与工具统一入口（WAR-402）。
+  _nlt_cp_first "${LIBEXEC}/tools/nlt-tools.sh" \
+    "${SCRIPTS}/tools/nlt-tools.sh"
+
+  _nlt_cp_first "${LIBEXEC}/nltdeploy.sh" \
+    "${SCRIPTS}/nltdeploy.sh"
+
+  # 供 nltdeploy uninstall / --source local 离线复用（无需公网 raw）。
+  _nlt_cp_first "${LIBEXEC}/nltdeploy-install.sh" \
+    "${SCRIPTS}/../install.sh"
+
   _emit_wrapper nlt-dev dev/setup.sh
   _emit_wrapper nlt-pip-sources pip-sources/setup.sh
   _emit_wrapper nlt-python-env python-env/setup.sh
@@ -419,6 +431,9 @@ do_install_or_update() {
   _emit_wrapper nlt-download download/setup.sh
   _emit_wrapper nlt-cockpit-tools cockpit-tools/setup.sh
   _emit_wrapper nlt-services services/nlt-services.sh
+
+  _emit_wrapper nlt-tools tools/nlt-tools.sh
+  _emit_wrapper nltdeploy nltdeploy.sh
 
   _emit_wrapper nlt-airflow airflow/setup.sh
   _emit_wrapper nlt-celery celery/setup.sh

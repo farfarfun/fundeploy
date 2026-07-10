@@ -10,6 +10,26 @@
 
 脚本尽量自包含，可在仓库内直接执行，也可 `curl | bash`。推荐先安装到本地 `~/.local/nltdeploy`，之后统一用 `nlt-*` 命令。
 
+## 统一入口
+
+- `nltdeploy`：整个项目的顶层入口。
+  ```bash
+  nltdeploy upgrade                     # 升级本安装（自动选源：本地→github→gitee）
+  nltdeploy upgrade --source github     # 指定源：github / gitee / local
+  nltdeploy uninstall                   # 卸载 nltdeploy
+  nltdeploy tools gum install           # 透传给 nlt-tools
+  ```
+- `nlt-tools`：工具类统一入口，每个工具支持 `install`（幂等，检测→未装则装）/ `upgrade` / `uninstall`。
+  ```bash
+  nlt-tools list
+  nlt-tools gum install
+  nlt-tools gum upgrade
+  nlt-tools python-env install
+  nlt-tools go uninstall
+  ```
+  服务脚本内部依赖某工具时，不自行检测，直接 `nlt-tools <工具> install`。
+  工具名：`gum download pip-sources python-env github-net port-kill cockpit-tools go rust nodejs pnpm uv`。
+
 ## 安装
 
 ```bash

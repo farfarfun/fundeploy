@@ -63,6 +63,15 @@
 - **服务域**：长期运行域只用 **`nlt-<域>`** 透传子命令（如 `nlt-airflow start`），**不**再提供并行的 `nlt-service-<域>` 包装。
 - **新增服务/工具**：总控 **`nlt-<域>`** 透传子命令（如 `install`、`update`），**不**再为同一域生成并行的 `nlt-<域>-install` / `nlt-<域>-update` 等独立 `bin` 文件。
 
+### 3.3 统一入口 `nlt-tools` 与顶层 `nltdeploy`（WAR-402）
+
+- **`nlt-tools`**：工具类统一入口，形态 `nlt-tools <工具> <install|upgrade|uninstall> [args]`。
+  - 规范动词固定为 **`install` / `upgrade` / `uninstall`**：`install` 为幂等「检测→未装则装」（由各工具 `install` 子命令负责）；`upgrade` 由 `nlt-tools` 归一化映射到各工具历史动词（`tools/*` → `update`，`dev/*` → `upgrade`，`gum` → `gum --force`）。
+  - `gum` 为一等工具名（内部映射到 `utils/setup.sh gum`）；其余透传子命令原样下发。
+  - **服务对工具的依赖**：不再自行检测，直接调用 `nlt-tools <工具> install`（见 §4.1 一致精神）。
+  - 自适应仓库内（`scripts/tools/`）与安装后（`libexec/nltdeploy/`）两种布局；支持 Linux 与 macOS。
+- **`nltdeploy`**：整个项目的顶层入口，`nltdeploy upgrade [--source github|gitee|local]` / `nltdeploy uninstall` / `nltdeploy tools …`。`upgrade` 源：`github`（公网 raw）、`gitee`（镜像）、`local`（本地克隆 `install.sh update`，无需公网）；缺省自动 `local→github→gitee`。委派 `install.sh`，安装时会 bundle 一份 `install.sh` 到 libexec 以支持离线卸载。
+
 ---
 
 ## 4. gum 使用规范
@@ -120,3 +129,4 @@
 | 2026-04-11 | 首版：工具/服务必选子命令、gum 策略、参数直执行与 bin 命名关系。 |
 | 2026-04-11 | 补充：`scripts/lib/nlt-common.sh`；Airflow/Celery/GitHub/pip/Python-env 按规范首轮改造说明。 |
 | 2026-04-17 | 服务域增加必选子命令 **`run`（前台）**：与 `start` 同语义、不写 PID、后台已运行时拒绝（见 [WAR-64](/WAR/issues/WAR-64)）。 |
+| 2026-07-10 | 新增统一入口 **`nlt-tools`**（`<工具> install/upgrade/uninstall`，`gum` 为一等工具）与顶层 **`nltdeploy`**（`upgrade --source github/gitee/local`、`uninstall`）；服务依赖工具改走 `nlt-tools <工具> install`（见 [WAR-402](/WAR/issues/WAR-402)，后续收尾拆子 issue）。 |
