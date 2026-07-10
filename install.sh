@@ -325,6 +325,9 @@ do_install_or_update() {
   _nlt_cp_first "${LIBEXEC}/lib/nlt-progress.sh" \
     "${SCRIPTS}/lib/nlt-progress.sh"
 
+  _nlt_cp_first "${LIBEXEC}/lib/nlt-ui.sh" \
+    "${SCRIPTS}/lib/nlt-ui.sh"
+
   _nlt_cp_first "${LIBEXEC}/lib/nlt-install.sh" \
     "${SCRIPTS}/lib/nlt-install.sh"
 

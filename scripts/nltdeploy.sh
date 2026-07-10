@@ -29,6 +29,17 @@ NLTDEPLOY_SRC_DIR="${NLTDEPLOY_SRC_DIR:-${NLTDEPLOY_ROOT}/src/nltdeploy}"
 NLTDEPLOY_GITHUB_RAW="${NLTDEPLOY_GITHUB_RAW:-https://raw.githubusercontent.com/farfarfun/nltdeploy/HEAD/install.sh}"
 NLTDEPLOY_GITEE_RAW="${NLTDEPLOY_GITEE_RAW:-https://gitee.com/farfarfun/nltdeploy/raw/master/install.sh}"
 
+# 可选加载统一交互主题（banner / 主题化菜单）；缺失不致命，菜单会降级为朴素 gum/文本。
+for _cand in \
+  "${SCRIPT_DIR}/lib/nlt-ui.sh" \
+  "${SCRIPT_DIR}/../lib/nlt-ui.sh"; do
+  if [[ -f "${_cand}" ]]; then
+    # shellcheck source=/dev/null
+    source "${_cand}"
+    break
+  fi
+done
+
 die() { echo "错误: $*" >&2; exit 1; }
 
 usage() {
@@ -92,6 +103,31 @@ _entry_bin() {
   case "$1" in
     tools) echo "nlt-tools" ;;
     *)     echo "nlt-$1" ;;
+  esac
+}
+
+# 每个入口的一行中文描述（用于交互菜单，让「不好看/看不懂」的裸菜单变得可读）。
+_entry_desc() {
+  case "$1" in
+    tools)         echo "工具类统一入口（gum/uv/go/node…安装升级卸载）" ;;
+    dev)           echo "开发环境（pip 源 / uv / python / go / rust / node / pnpm）" ;;
+    ai-cli)        echo "AI CLI（Claude Code / Codex / Cursor 等）" ;;
+    pip-sources)   echo "pip 镜像源切换" ;;
+    python-env)    echo "Python 虚拟环境管理" ;;
+    utils)         echo "gum 等基础小工具" ;;
+    github-net)    echo "GitHub 网络诊断" ;;
+    port-kill)     echo "按端口杀进程" ;;
+    download)      echo "GitHub 下载加速" ;;
+    cockpit-tools) echo "Cockpit 运维面板工具" ;;
+    services)      echo "服务总览与安装入口" ;;
+    airflow)       echo "Airflow 本地服务" ;;
+    celery)        echo "Celery 本地服务" ;;
+    paperclip)     echo "Paperclip 本地服务" ;;
+    code-server)   echo "code-server（浏览器 VS Code）" ;;
+    new-api)       echo "new-api 本地服务" ;;
+    sub2api)       echo "sub2api 本地服务" ;;
+    open-pencil)   echo "OpenPencil（CLI + MCP + 桌面）" ;;
+    *)             echo "" ;;
   esac
 }
 
@@ -221,15 +257,43 @@ interactive_main() {
   if ! command -v gum >/dev/null 2>&1 && [[ -x "${HOME}/opt/gum/bin/gum" ]]; then
     export PATH="${HOME}/opt/gum/bin:${PATH}"
   fi
+
+  # 顶部品牌 banner（有 nlt-ui 则带边框/配色；否则朴素两行）。
+  if declare -F nlt_ui_banner >/dev/null 2>&1; then
+    nlt_ui_banner "nltdeploy" "本机开发与服务部署脚本集合" "↑/↓ 选择 · Enter 确认 · Esc/q 退出"
+  fi
+
   command -v gum >/dev/null 2>&1 || { usage; return 0; }
-  local pick
-  pick="$(printf '%s\n' "upgrade" "uninstall" "list" $(_entry_names) "help" "退出" | gum choose --header "nltdeploy")" || return 0
-  case "${pick}" in
+
+  # 组装带描述的菜单项：key 为首个 token，label 为 "key — 描述"。
+  local -a labels=()
+  labels+=("upgrade    — 升级本安装（自动选源：本地→github→gitee）")
+  labels+=("uninstall  — 卸载 nltdeploy")
+  labels+=("list       — 列出所有可路由入口")
+  local name desc
+  while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    desc="$(_entry_desc "$name")"
+    labels+=("$(printf '%-11s— %s' "$name" "$desc")")
+  done < <(_entry_names)
+  labels+=("help       — 显示帮助")
+  labels+=("退出")
+
+  local pick key
+  if declare -F nlt_ui_choose >/dev/null 2>&1; then
+    pick="$(nlt_ui_choose "选择要执行的操作" "${labels[@]}")" || return 0
+  else
+    pick="$(printf '%s\n' "${labels[@]}" | gum choose --header "nltdeploy")" || return 0
+  fi
+  [[ -n "${pick}" ]] || return 0
+  key="${pick%% *}"
+
+  case "${key}" in
     upgrade)   cmd_upgrade ;;
     uninstall) cmd_uninstall ;;
     list)      cmd_list ;;
     tools|dev|ai-cli|pip-sources|python-env|utils|github-net|port-kill|download|cockpit-tools|services|airflow|celery|paperclip|code-server|new-api|sub2api|open-pencil)
-      cmd_entry "${pick}"
+      cmd_entry "${key}"
       ;;
     help)      usage ;;
     *)         return 0 ;;

@@ -39,6 +39,18 @@ for _cand in \
   fi
 done
 
+# 可选加载统一交互主题（banner / 主题化菜单）；缺失不致命。
+for _cand in \
+  "${SCRIPT_DIR}/../lib/nlt-ui.sh" \
+  "${SCRIPT_DIR}/../../lib/nlt-ui.sh" \
+  "${SCRIPT_DIR}/lib/nlt-ui.sh"; do
+  if [[ -f "${_cand}" ]]; then
+    # shellcheck source=/dev/null
+    source "${_cand}"
+    break
+  fi
+done
+
 die() { echo "错误: $*" >&2; exit 1; }
 
 # 工具注册表：name -> 相对 setup.sh 路径尾部（相对 tools/ 或 libexec 根）。
@@ -194,6 +206,25 @@ dispatch() {
   esac
 }
 
+# 工具一行描述（交互菜单用）。
+_nlt_tool_desc() {
+  case "$1" in
+    gum)           echo "终端交互 UI（菜单/输入/确认）" ;;
+    download)      echo "GitHub 下载加速" ;;
+    pip-sources)   echo "pip 镜像源切换" ;;
+    python-env)    echo "Python 虚拟环境管理" ;;
+    github-net)    echo "GitHub 网络诊断" ;;
+    port-kill)     echo "按端口杀进程" ;;
+    cockpit-tools) echo "Cockpit 运维面板工具" ;;
+    go)            echo "Go 工具链" ;;
+    rust)          echo "Rust（rustup）" ;;
+    nodejs)        echo "Node.js" ;;
+    pnpm)          echo "pnpm 包管理器" ;;
+    uv)            echo "uv（Astral Python 安装器）" ;;
+    *)             echo "" ;;
+  esac
+}
+
 # 无参交互菜单（gum 驱动）。
 interactive_main() {
   if declare -F _nlt_ensure_gum >/dev/null 2>&1; then
@@ -202,10 +233,40 @@ interactive_main() {
     usage
     return 0
   fi
-  local tool action
-  tool="$(printf '%s\n' "${_NLT_TOOLS_NAMES[@]}" "退出" | gum choose --header "nlt-tools：选择工具")" || return 0
-  [[ -z "${tool}" || "${tool}" == "退出" ]] && return 0
-  action="$(printf '%s\n' "install" "upgrade" "uninstall" "取消" | gum choose --header "对 ${tool} 执行")" || return 0
+
+  if declare -F nlt_ui_banner >/dev/null 2>&1; then
+    nlt_ui_banner "nlt-tools" "工具安装 / 升级 / 卸载（幂等）" "↑/↓ 选择 · Enter 确认 · Esc 退出"
+  fi
+
+  # 组装带描述的工具项：key 为首个 token，label 为 "key — 描述"。
+  local -a labels=()
+  local n desc
+  for n in "${_NLT_TOOLS_NAMES[@]}"; do
+    desc="$(_nlt_tool_desc "$n")"
+    labels+=("$(printf '%-14s— %s' "$n" "$desc")")
+  done
+  labels+=("退出")
+
+  local pick tool action
+  if declare -F nlt_ui_choose >/dev/null 2>&1; then
+    pick="$(nlt_ui_choose "nlt-tools：选择工具" "${labels[@]}")" || return 0
+  else
+    pick="$(printf '%s\n' "${labels[@]}" | gum choose --header "nlt-tools：选择工具")" || return 0
+  fi
+  [[ -n "${pick}" ]] || return 0
+  tool="${pick%% *}"
+  [[ "${tool}" == "退出" ]] && return 0
+
+  if declare -F nlt_ui_choose >/dev/null 2>&1; then
+    action="$(nlt_ui_choose "对 ${tool} 执行" \
+      "install    — 检测并安装（幂等）" \
+      "upgrade    — 升级到最新" \
+      "uninstall  — 卸载" \
+      "取消")" || return 0
+  else
+    action="$(printf '%s\n' "install" "upgrade" "uninstall" "取消" | gum choose --header "对 ${tool} 执行")" || return 0
+  fi
+  action="${action%% *}"
   [[ -z "${action}" || "${action}" == "取消" ]] && return 0
   dispatch "${tool}" "${action}"
 }
