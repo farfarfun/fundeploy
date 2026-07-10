@@ -134,7 +134,7 @@ main() {
     curl) cmd_curl "$@" ;;
     resolve-url) cmd_resolve_url "$@" ;;
     install) cmd_install "$@" ;;
-    update) cmd_update "$@" ;;
+    update|upgrade) cmd_update "$@" ;;
     reinstall) cmd_reinstall "$@" ;;
     uninstall) cmd_uninstall "$@" ;;
     help) _usage ;;

@@ -216,7 +216,7 @@ _ct_interactive_main() {
       "quit")" || return 0
     case "${pick}" in
       install) cmd_install ;;
-      update) cmd_update ;;
+      update|upgrade) cmd_update ;;
       reinstall) cmd_reinstall ;;
       run) cmd_run ;;
       uninstall) cmd_uninstall ;;
@@ -243,7 +243,7 @@ main() {
   shift || true
   case "${cmd}" in
     install) cmd_install "$@" ;;
-    update) cmd_update "$@" ;;
+    update|upgrade) cmd_update "$@" ;;
     reinstall) cmd_reinstall "$@" ;;
     uninstall) cmd_uninstall "$@" ;;
     run) cmd_run "$@" ;;

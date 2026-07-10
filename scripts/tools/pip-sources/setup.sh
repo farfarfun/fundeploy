@@ -1286,7 +1286,7 @@ nlt_cli_main() {
             show_help
             exit 0
             ;;
-        install | update | reinstall)
+        install | update | upgrade | reinstall)
             shift
             main "$@"
             ;;

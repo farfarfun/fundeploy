@@ -393,7 +393,7 @@ nlt_cli_main() {
             shift
             main "$@"
             ;;
-        update)
+        update|upgrade)
             cmd_pyenv_update
             ;;
         reinstall)

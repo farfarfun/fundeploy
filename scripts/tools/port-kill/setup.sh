@@ -428,7 +428,7 @@ main() {
     kill)       cmd_kill "$@" ;;
     list)       cmd_list "$@" ;;
     install)    cmd_install ;;
-    update)     cmd_update ;;
+    update|upgrade) cmd_update ;;
     reinstall)  cmd_reinstall ;;
     uninstall)  cmd_uninstall ;;
     help|-h|--help) _usage ;;

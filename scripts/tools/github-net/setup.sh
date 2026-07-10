@@ -349,7 +349,7 @@ dispatch_github() {
     install)
       fix_auto
       ;;
-    update)
+    update|upgrade)
       diagnose
       ;;
     reinstall)
