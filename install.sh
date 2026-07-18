@@ -310,7 +310,7 @@ do_install_or_update() {
   mkdir -p "${LIBEXEC}/pip-sources" "${LIBEXEC}/python-env" "${LIBEXEC}/port-kill" \
     "${LIBEXEC}/ai-cli" \
     "${LIBEXEC}/dev/go" "${LIBEXEC}/dev/rust" "${LIBEXEC}/dev/nodejs" "${LIBEXEC}/dev/pnpm" "${LIBEXEC}/dev/uv" \
-    "${LIBEXEC}/download" "${LIBEXEC}/cockpit-tools" \
+    "${LIBEXEC}/brew" "${LIBEXEC}/download" "${LIBEXEC}/cockpit-tools" \
     "${LIBEXEC}/airflow" "${LIBEXEC}/celery" "${LIBEXEC}/utils" "${LIBEXEC}/github-net" \
     "${LIBEXEC}/paperclip" "${LIBEXEC}/code-server" "${LIBEXEC}/new-api" "${LIBEXEC}/sub2api" \
     "${LIBEXEC}/open-pencil" \
@@ -383,6 +383,9 @@ do_install_or_update() {
 
   _nlt_cp_first "${LIBEXEC}/port-kill/setup.sh" \
     "${SCRIPTS}/tools/port-kill/setup.sh"
+
+  _nlt_cp_first "${LIBEXEC}/brew/setup.sh" \
+    "${SCRIPTS}/tools/brew/setup.sh"
 
   _nlt_cp_first "${LIBEXEC}/download/setup.sh" \
     "${SCRIPTS}/tools/download/setup.sh"

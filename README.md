@@ -33,7 +33,12 @@
   nlt-tools go uninstall
   ```
   服务脚本内部依赖某工具时，不自行检测，直接 `nlt-tools <工具> install`。
-  工具名：`gum download pip-sources python-env github-net port-kill cockpit-tools go rust nodejs pnpm uv`。
+  工具名：`brew gum download pip-sources python-env github-net port-kill cockpit-tools go rust nodejs pnpm uv`。
+
+  Homebrew 可通过官方安装器显式安装：
+  ```bash
+  nlt-tools brew install
+  ```
 
 ## 安装
 

@@ -57,6 +57,7 @@ die() { echo "错误: $*" >&2; exit 1; }
 # gum 为一等工具，映射到 utils/setup.sh 的 gum 子命令。
 _nlt_tools_tail() {
   case "$1" in
+    brew)          echo "brew/setup.sh" ;;
     gum)           echo "utils/setup.sh" ;;
     aliases)       echo "utils/setup.sh" ;;
     download)      echo "download/setup.sh" ;;
@@ -77,7 +78,7 @@ _nlt_tools_tail() {
 
 # 已知工具名（供 list / 菜单 / 校验），顺序即展示顺序。
 _NLT_TOOLS_NAMES=(
-  gum download pip-sources python-env github-net port-kill cockpit-tools
+  brew gum download pip-sources python-env github-net port-kill cockpit-tools
   go rust nodejs pnpm uv
 )
 
@@ -108,10 +109,11 @@ usage() {
   <其它>      原样透传给该工具 setup.sh（如 reinstall、status 等）。
 
 工具:
-  gum download pip-sources python-env github-net port-kill cockpit-tools
+  brew gum download pip-sources python-env github-net port-kill cockpit-tools
   go rust nodejs pnpm uv
 
 示例:
+  nlt-tools brew install
   nlt-tools gum install
   nlt-tools gum upgrade
   nlt-tools python-env install
@@ -209,6 +211,7 @@ dispatch() {
 # 工具一行描述（交互菜单用）。
 _nlt_tool_desc() {
   case "$1" in
+    brew)          echo "Homebrew 包管理器" ;;
     gum)           echo "终端交互 UI（菜单/输入/确认）" ;;
     download)      echo "GitHub 下载加速" ;;
     pip-sources)   echo "pip 镜像源切换" ;;

@@ -26,8 +26,22 @@ bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/airflow/setup.sh" || exit 1
 bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/code-server/setup.sh" || exit 1
 bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/new-api/setup.sh" || exit 1
 bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/open-pencil/setup.sh" || exit 1
+bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/paperclip/setup.sh" || exit 1
+node() { [[ "${1:-}" == "-p" ]] && echo 20; }
+npm() { [[ "$*" == "install -g --registry https://registry.npmjs.org paperclipai@latest" ]]; }
+paperclipai() { [[ "${1:-}" == "--version" ]]; }
+export -f node npm paperclipai
+bash "${NLTDEPLOY_ROOT}/libexec/nltdeploy/paperclip/setup.sh" install >/dev/null || exit 1
+unset -f node npm paperclipai
 bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/services/nlt-services.sh" || exit 1
 bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/port-kill/setup.sh" || exit 1
+bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/brew/setup.sh" || exit 1
+bash "${NLTDEPLOY_ROOT}/libexec/nltdeploy/brew/setup.sh" --help >/dev/null || exit 1
+brew() { [[ "${1:-}" == "--version" || "${1:-}" == "update" ]]; }
+export -f brew
+bash "${NLTDEPLOY_ROOT}/libexec/nltdeploy/brew/setup.sh" install >/dev/null || exit 1
+bash "${NLTDEPLOY_ROOT}/libexec/nltdeploy/brew/setup.sh" update || exit 1
+unset -f brew
 bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/download/setup.sh" || exit 1
 bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/dev/setup.sh" || exit 1
 bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/ai-cli/setup.sh" || exit 1
@@ -40,6 +54,7 @@ out="$(NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" list)"
 grep -q "services" <<<"${out}" || exit 1
 out="$(NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" tools list)"
 grep -q "python-env" <<<"${out}" || exit 1
+grep -q "brew" <<<"${out}" || exit 1
 NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" dev --help >/dev/null || exit 1
 NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" services status --no-http >/dev/null || exit 1
 NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nlt-dev" --help >/dev/null || exit 1

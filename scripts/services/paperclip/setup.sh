@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Paperclip（https://github.com/paperclipai/paperclip）本机服务：
-# 直接按上游官方 Quickstart 使用 npx paperclipai@latest，无源码克隆、无 pnpm。
+# 通过 npm 全局安装 paperclipai CLI，无源码克隆、无 pnpm。
 #
 # 用法：
 #   ./setup.sh              # gum 菜单
-#   ./setup.sh install      # 预检查 Node.js 并预热 npx 缓存
-#   ./setup.sh update       # 等价于 install（实际运行始终使用 paperclipai@latest）
+#   ./setup.sh install      # npm install -g paperclipai@latest
+#   ./setup.sh update       # 等价于 install
 #   ./setup.sh onboard      # 首次配置（默认 NONINTERACTIVE=1 时自动加 --yes）
-#   ./setup.sh start        # 后台启动（npx paperclipai run）
+#   ./setup.sh start        # 后台启动（paperclipai run）
 #   ./setup.sh run          # 前台启动（终端附着；不写 PID）
 #   ./setup.sh stop / restart / status / uninstall
 #
@@ -20,7 +20,6 @@
 #   PAPERCLIP_AUTH_DISABLE_SIGN_UP  是否禁止注册（默认 true）
 #   PAPERCLIP_NPM_REGISTRY   npm registry（默认 https://registry.npmjs.org）
 #   PAPERCLIP_NPM_PACKAGE    npm 包规格（默认 paperclipai@latest）
-#   PAPERCLIP_NPM_CACHE      npm 缓存目录（默认 ${PAPERCLIP_SERVICE_HOME}/npm-cache）
 #   PAPERCLIP_START_HEALTH_TIMEOUT_SEC  start 时等待 /api/health 健康检查最长秒数（默认 60）
 #   PAPERCLIP_SKIP_START_HEALTH_CHECK=1 跳过 HTTP 健康检查
 #   NONINTERACTIVE=1         跳过 gum 确认；onboard 默认加 --yes
@@ -47,8 +46,8 @@ PAPERCLIP_HOST="${PAPERCLIP_HOST:-0.0.0.0}"
 PAPERCLIP_DATABASE_URL="${PAPERCLIP_DATABASE_URL:-postgresql://paperclip:paperclip@localhost:5432/paperclip}"
 PAPERCLIP_AUTH_DISABLE_SIGN_UP="${PAPERCLIP_AUTH_DISABLE_SIGN_UP:-true}"
 PAPERCLIP_NPM_REGISTRY="${PAPERCLIP_NPM_REGISTRY:-https://registry.npmjs.org}"
+# npm 的 paperclip 是另一个 UI 工具；Paperclip AI 官方包名是 paperclipai。
 PAPERCLIP_NPM_PACKAGE="${PAPERCLIP_NPM_PACKAGE:-paperclipai@latest}"
-PAPERCLIP_NPM_CACHE="${PAPERCLIP_NPM_CACHE:-${PAPERCLIP_SERVICE_HOME}/npm-cache}"
 
 PAPERCLIP_RUN_DIR="${PAPERCLIP_SERVICE_HOME}/run"
 PAPERCLIP_LOG_DIR="${PAPERCLIP_SERVICE_HOME}/log"
@@ -62,18 +61,18 @@ usage() {
   无参数：gum 菜单。
 
 命令:
-  install     预检查 Node.js 20+，并通过 npx 预热 ${PAPERCLIP_NPM_PACKAGE} 缓存
-  update      等价于 install；实际运行始终使用 ${PAPERCLIP_NPM_PACKAGE}
+  install     npm 全局安装 ${PAPERCLIP_NPM_PACKAGE}
+  update      全局升级到 ${PAPERCLIP_NPM_PACKAGE}
   onboard     首次配置；NONINTERACTIVE=1 时默认追加 --yes
   start       后台启动: http://${PAPERCLIP_HOST}:${PAPERCLIP_PORT}
   run         前台启动: 同 start 的运行环境，但终端附着、不写 PID
   stop        停止后台进程
   restart     stop 后 start
   status      查看 PID、日志位置与 HTTP 健康检查（/api/health）
-  uninstall   停止进程并删除 ${PAPERCLIP_SERVICE_HOME}（不删除 PAPERCLIP_HOME 数据目录）
+  uninstall   卸载全局 CLI 并删除 ${PAPERCLIP_SERVICE_HOME}（不删除 PAPERCLIP_HOME 数据目录）
 
 说明:
-  - 脚本遵循官方 Quickstart：npx paperclipai onboard --yes / run
+  - 安装后直接使用全局命令：paperclipai onboard --yes / run
   - 默认数据目录为 ${PAPERCLIP_HOME}（官方默认 ~/.paperclip）
   - 默认监听地址: http://${PAPERCLIP_HOST}:${PAPERCLIP_PORT}
   - 默认导出 DATABASE_URL=${PAPERCLIP_DATABASE_URL}
@@ -87,7 +86,7 @@ USAGE
 die() { echo "错误: $*" >&2; exit 1; }
 
 ensure_dirs() {
-  mkdir -p "${PAPERCLIP_RUN_DIR}" "${PAPERCLIP_LOG_DIR}" "${PAPERCLIP_NPM_CACHE}"
+  mkdir -p "${PAPERCLIP_RUN_DIR}" "${PAPERCLIP_LOG_DIR}"
 }
 
 process_alive() {
@@ -109,7 +108,6 @@ read_pid() {
 
 require_node() {
   command -v node >/dev/null 2>&1 || die "需要 Node.js 20+（https://nodejs.org/）"
-  command -v npx >/dev/null 2>&1 || die "未找到 npx；请安装包含 npm/npx 的 Node.js 发行版"
   local major
   major="$(node -p 'parseInt(process.versions.node.split(".")[0], 10)')"
   if (( major < 20 )); then
@@ -123,8 +121,6 @@ paperclip_export_runtime_env() {
   export DATABASE_URL="${PAPERCLIP_DATABASE_URL}"
   export PAPERCLIP_AUTH_DISABLE_SIGN_UP="${PAPERCLIP_AUTH_DISABLE_SIGN_UP}"
   export PAPERCLIP_HOME
-  export npm_config_registry="${PAPERCLIP_NPM_REGISTRY}"
-  export npm_config_cache="${PAPERCLIP_NPM_CACHE}"
 }
 
 paperclip_prompt_sign_up_policy() {
@@ -149,9 +145,14 @@ paperclip_prompt_sign_up_policy() {
   esac
 }
 
-paperclip_npx() {
+require_paperclip_cli() {
+  command -v paperclipai >/dev/null 2>&1 || die "未找到全局 paperclipai，请先执行: $0 install"
+}
+
+paperclip_cli() {
+  require_paperclip_cli
   paperclip_export_runtime_env
-  npx --yes --registry "${PAPERCLIP_NPM_REGISTRY}" --package "${PAPERCLIP_NPM_PACKAGE}" paperclipai "$@"
+  paperclipai "$@"
 }
 
 paperclip_server_pid() {
@@ -193,9 +194,11 @@ paperclip_start_failure_hints() {
 
 cmd_install() {
   require_node
+  command -v npm >/dev/null 2>&1 || die "未找到 npm"
   ensure_dirs
-  echo "==> 预热 Paperclip CLI 缓存（${PAPERCLIP_NPM_PACKAGE}）…" >&2
-  paperclip_npx --version >/dev/null
+  echo "==> npm 全局安装 Paperclip CLI（${PAPERCLIP_NPM_PACKAGE}）…" >&2
+  npm install -g --registry "${PAPERCLIP_NPM_REGISTRY}" "${PAPERCLIP_NPM_PACKAGE}"
+  paperclip_cli --version
   echo "安装完成。首次使用可执行: $0 onboard"
 }
 
@@ -207,14 +210,15 @@ cmd_onboard() {
   require_node
   ensure_dirs
   if [[ "${NONINTERACTIVE:-}" == "1" ]]; then
-    paperclip_npx onboard --yes "$@"
+    paperclip_cli onboard --yes "$@"
   else
-    paperclip_npx onboard "$@"
+    paperclip_cli onboard "$@"
   fi
 }
 
 cmd_start() {
   require_node
+  require_paperclip_cli
   ensure_dirs
   local existing
   existing="$(read_pid)"
@@ -228,11 +232,11 @@ cmd_start() {
     die "端口 ${PAPERCLIP_PORT} 已被 PID ${server_pid} 占用，请先执行 $0 stop 或手动清理。"
   fi
   rm -f "$PID_FILE"
-  echo "==> 启动 Paperclip（npx ${PAPERCLIP_NPM_PACKAGE} run），日志: ${LOG_FILE}" >&2
+  echo "==> 启动 Paperclip（paperclipai run），日志: ${LOG_FILE}" >&2
   echo "    监听: http://${PAPERCLIP_HOST}:${PAPERCLIP_PORT}" >&2
   echo "    允许注册: $( [[ "${PAPERCLIP_AUTH_DISABLE_SIGN_UP}" == "true" ]] && printf '%s' '否' || printf '%s' '是' )" >&2
   paperclip_export_runtime_env
-  nohup npx --yes --registry "${PAPERCLIP_NPM_REGISTRY}" --package "${PAPERCLIP_NPM_PACKAGE}" paperclipai run >>"${LOG_FILE}" 2>&1 &
+  nohup paperclipai run >>"${LOG_FILE}" 2>&1 &
   local cpid=$!
   echo "$cpid" >"$PID_FILE"
   sleep 1
@@ -264,22 +268,18 @@ cmd_start() {
 
 cmd_run() {
   require_node
+  require_paperclip_cli
   ensure_dirs
   local existing
   existing="$(read_pid)"
   if [[ -n "$existing" ]] && process_alive "$existing"; then
     die "Paperclip 已在后台运行（PID ${existing}）。请先执行 $0 stop，再使用 run 前台调试。"
   fi
-  echo "==> 前台启动 Paperclip（npx ${PAPERCLIP_NPM_PACKAGE} run），按 Ctrl+C 结束；不写 PID。" >&2
+  echo "==> 前台启动 Paperclip（paperclipai run），按 Ctrl+C 结束；不写 PID。" >&2
   echo "    监听: http://${PAPERCLIP_HOST}:${PAPERCLIP_PORT}" >&2
   echo "    允许注册: $( [[ "${PAPERCLIP_AUTH_DISABLE_SIGN_UP}" == "true" ]] && printf '%s' '否' || printf '%s' '是' )" >&2
-  exec env \
-    HOST="${PAPERCLIP_HOST}" \
-    PORT="${PAPERCLIP_PORT}" \
-    PAPERCLIP_HOME="${PAPERCLIP_HOME}" \
-    npm_config_registry="${PAPERCLIP_NPM_REGISTRY}" \
-    npm_config_cache="${PAPERCLIP_NPM_CACHE}" \
-    npx --yes --registry "${PAPERCLIP_NPM_REGISTRY}" --package "${PAPERCLIP_NPM_PACKAGE}" paperclipai run
+  paperclip_export_runtime_env
+  exec paperclipai run
 }
 
 cmd_stop() {
@@ -373,8 +373,10 @@ cmd_uninstall() {
   if [[ "$ap" == "/" || "$ap" == "$hp" ]]; then
     die "拒绝删除根目录或 \$HOME"
   fi
+  command -v npm >/dev/null 2>&1 || die "未找到 npm，无法卸载全局 paperclipai"
+  npm uninstall -g paperclipai
   rm -rf "${PAPERCLIP_SERVICE_HOME}"
-  echo "已删除 ${PAPERCLIP_SERVICE_HOME}。若需彻底清理数据，请自行删除 ${PAPERCLIP_HOME}"
+  echo "已卸载全局 paperclipai 并删除 ${PAPERCLIP_SERVICE_HOME}。若需彻底清理数据，请自行删除 ${PAPERCLIP_HOME}"
 }
 
 dispatch() {
@@ -402,9 +404,9 @@ dispatch() {
 interactive_main() {
   declare -F nlt_ui_apply_theme >/dev/null 2>&1 && nlt_ui_apply_theme
   if declare -F nlt_ui_banner >/dev/null 2>&1; then
-    nlt_ui_banner "Paperclip 本地服务（官方 npx 方式）" "PAPERCLIP_HOME=${PAPERCLIP_HOME}" "PAPERCLIP_NPM_PACKAGE=${PAPERCLIP_NPM_PACKAGE}"
+    nlt_ui_banner "Paperclip 本地服务（npm 全局安装）" "PAPERCLIP_HOME=${PAPERCLIP_HOME}" "PAPERCLIP_NPM_PACKAGE=${PAPERCLIP_NPM_PACKAGE}"
   else
-    gum style --bold --foreground 212 "Paperclip 本地服务（官方 npx 方式）"
+    gum style --bold --foreground 212 "Paperclip 本地服务（npm 全局安装）"
     gum style "PAPERCLIP_HOME=${PAPERCLIP_HOME}"
     gum style "PAPERCLIP_NPM_PACKAGE=${PAPERCLIP_NPM_PACKAGE}"
   fi
