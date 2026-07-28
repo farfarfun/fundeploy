@@ -775,7 +775,7 @@ interactive_main() {
   set +e
   while true; do
     local pick
-    pick="$(gum choose --header "Airflow 本地 — 选择操作（取消退出）" \
+    pick="$(nlt_ui_choose "nltdeploy / service / airflow / 选择动作" \
       "install" "update" "start" "run" "stop" "restart" "status" \
       "dag-scaffold" "dags-list" "trigger" "task-test" \
       "users-create" "users-list" "users-reset-password" "http-trigger" \

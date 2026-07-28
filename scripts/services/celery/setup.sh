@@ -639,7 +639,7 @@ interactive_main() {
   set +e
   while true; do
     local pick
-    pick="$(gum choose --header "选择操作（取消退出）" \
+    pick="$(nlt_ui_choose "nltdeploy / service / celery / 选择动作" \
       "install" "update" "start" "run" "stop" "restart" "status" \
       "start-worker" "start-beat" "start-flower" \
       "run-worker" "run-beat" "run-flower" \

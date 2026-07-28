@@ -386,7 +386,7 @@ interactive_main() {
   set +e
   while true; do
     local pick
-    pick="$(gum choose --header "选择操作" \
+    pick="$(nlt_ui_choose "nltdeploy / service / open-pencil / 选择动作" \
       "install" "update" "install-desktop" "mcp-config" "status" "uninstall" "help" "quit")" || break
     [[ -z "$pick" ]] && break
     case "$pick" in

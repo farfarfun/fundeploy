@@ -78,8 +78,7 @@ _nlt_tools_tail() {
 
 # 已知工具名（供 list / 菜单 / 校验），顺序即展示顺序。
 _NLT_TOOLS_NAMES=(
-  brew gum download pip-sources python-env github-net port-kill cockpit-tools
-  go rust nodejs pnpm uv
+  brew gum download github-net port-kill cockpit-tools
 )
 
 # 解析某工具 setup.sh 的绝对路径（自适应仓库内 / libexec 两种布局）。
@@ -98,9 +97,9 @@ _nlt_tools_resolve() {
 
 usage() {
   cat <<'EOF'
-用法: nlt-tools <工具> <install|upgrade|uninstall> [args...]
-      nlt-tools list
-      nlt-tools help
+用法: nltdeploy tool <工具> <install|upgrade|uninstall> [args...]
+      nltdeploy tool list
+      nltdeploy tool help
 
 动作:
   install     检测是否已安装，未安装则安装（幂等）。服务依赖工具时统一走此入口。
@@ -109,15 +108,14 @@ usage() {
   <其它>      原样透传给该工具 setup.sh（如 reinstall、status 等）。
 
 工具:
-  brew gum download pip-sources python-env github-net port-kill cockpit-tools
-  go rust nodejs pnpm uv
+  brew gum download github-net port-kill cockpit-tools
 
 示例:
-  nlt-tools brew install
-  nlt-tools gum install
-  nlt-tools gum upgrade
-  nlt-tools python-env install
-  nlt-tools go uninstall
+  nltdeploy tool brew install
+  nltdeploy tool gum install
+  nltdeploy tool gum upgrade
+  nltdeploy tool github-net doctor
+  nltdeploy tool cockpit-tools uninstall
 
 无参数（交互 TTY）: 进入 gum 菜单选择工具与动作；NONINTERACTIVE=1 或非 TTY 时打印本说明。
 支持 linux 与 macOS。
@@ -126,7 +124,7 @@ EOF
 
 cmd_list() {
   local n tail resolved
-  echo "可用工具（nlt-tools <工具> <install|upgrade|uninstall>）:"
+  echo "可用工具（nltdeploy tool <工具> <install|upgrade|uninstall>）:"
   for n in "${_NLT_TOOLS_NAMES[@]}"; do
     tail="$(_nlt_tools_tail "$n" || true)"
     if resolved="$(_nlt_tools_resolve "$n" 2>/dev/null)"; then
@@ -169,7 +167,7 @@ dispatch() {
 
   local setup
   setup="$(_nlt_tools_resolve "${tool}" 2>/dev/null)" \
-    || die "未知工具或找不到 setup.sh: ${tool}（nlt-tools list 查看）"
+    || die "未知工具或找不到 setup.sh: ${tool}（nltdeploy tool list 查看）"
 
   # gum 一等工具：映射到 utils setup.sh 的 gum 子命令。
   if [[ "${tool}" == "gum" ]]; then
@@ -238,7 +236,7 @@ interactive_main() {
   fi
 
   if declare -F nlt_ui_banner >/dev/null 2>&1; then
-    nlt_ui_banner "nlt-tools" "工具安装 / 升级 / 卸载（幂等）" "↑/↓ 选择 · Enter 确认 · Esc 退出"
+    nlt_ui_banner "nltdeploy / tool" "本机工具安装、升级与卸载"
   fi
 
   # 组装带描述的工具项：key 为首个 token，label 为 "key — 描述"。
@@ -252,9 +250,9 @@ interactive_main() {
 
   local pick tool action
   if declare -F nlt_ui_choose >/dev/null 2>&1; then
-    pick="$(nlt_ui_choose "nlt-tools：选择工具" "${labels[@]}")" || return 0
+    pick="$(nlt_ui_choose "nltdeploy / tool / 选择工具" "${labels[@]}")" || return 0
   else
-    pick="$(printf '%s\n' "${labels[@]}" | gum choose --header "nlt-tools：选择工具")" || return 0
+    pick="$(printf '%s\n' "${labels[@]}" | gum choose --header "nltdeploy / tool / 选择工具")" || return 0
   fi
   [[ -n "${pick}" ]] || return 0
   tool="${pick%% *}"
@@ -265,12 +263,12 @@ interactive_main() {
       "install    — 检测并安装（幂等）" \
       "upgrade    — 升级到最新" \
       "uninstall  — 卸载" \
-      "取消")" || return 0
+      "back       — 返回")" || return 0
   else
-    action="$(printf '%s\n' "install" "upgrade" "uninstall" "取消" | gum choose --header "对 ${tool} 执行")" || return 0
+    action="$(printf '%s\n' "install" "upgrade" "uninstall" "back" | gum choose --header "对 ${tool} 执行")" || return 0
   fi
   action="${action%% *}"
-  [[ -z "${action}" || "${action}" == "取消" ]] && return 0
+  [[ -z "${action}" || "${action}" == "back" ]] && return 0
   dispatch "${tool}" "${action}"
 }
 

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# nlt-services：服务总览（原 nlt-services-status）与各模块安装入口聚合。
+# nlt-services：服务总览、路由与安装入口聚合。
 #
 # 用法:
 #   nlt-services                    # gum：status / install / help / quit
 #   nlt-services status [--no-http]
+#   nlt-services <服务> [动作...]   # 透传给对应服务
 #   nlt-services install            # gum：先选「安装 / 卸载」，再选模块
 #   nlt-services install add <名>   # 安装类（install 与 add 同义）
 #   nlt-services install remove <名> # 卸载类（uninstall 与 remove 同义）
@@ -28,26 +29,69 @@ die() { echo "错误: $*" >&2; exit 1; }
 
 usage() {
   cat <<'EOF'
-用法: nlt-services [command [args...]]
+用法: nltdeploy service <服务> [动作...]
+      nltdeploy service status [--no-http]
+      nltdeploy service list
 
-  无参数：gum 菜单（status / install / help / quit）。
+  无参数：打开可搜索的服务菜单。
 
 命令:
-  status [--no-http]    汇总 Airflow、Celery、Paperclip、code-server、new-api、sub2api（gum table -p）
-  install               无参：gum 先选「安装 / 卸载」，再选模块。
-  install add <模块>    安装（add 可写 install）
-  install remove <模块> 卸载（remove 可写 uninstall；celery/utils 不支持）
-  help / -h / --help    本说明
+  status [--no-http]      汇总所有服务状态
+  list                    列出服务
+  <服务> [动作...]        透传 install/start/stop/restart/status 等动作
+  install                 兼容原安装聚合菜单
+  help / -h / --help      本说明
 
-说明:
-  - status 与各域默认路径、环境变量一致，详见各服务脚本头部。
-  - pip-sources / python-env / utils / github-net / cockpit-tools 无统一守护进程，status 中仅文末提示。
+服务: airflow celery paperclip code-server new-api sub2api open-pencil
+
+示例:
+  nltdeploy service code-server official install
+  nltdeploy service code-server official start
+  nltdeploy service sub2api official install
+  nltdeploy service sub2api official restart
+  nltdeploy service status
 EOF
+}
+
+_SERVICE_NAMES=(airflow celery paperclip code-server new-api sub2api open-pencil)
+
+_service_known() {
+  local name="$1" service
+  for service in "${_SERVICE_NAMES[@]}"; do
+    [[ "$service" == "$name" ]] && return 0
+  done
+  return 1
+}
+
+cmd_list() { printf '%s\n' "${_SERVICE_NAMES[@]}"; }
+
+_resolve_service_entry() {
+  local name="$1" candidate
+  for candidate in \
+    "${NLT_BIN}/nlt-${name}" \
+    "${SCRIPT_DIR}/${name}/setup.sh" \
+    "${SCRIPT_DIR}/../${name}/setup.sh"; do
+    [[ -f "$candidate" ]] && { printf '%s\n' "$candidate"; return 0; }
+  done
+  return 1
+}
+
+_dispatch_service() {
+  local name="$1" target
+  shift
+  target="$(_resolve_service_entry "$name")" || die "找不到服务入口: ${name}"
+  exec bash "$target" "$@"
+}
+
+_open_service_menu() {
+  local target
+  target="$(_resolve_service_entry "$1")" || die "找不到服务入口: $1"
+  bash "$target"
 }
 
 usage_status() {
   cat <<'EOF'
-用法: nlt-services status [--no-http]
+用法: nltdeploy service status [--no-http]
 
   --no-http   跳过 curl 探测。
 EOF
@@ -155,7 +199,7 @@ cmd_status() {
         ;;
       --no-http) DO_HTTP=0 ;;
       *)
-        echo "未知参数: $a（nlt-services status --help）" >&2
+        echo "未知参数: $a（nltdeploy service status --help）" >&2
         exit 2
         ;;
     esac
@@ -259,9 +303,9 @@ cmd_status() {
   echo "说明:"
   echo "  • celery 状态列 wbf 为 worker / beat / flower：√ 运行中，× 未运行；与 Airflow 同机时请区分 FLOWER_PORT。"
   echo "  • 安装路径: airflow ${AIRFLOW_HOME} | celery ${CELERY_HOME} | paperclip ${PAPERCLIP_SERVICE_HOME} | code-server ${CODE_SERVER_SERVICE_HOME} | new-api ${NEW_API_SERVICE_HOME} | sub2api ${SUB2API_SERVICE_HOME}"
-  echo "  • 详情: nlt-airflow / nlt-celery / nlt-paperclip / nlt-code-server / nlt-new-api / nlt-sub2api 各 status"
+  echo "  • 详情: nltdeploy service <服务> status"
   echo ""
-  echo "工具（无统一守护进程）: nlt-dev（推荐入口）/ nlt-pip-sources / nlt-python-env / nlt-utils / nlt-github-net / nlt-cockpit-tools — 请用各命令单独查看。"
+  echo "工具（无统一守护进程）: nltdeploy dev / nltdeploy tool"
   echo ""
 }
 
@@ -309,7 +353,7 @@ _dispatch_install_or_remove() {
     utils) exec "${NLT_BIN}/nlt-utils" ;;
     github-net) exec "${NLT_BIN}/nlt-github-net" ;;
     cockpit-tools) exec "${NLT_BIN}/nlt-cockpit-tools" install ;;
-    *) die "未知模块: ${name}（见 nlt-services help）" ;;
+    *) die "未知模块: ${name}（见 nltdeploy service help）" ;;
   esac
 }
 
@@ -319,7 +363,7 @@ cmd_install() {
 
   if [[ $# -eq 0 ]]; then
     if [[ "${NONINTERACTIVE:-}" == "1" ]]; then
-      die "NONINTERACTIVE=1 时请使用: nlt-services install add|remove <模块>"
+      die "NONINTERACTIVE=1 时请使用: nltdeploy service install add|remove <模块>"
     fi
     _nlt_ensure_gum || exit 1
     action="$(gum choose --header "要对模块做什么？" \
@@ -352,7 +396,7 @@ cmd_install() {
       shift
       name="${1:-}"
       if [[ -z "$name" ]]; then
-        [[ "${NONINTERACTIVE:-}" == "1" ]] && die "请指定模块: nlt-services install add <模块>"
+        [[ "${NONINTERACTIVE:-}" == "1" ]] && die "请指定模块: nltdeploy service install add <模块>"
         _nlt_ensure_gum || exit 1
         name="$(gum choose --header "选择要安装 / 初始化的模块" \
           "airflow" "celery" "paperclip" "code-server" "new-api" "sub2api" "open-pencil" \
@@ -365,7 +409,7 @@ cmd_install() {
       shift
       name="${1:-}"
       if [[ -z "$name" ]]; then
-        [[ "${NONINTERACTIVE:-}" == "1" ]] && die "请指定模块: nlt-services install remove <模块>"
+        [[ "${NONINTERACTIVE:-}" == "1" ]] && die "请指定模块: nltdeploy service install remove <模块>"
         _nlt_ensure_gum || exit 1
         name="$(gum choose --header "选择要卸载的模块" \
           "airflow" "paperclip" "code-server" "new-api" "sub2api" "open-pencil" \
@@ -375,7 +419,7 @@ cmd_install() {
       _dispatch_install_or_remove "remove" "$name"
       ;;
     *)
-      die "未知子命令: ${1}（使用: nlt-services install add|remove <模块>）"
+      die "未知子命令: ${1}（使用: nltdeploy service install add|remove <模块>）"
       ;;
   esac
 }
@@ -384,19 +428,29 @@ interactive_main() {
   _nlt_ensure_gum || exit 1
   declare -F nlt_ui_apply_theme >/dev/null 2>&1 && nlt_ui_apply_theme
   if declare -F nlt_ui_banner >/dev/null 2>&1; then
-    nlt_ui_banner "nlt-services" "本机服务安装 / 状态 / 卸载" "↑/↓ 选择 · Enter 确认 · Esc/q 退出" >&2
+    nlt_ui_banner "nltdeploy / service" "安装、运行与查看本机服务" >&2
   fi
   set +e
   while true; do
-    local pick
-    pick="$(gum choose --header "nlt-services" \
-      "status" "install" "help" "quit")" || break
+    local pick name
+    pick="$(nlt_ui_choose "nltdeploy / service / 选择服务" \
+      "status       全部服务状态" \
+      "airflow      工作流调度" \
+      "celery       异步任务队列" \
+      "paperclip    AI 协作服务" \
+      "code-server 浏览器 VS Code" \
+      "new-api      API 网关" \
+      "sub2api      订阅 API 网关" \
+      "open-pencil  CLI、MCP 与桌面工具" \
+      "help         命令帮助" \
+      "back         返回")" || break
     [[ -z "$pick" ]] && break
-    case "$pick" in
-      quit) break ;;
-      help) usage; echo "" ;;
+    name="${pick%% *}"
+    case "$name" in
+      back) break ;;
+      help) usage ;;
       status) cmd_status ;;
-      install) cmd_install ;;
+      *) _open_service_menu "$name" ;;
     esac
     echo ""
   done
@@ -404,6 +458,7 @@ interactive_main() {
 }
 
 main() {
+  local name
   if [[ $# -eq 0 ]]; then
     if [[ "${NONINTERACTIVE:-}" == "1" ]]; then
       usage >&2
@@ -414,6 +469,9 @@ main() {
   fi
 
   case "$1" in
+    list | --list)
+      cmd_list
+      ;;
     status)
       shift
       cmd_status "$@"
@@ -426,9 +484,15 @@ main() {
       usage
       ;;
     *)
-      echo "未知命令: $1" >&2
-      usage >&2
-      exit 2
+      if _service_known "$1"; then
+        name="$1"
+        shift
+        _dispatch_service "$name" "$@"
+      else
+        echo "未知命令或服务: $1" >&2
+        usage >&2
+        exit 2
+      fi
       ;;
   esac
 }

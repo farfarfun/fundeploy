@@ -29,10 +29,10 @@ _TOOLS=(claude codex cursor)
 
 usage() {
   cat <<'EOF'
-用法: nlt-ai-cli <工具|all> <install|update|uninstall|status|version> [args...]
-      nlt-ai-cli                    # 交互选择工具和动作
-      nlt-ai-cli list
-      nlt-ai-cli help
+用法: nltdeploy ai <工具|all> <install|update|uninstall|status|version> [args...]
+      nltdeploy ai                    # 交互选择工具和动作
+      nltdeploy ai list
+      nltdeploy ai help
 
 工具:
   claude   Claude Code CLI（npm global package: @anthropic-ai/claude-code）
@@ -79,7 +79,7 @@ _ensure_npm() {
   [[ "${NLT_AI_SKIP_NODE:-}" == "1" ]] && die "未找到 npm；请先安装 Node.js/npm"
   local nlt_dev
   nlt_dev="$(_resolve_nlt_dev 2>/dev/null)" || die "未找到 npm，也找不到 nlt-dev；请先安装 Node.js/npm"
-  _nlt_say_step "未找到 npm，执行 nlt-dev nodejs install"
+  _nlt_say_step "未找到 npm，执行 nltdeploy dev nodejs install"
   if [[ -x "${nlt_dev}" ]]; then
     "${nlt_dev}" nodejs install
   else

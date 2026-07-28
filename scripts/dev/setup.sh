@@ -19,7 +19,7 @@ die() { echo "错误: $*" >&2; exit 1; }
 
 usage() {
   cat <<'EOF'
-用法: nlt-dev [子命令] [参数…]
+用法: nltdeploy dev [子命令] [参数…]
 
   推荐主入口（替代在文档中单独强调 nlt-pip-sources / nlt-python-env）:
     pip | pip-sources     pip 镜像与源配置（委派到 pip-sources）
@@ -66,10 +66,10 @@ _pick_menu() {
     return 1
   fi
   if declare -F nlt_ui_banner >/dev/null 2>&1; then
-    nlt_ui_banner "nlt-dev" "本机开发环境工具（语言 / 包管理器）" "↑/↓ 选择 · Enter 确认 · Esc/q 退出" >&2
+    nlt_ui_banner "nltdeploy / dev" "语言、运行时与包管理器" >&2
   fi
   if declare -F nlt_ui_choose >/dev/null 2>&1; then
-    nlt_ui_choose "选择要配置的开发工具" \
+    nlt_ui_choose "nltdeploy / dev / 选择工具" \
       "pip（pip 源 / 镜像）" \
       "uv（Astral 安装器）" \
       "python（uv / 虚拟环境）" \
@@ -80,7 +80,7 @@ _pick_menu() {
       "取消"
     return $?
   fi
-  gum choose --header "nlt-dev — 选择工具" \
+  gum choose --header "nltdeploy / dev / 选择工具" \
     "pip（pip 源 / 镜像）" \
     "uv（Astral 安装器）" \
     "python（uv / 虚拟环境）" \
@@ -134,7 +134,7 @@ main() {
     -h | --help | help)
       usage
       ;;
-    *) die "未知子命令: ${cmd}（见 nlt-dev --help）" ;;
+    *) die "未知子命令: ${cmd}（见 nltdeploy dev --help）" ;;
   esac
 }
 

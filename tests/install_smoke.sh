@@ -15,6 +15,7 @@ do
   [[ -x "${NLTDEPLOY_ROOT}/bin/${f}" ]] || { echo "missing: bin/${f}" >&2; exit 1; }
   bash -n "${NLTDEPLOY_ROOT}/bin/${f}" || exit 1
 done
+[[ ! -e "${NLTDEPLOY_ROOT}/bin/nlt" ]] || { echo "unexpected deprecated bin/nlt" >&2; exit 1; }
 for bad in \
   nlt-airflow-install \
   nlt-celery-install nlt-celery-update \
@@ -24,15 +25,25 @@ do
 done
 bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/airflow/setup.sh" || exit 1
 bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/code-server/setup.sh" || exit 1
+bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/code-server/setup-manual.sh" || exit 1
+bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/code-server/setup-offical.sh" || exit 1
 bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/new-api/setup.sh" || exit 1
 bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/open-pencil/setup.sh" || exit 1
 bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/paperclip/setup.sh" || exit 1
 bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/sub2api/setup.sh" || exit 1
-curl() { printf '%s\n' 'SERVER_PORT="8080"' 'echo "official-sub2api-installer-ran:${SERVER_PORT}"'; }
+bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/sub2api/setup-manual.sh" || exit 1
+bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/sub2api/setup-offical.sh" || exit 1
+curl() { printf '%s\n' 'SERVER_PORT="8080"' 'echo "official-sub2api-installer-ran:${1}:${SERVER_PORT}"'; }
 sudo() { "$@"; }
 export -f curl sudo
-"${NLTDEPLOY_ROOT}/bin/nlt-sub2api" install-official | grep -q "official-sub2api-installer-ran:8802" || exit 1
+"${NLTDEPLOY_ROOT}/bin/nlt-sub2api" official install | grep -q "official-sub2api-installer-ran:install:8802" || exit 1
+"${NLTDEPLOY_ROOT}/bin/nlt-sub2api" official update | grep -q "official-sub2api-installer-ran:upgrade:8802" || exit 1
+"${NLTDEPLOY_ROOT}/bin/nlt-sub2api" official uninstall -y | grep -q "official-sub2api-installer-ran:uninstall:8802" || exit 1
 unset -f curl sudo
+curl() { printf '%s\n' 'echo "official-code-server-installer-ran:$*"'; }
+export -f curl
+"${NLTDEPLOY_ROOT}/bin/nlt-code-server" official install --version 4.112.0 | grep -q "official-code-server-installer-ran:--version 4.112.0" || exit 1
+unset -f curl
 node() { [[ "${1:-}" == "-p" ]] && echo 20; }
 npm() { [[ "$*" == "install -g --registry https://registry.npmjs.org paperclipai@latest" ]]; }
 paperclipai() { [[ "${1:-}" == "--version" ]]; }
@@ -57,9 +68,33 @@ bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/dev/nodejs/setup.sh" || exit 1
 bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/dev/pnpm/setup.sh" || exit 1
 bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/dev/uv/setup.sh" || exit 1
 out="$(NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" list)"
-grep -q "services" <<<"${out}" || exit 1
+grep -q "service" <<<"${out}" || exit 1
+out="$(NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" service list)"
+grep -q "sub2api" <<<"${out}" || exit 1
+NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" dev --help >/dev/null || exit 1
+out="$(NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" tool list)"
+grep -q "brew" <<<"${out}" || exit 1
+out="$(NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" ai list)"
+grep -q "codex" <<<"${out}" || exit 1
+systemctl() {
+  [[ "${1:-}" == "cat" ]] && return 0
+  printf 'systemctl:%s\n' "$*"
+}
+curl() { return 1; }
+sudo() { "$@"; }
+export -f systemctl curl sudo
+CODE_SERVER_OFFICIAL_USER=tester "${NLTDEPLOY_ROOT}/bin/nltdeploy" service code-server official start | grep -q "systemctl:enable --now code-server@tester" || exit 1
+CODE_SERVER_OFFICIAL_USER=tester "${NLTDEPLOY_ROOT}/bin/nltdeploy" service code-server official restart | grep -q "systemctl:restart code-server@tester" || exit 1
+out="$(CODE_SERVER_SERVICE_HOME="${TMP}/manual-code-server" CODE_SERVER_BIND=127.0.0.1:59997 "${NLTDEPLOY_ROOT}/bin/nltdeploy" service code-server status)"
+grep -q "CODE_SERVER_SERVICE_HOME" <<<"${out}" || exit 1
+! grep -q "systemctl:" <<<"${out}" || exit 1
+"${NLTDEPLOY_ROOT}/bin/nltdeploy" service sub2api official restart | grep -q "systemctl:restart sub2api" || exit 1
+out="$(SUB2API_SERVICE_HOME="${TMP}/manual-sub2api" SUB2API_PORT=59998 "${NLTDEPLOY_ROOT}/bin/nltdeploy" service sub2api status)"
+grep -q "PID 文件" <<<"${out}" || exit 1
+! grep -q "systemctl:" <<<"${out}" || exit 1
+unset -f systemctl curl sudo
 out="$(NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" tools list)"
-grep -q "python-env" <<<"${out}" || exit 1
+grep -q "github-net" <<<"${out}" || exit 1
 grep -q "brew" <<<"${out}" || exit 1
 NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" dev --help >/dev/null || exit 1
 NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" services status --no-http >/dev/null || exit 1

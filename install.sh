@@ -406,6 +406,12 @@ do_install_or_update() {
     "${SCRIPTS}/code-server/setup.sh" \
     "${SCRIPTS}/code-server/code-server-setup.sh"
 
+  _nlt_cp_first "${LIBEXEC}/code-server/setup-manual.sh" \
+    "${SCRIPTS}/services/code-server/setup-manual.sh"
+
+  _nlt_cp_first "${LIBEXEC}/code-server/setup-offical.sh" \
+    "${SCRIPTS}/services/code-server/setup-offical.sh"
+
   _nlt_cp_first "${LIBEXEC}/new-api/setup.sh" \
     "${SCRIPTS}/services/new-api/setup.sh" \
     "${SCRIPTS}/new-api/setup.sh" \
@@ -414,6 +420,12 @@ do_install_or_update() {
   _nlt_cp_first "${LIBEXEC}/sub2api/setup.sh" \
     "${SCRIPTS}/services/sub2api/setup.sh" \
     "${SCRIPTS}/sub2api/setup.sh"
+
+  _nlt_cp_first "${LIBEXEC}/sub2api/setup-manual.sh" \
+    "${SCRIPTS}/services/sub2api/setup-manual.sh"
+
+  _nlt_cp_first "${LIBEXEC}/sub2api/setup-offical.sh" \
+    "${SCRIPTS}/services/sub2api/setup-offical.sh"
 
   _nlt_cp_first "${LIBEXEC}/open-pencil/setup.sh" \
     "${SCRIPTS}/services/open-pencil/setup.sh" \
@@ -458,6 +470,7 @@ do_install_or_update() {
   _emit_wrapper nlt-open-pencil open-pencil/setup.sh
   rm -rf "${LIBEXEC}/build"
   rm -f "${NLTDEPLOY_ROOT}/bin/nlt-build"
+  rm -f "${NLTDEPLOY_ROOT}/bin/nlt"
   rm -f \
     "${NLTDEPLOY_ROOT}/bin/nlt-airflow-install" \
     "${NLTDEPLOY_ROOT}/bin/nlt-celery-install" \
@@ -470,8 +483,8 @@ do_install_or_update() {
   if [[ "${NLTDEPLOY_SKIP_PROFILE_HINT:-}" != "1" ]]; then
     echo ""
     echo "已安装到: ${NLTDEPLOY_ROOT}"
-    echo "AI CLI 入口: ${NLTDEPLOY_ROOT}/bin/nlt-ai-cli"
-    echo "PATH 生效后可运行: nlt-ai-cli list"
+    echo "统一入口: ${NLTDEPLOY_ROOT}/bin/nltdeploy"
+    echo "PATH 生效后可运行: nltdeploy"
     _nlt_install_path_to_profiles
     echo ""
     echo "若不想自动写入 shell 配置，可设置 NLTDEPLOY_SKIP_PROFILE_HINT=1"

@@ -69,13 +69,23 @@ nlt_ui_banner() {
   fi
 }
 
-# nlt_ui_choose "<header>" 选项...   —— 主题化的单选，回显所选项到 stdout。
+# nlt_ui_choose "<header>" 选项...   —— 可搜索的命令面板，回显所选项到 stdout。
 # 无 gum：回退为 select（编号菜单），同样把所选项打印到 stdout；取消/EOF 返回非 0。
 nlt_ui_choose() {
   local header="$1"; shift
   if nlt_ui_has_gum; then
+    local height=$(( $# + 1 ))
+    (( height < 4 )) && height=4
+    (( height > 14 )) && height=14
     nlt_ui_apply_theme
-    gum choose --header "${header}" "$@"
+    printf '%s\n' "$@" | gum filter \
+      --header "${header}" \
+      --placeholder "输入关键词筛选..." \
+      --prompt "› " \
+      --height "${height}" \
+      --no-show-help \
+      --limit 1 \
+      --select-if-one
     return $?
   fi
   # 朴素回退：编号选择。

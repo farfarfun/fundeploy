@@ -5,40 +5,35 @@
 覆盖这些场景：
 - 开发环境：`pip` 镜像、`uv`、Python 虚拟环境、Go、Rust、Node.js、pnpm
 - 常驻服务：Airflow、Celery、Paperclip、code-server、new-api、sub2api
-- 桌面/AI 工具：`nlt-ai-cli`（Claude Code、Codex、Cursor 等 CLI 工具）与 OpenPencil（CLI + MCP + Tauri 桌面包）
+- 桌面/AI 工具：`nltdeploy ai`（Claude Code、Codex、Cursor）与 OpenPencil（CLI + MCP + Tauri 桌面包）
 - 常用工具：gum、GitHub 下载加速、GitHub 网络诊断、按端口杀进程
 
-脚本尽量自包含，可在仓库内直接执行，也可 `curl | bash`。推荐先安装到本地 `~/.local/nltdeploy`，之后统一用 `nlt-*` 命令。
+脚本尽量自包含，可在仓库内直接执行，也可 `curl | bash`。推荐先安装到本地 `~/.local/nltdeploy`，之后只需记住 `nltdeploy`。
 
 ## 统一入口
 
-- `nltdeploy`：整个项目的顶层入口。
+- `nltdeploy`：唯一推荐入口；无参数时打开可搜索的分层菜单。
   ```bash
-  nltdeploy upgrade                     # 升级本安装（自动选源：本地→github→gitee）
-  nltdeploy upgrade --source github     # 指定源：github / gitee / local
-  nltdeploy uninstall                   # 卸载 nltdeploy
-  nltdeploy tools gum install           # 透传给 nlt-tools
-  nltdeploy dev uv --help               # 透传给 nlt-dev
-  nltdeploy services status --no-http   # 透传给 nlt-services
-  nltdeploy ai-cli list                 # 透传给 nlt-ai-cli
-  nltdeploy list                        # 列出所有可路由入口
+  nltdeploy service status
+  nltdeploy service code-server official install
+  nltdeploy service code-server official start
+  nltdeploy service sub2api official install
+  nltdeploy service sub2api official restart
+  nltdeploy service sub2api manual install
+  nltdeploy dev uv install
+  nltdeploy tool github-net doctor
+  nltdeploy ai codex update
+  nltdeploy upgrade                         # 自动选择本地、GitHub 或 Gitee
+  nltdeploy upgrade --source github
   ```
-  可路由入口覆盖安装器生成的主要 `nlt-*` 命令：`tools dev ai-cli pip-sources python-env utils github-net port-kill download cockpit-tools services airflow celery paperclip code-server new-api sub2api open-pencil`。
-- `nlt-tools`：工具类统一入口，每个工具支持 `install`（幂等，检测→未装则装）/ `upgrade` / `uninstall`。
-  ```bash
-  nlt-tools list
-  nlt-tools gum install
-  nlt-tools gum upgrade
-  nlt-tools python-env install
-  nlt-tools go uninstall
-  ```
-  服务脚本内部依赖某工具时，不自行检测，直接 `nlt-tools <工具> install`。
-  工具名：`brew gum download pip-sources python-env github-net port-kill cockpit-tools go rust nodejs pnpm uv`。
+- 领域固定为 `service`、`dev`、`tool`、`ai`，后面依次是模块和动作。
+- `nlt-services`、`nlt-dev`、`nlt-tools`、`nlt-ai-cli` 以及各 `nlt-*` 服务命令继续保留兼容，但不需要记忆。
 
-  Homebrew 可通过官方安装器显式安装：
-  ```bash
-  nlt-tools brew install
-  ```
+Homebrew 可通过官方安装器显式安装：
+
+```bash
+nltdeploy tool brew install
+```
 
 ## 安装
 
@@ -67,39 +62,28 @@ export PATH="$HOME/.local/nltdeploy/bin:$PATH"
 - `NLTDEPLOY_SKIP_PROFILE_HINT=1`：不写 shell 配置，适合 CI
 - `NLTDEPLOY_UNINSTALL_YES=1`：非交互卸载确认
 
-## 主要模块
+## 领域
 
 ### 开发环境
 
-- `nlt-dev`：开发环境统一入口
-- `nlt-pip-sources`：pip 镜像配置
-- `nlt-python-env`：Python/uv 环境
+- `nltdeploy dev pip`：pip 镜像配置
+- `nltdeploy dev python`：Python/uv 环境
+- `nltdeploy dev uv|go|rust|nodejs|pnpm`：语言与包管理器
 
 ### 服务
 
-- `nlt-airflow`
-- `nlt-celery`
-- `nlt-paperclip`
-- `nlt-code-server`
-- `nlt-new-api`
-- `nlt-sub2api`
-- `nlt-open-pencil`（OpenPencil CLI + MCP，可选桌面 Tauri 安装包）
-- `nlt-services`
+- `nltdeploy service status`：服务总览
+- `nltdeploy service airflow|celery|paperclip|code-server|new-api|sub2api|open-pencil`
 
 ### 工具
 
-- `nlt-utils`
-- `nlt-github-net`
-- `nlt-download`
-- `nlt-cockpit-tools`
-- `nlt-port-kill`
+- `nltdeploy tool list`：列出工具
+- `nltdeploy tool brew|gum|download|github-net|port-kill|cockpit-tools`
 
 ### AI CLI
 
-- `nlt-ai-cli`：统一安装 / 更新 / 卸载 Claude Code、Codex、Cursor 等 CLI 端 AI 工具；只走官方 package / installer，不支持源码安装。
-  - 安装后入口在 `$HOME/.local/nltdeploy/bin/nlt-ai-cli`（或自定义 `NLTDEPLOY_ROOT/bin/nlt-ai-cli`）。
-  - 直接运行 `nlt-ai-cli` 会进入交互菜单：第一层选择工具，第二层选择 `install` / `upgrade` / `uninstall` / `status`。
-  - 如果 shell 暂时找不到命令，先执行 `export PATH="$HOME/.local/nltdeploy/bin:$PATH"`，再运行 `nlt-ai-cli list`。
+- `nltdeploy ai claude|codex|cursor <install|update|uninstall|status>`
+- 只走官方 package / installer，不支持源码安装。
 
 ## 目录结构
 
@@ -124,7 +108,7 @@ bash tests/progress_smoke.sh
 ```
 - 没执行权限：`chmod +x install.sh` 或对应 `setup.sh`
 - PATH 未生效：手动 `export PATH="$HOME/.local/nltdeploy/bin:$PATH"`
-- GitHub 下载慢或失败：优先看 `nlt-github-net`、`nlt-download`
+- GitHub 下载慢或失败：使用 `nltdeploy tool github-net`、`nltdeploy tool download`
 
 ## 详细文档
 

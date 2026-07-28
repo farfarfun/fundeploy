@@ -2,13 +2,12 @@
 # nltdeploy：整个项目的顶层入口。
 #
 # 用法:
-#   nltdeploy upgrade [--source github|gitee|local]   升级本安装（同步 libexec 与 bin）
-#   nltdeploy uninstall                               卸载 nltdeploy（删除 NLTDEPLOY_ROOT 并清理 PATH）
-#   nltdeploy tools <工具> <install|upgrade|uninstall> 透传给 nlt-tools
-#   nltdeploy dev|services|ai-cli|... [args]          透传给对应 nlt-* 入口
-#   nltdeploy list                                    列出顶层可用入口
-#   nltdeploy help
-#   nltdeploy                                         交互 TTY：gum 菜单；否则打印 help
+#   nltdeploy service <服务> [动作]                   服务管理
+#   nltdeploy dev <工具> [动作]                       开发环境
+#   nltdeploy tool <工具> [动作]                      常用工具
+#   nltdeploy ai <工具> [动作]                        AI CLI
+#   nltdeploy upgrade | uninstall | list | help
+#   nltdeploy                                          可搜索的交互菜单
 #
 # upgrade 源:
 #   github   从 GitHub 拉取 install.sh 并执行 update（默认公网源）
@@ -44,34 +43,29 @@ die() { echo "错误: $*" >&2; exit 1; }
 
 usage() {
   cat <<'EOF'
-用法: nltdeploy <command> [args]
+用法: nltdeploy <领域> [模块] [动作]
 
 命令:
-  upgrade [--source github|gitee|local]   升级 nltdeploy（同步 libexec 与 bin）
-  uninstall                               卸载 nltdeploy（删除安装目录并清理 PATH 片段）
-  tools <工具> <install|upgrade|uninstall> 透传给 nlt-tools（工具类统一入口）
-  dev [args...]                           透传给 nlt-dev（开发环境统一入口）
-  services [args...]                      透传给 nlt-services（服务总览与安装入口）
-  ai-cli [args...]                        透传给 nlt-ai-cli（AI CLI 统一入口）
-  pip-sources | python-env | utils | github-net | port-kill | download | cockpit-tools
-                                           透传给对应 nlt-* 工具入口
-  airflow | celery | paperclip | code-server | new-api | sub2api | open-pencil
-                                           透传给对应 nlt-* 服务入口
-  list                                    列出所有可路由入口
-  help / -h / --help                      本说明
+  service <服务> [动作]                    服务状态、安装和生命周期管理
+  dev <工具> [动作]                        Python、Go、Rust、Node.js 等开发环境
+  tool <工具> [动作]                       brew、gum、网络诊断、下载等工具
+  ai <工具> [动作]                         Claude Code、Codex、Cursor
+  upgrade [--source github|gitee|local]    升级 nltdeploy
+  uninstall                                卸载 nltdeploy
+  list                                     显示领域入口
+  help / -h / --help                       本说明
 
-upgrade 源:
-  github（默认公网）/ gitee（国内镜像）/ local（本地仓库 install.sh，git pull + 重新同步）
-  不指定 --source 时：优先 local，其次 github，再 gitee。
+无参数时打开可搜索菜单。各 nlt-* 命令保留为兼容入口。
 
 示例:
+  nltdeploy service status
+  nltdeploy service code-server official install
+  nltdeploy service sub2api official install
+  nltdeploy service sub2api official restart
+  nltdeploy dev nodejs install
+  nltdeploy tool github-net doctor
+  nltdeploy ai codex update
   nltdeploy upgrade
-  nltdeploy upgrade --source gitee
-  nltdeploy uninstall
-  nltdeploy tools gum install
-  nltdeploy dev uv --help
-  nltdeploy services status --no-http
-  nltdeploy ai-cli list
 EOF
 }
 
@@ -106,60 +100,16 @@ _entry_bin() {
   esac
 }
 
-# 每个入口的一行中文描述（用于交互菜单，让「不好看/看不懂」的裸菜单变得可读）。
-_entry_desc() {
-  case "$1" in
-    tools)         echo "工具类统一入口（gum/uv/go/node…安装升级卸载）" ;;
-    dev)           echo "开发环境（pip 源 / uv / python / go / rust / node / pnpm）" ;;
-    ai-cli)        echo "AI CLI（Claude Code / Codex / Cursor 等）" ;;
-    pip-sources)   echo "pip 镜像源切换" ;;
-    python-env)    echo "Python 虚拟环境管理" ;;
-    utils)         echo "gum 等基础小工具" ;;
-    github-net)    echo "GitHub 网络诊断" ;;
-    port-kill)     echo "按端口杀进程" ;;
-    download)      echo "GitHub 下载加速" ;;
-    cockpit-tools) echo "Cockpit 运维面板工具" ;;
-    services)      echo "服务总览与安装入口" ;;
-    airflow)       echo "Airflow 本地服务" ;;
-    celery)        echo "Celery 本地服务" ;;
-    paperclip)     echo "Paperclip 本地服务" ;;
-    code-server)   echo "code-server（浏览器 VS Code）" ;;
-    new-api)       echo "new-api 本地服务" ;;
-    sub2api)       echo "sub2api 本地服务" ;;
-    open-pencil)   echo "OpenPencil（CLI + MCP + 桌面）" ;;
-    *)             echo "" ;;
-  esac
-}
-
-_entry_names() {
-  cat <<'EOF'
-tools
-dev
-ai-cli
-pip-sources
-python-env
-utils
-github-net
-port-kill
-download
-cockpit-tools
-services
-airflow
-celery
-paperclip
-code-server
-new-api
-sub2api
-open-pencil
-EOF
-}
-
 cmd_list() {
-  echo "可用入口（nltdeploy <入口> [args...]）:"
-  _entry_names | while IFS= read -r name; do
-    [[ -n "$name" ]] || continue
-    printf '  %-14s -> %s\n' "$name" "$(_entry_bin "$name")"
-  done
+  cat <<'EOF'
+可用领域:
+  service   服务管理（nltdeploy service list）
+  dev       开发环境（nltdeploy dev --help）
+  tool      常用工具（nltdeploy tool list）
+  ai        AI CLI（nltdeploy ai list）
+
+项目操作: upgrade / uninstall
+EOF
 }
 
 # 解析可用的本地 install.sh（仓库内运行 / 已安装的 src 克隆 / libexec bundle）。
@@ -235,22 +185,34 @@ cmd_uninstall() {
   exec bash "${sh}" uninstall "$@"
 }
 
-cmd_entry() {
-  local name="$1"; shift
-  local rel bin c
+_resolve_entry() {
+  local name="$1" rel bin c
   rel="$(_entry_rel "${name}")" || die "未知入口: ${name}（nltdeploy list 查看）"
   bin="${NLTDEPLOY_ROOT}/bin/$(_entry_bin "${name}")"
   if [[ -x "${bin}" ]]; then
-    exec "${bin}" "$@"
+    printf '%s\n' "$bin"
+    return 0
   fi
-  # 仓库内直接运行时回退到源脚本；已安装 libexec 缺 wrapper 时也可回退。
   for c in \
     "${SCRIPT_DIR}/${rel}" \
     "${SCRIPT_DIR}/../${rel}" \
     "${NLTDEPLOY_ROOT}/libexec/nltdeploy/${rel}"; do
-    [[ -f "$c" ]] && exec bash "$c" "$@"
+    [[ -f "$c" ]] && { printf '%s\n' "$c"; return 0; }
   done
   die "未找到 $(_entry_bin "${name}")（请先安装：install.sh install）"
+}
+
+cmd_entry() {
+  local name="$1" target
+  shift
+  target="$(_resolve_entry "$name")"
+  exec bash "$target" "$@"
+}
+
+open_entry() {
+  local target
+  target="$(_resolve_entry "$1")"
+  bash "$target"
 }
 
 interactive_main() {
@@ -258,46 +220,45 @@ interactive_main() {
     export PATH="${HOME}/opt/gum/bin:${PATH}"
   fi
 
-  # 顶部品牌 banner（有 nlt-ui 则带边框/配色；否则朴素两行）。
   if declare -F nlt_ui_banner >/dev/null 2>&1; then
-    nlt_ui_banner "nltdeploy" "本机开发与服务部署脚本集合" "↑/↓ 选择 · Enter 确认 · Esc/q 退出"
+    nlt_ui_banner "nltdeploy" "开发环境、工具与服务管理"
   fi
 
   command -v gum >/dev/null 2>&1 || { usage; return 0; }
 
-  # 组装带描述的菜单项：key 为首个 token，label 为 "key — 描述"。
-  local -a labels=()
-  labels+=("upgrade    — 升级本安装（自动选源：本地→github→gitee）")
-  labels+=("uninstall  — 卸载 nltdeploy")
-  labels+=("list       — 列出所有可路由入口")
-  local name desc
-  while IFS= read -r name; do
-    [[ -n "$name" ]] || continue
-    desc="$(_entry_desc "$name")"
-    labels+=("$(printf '%-11s— %s' "$name" "$desc")")
-  done < <(_entry_names)
-  labels+=("help       — 显示帮助")
-  labels+=("退出")
+  local -a labels=(
+    "service    服务管理与运行状态"
+    "dev        语言与开发环境"
+    "tool       本机工具与网络诊断"
+    "ai         AI 编程 CLI"
+    "upgrade    升级 nltdeploy"
+    "uninstall  卸载 nltdeploy"
+    "help       命令帮助"
+    "quit       退出"
+  )
 
   local pick key
-  if declare -F nlt_ui_choose >/dev/null 2>&1; then
-    pick="$(nlt_ui_choose "选择要执行的操作" "${labels[@]}")" || return 0
-  else
-    pick="$(printf '%s\n' "${labels[@]}" | gum choose --header "nltdeploy")" || return 0
-  fi
-  [[ -n "${pick}" ]] || return 0
-  key="${pick%% *}"
+  while true; do
+    if declare -F nlt_ui_choose >/dev/null 2>&1; then
+      pick="$(nlt_ui_choose "nltdeploy / 选择领域" "${labels[@]}")" || return 0
+    else
+      pick="$(printf '%s\n' "${labels[@]}" | gum filter --header "nltdeploy / 选择领域" --limit 1)" || return 0
+    fi
+    [[ -n "${pick}" ]] || return 0
+    key="${pick%% *}"
 
-  case "${key}" in
-    upgrade)   cmd_upgrade ;;
-    uninstall) cmd_uninstall ;;
-    list)      cmd_list ;;
-    tools|dev|ai-cli|pip-sources|python-env|utils|github-net|port-kill|download|cockpit-tools|services|airflow|celery|paperclip|code-server|new-api|sub2api|open-pencil)
-      cmd_entry "${key}"
-      ;;
-    help)      usage ;;
-    *)         return 0 ;;
-  esac
+    case "${key}" in
+      service)   open_entry services ;;
+      dev)       open_entry dev ;;
+      tool)      open_entry tools ;;
+      ai)        open_entry ai-cli ;;
+      upgrade)   cmd_upgrade ;;
+      uninstall) cmd_uninstall ;;
+      help)      usage ;;
+      *)         return 0 ;;
+    esac
+    echo ""
+  done
 }
 
 main() {
@@ -314,7 +275,11 @@ main() {
     upgrade|update) shift; cmd_upgrade "$@" ;;
     uninstall|remove) shift; cmd_uninstall "$@" ;;
     list|--list) cmd_list ;;
-    tools|dev|ai-cli|pip-sources|python-env|utils|github-net|port-kill|download|cockpit-tools|services|airflow|celery|paperclip|code-server|new-api|sub2api|open-pencil)
+    service|services) shift; cmd_entry services "$@" ;;
+    tool|tools) shift; cmd_entry tools "$@" ;;
+    ai|ai-cli) shift; cmd_entry ai-cli "$@" ;;
+    dev) shift; cmd_entry dev "$@" ;;
+    pip-sources|python-env|utils|github-net|port-kill|download|cockpit-tools|airflow|celery|paperclip|code-server|new-api|sub2api|open-pencil)
       cmd="$1"; shift; cmd_entry "${cmd}" "$@"
       ;;
     help|-h|--help) usage ;;
