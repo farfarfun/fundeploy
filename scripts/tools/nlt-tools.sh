@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# nlt-tools：工具类统一入口。
+# nltdeploy tool：工具类内部路由。
 #
 # 用法:
-#   nlt-tools <tool> install      # 检测是否已安装，未安装则安装（各工具 install 自身幂等）
-#   nlt-tools <tool> upgrade      # 升级到最新（映射到各工具 update / --force）
-#   nlt-tools <tool> uninstall    # 卸载
-#   nlt-tools <tool> <其它子命令> # 原样透传给该工具 setup.sh（如 reinstall / status）
-#   nlt-tools list                # 列出可用工具
-#   nlt-tools help                # 显示本说明
-#   nlt-tools                     # 交互 TTY：gum 菜单选择工具与动作；否则打印 help
+#   nltdeploy tool <tool> install      # 检测是否已安装，未安装则安装
+#   nltdeploy tool <tool> upgrade      # 升级到最新
+#   nltdeploy tool <tool> uninstall    # 卸载
+#   nltdeploy tool <tool> <其它子命令> # 原样透传给工具脚本
+#   nltdeploy tool list                # 列出可用工具
+#   nltdeploy tool help                # 显示本说明
+#   nltdeploy tool                     # 交互菜单
 #
 # 供服务脚本调用（服务内部依赖工具时，不自行检测，直接）:
-#   nlt-tools gum install
-#   nlt-tools python-env install
+#   nltdeploy tool gum install
+#   nltdeploy tool python-env install
 #
 # 设计约定:
 #   - install = 幂等「检测→未装则装」，由各工具 setup.sh 的 install 子命令负责。

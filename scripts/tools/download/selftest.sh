@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# nlt-download 轻量自测（resolve-url 固定用例）
+# nltdeploy tool download 轻量自测（resolve-url 固定用例）
 set -euo pipefail
 
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -5,10 +5,8 @@
 #   ./setup.sh                        # 无参：gum 交互模式
 #   ./setup.sh kill <port> [port…]    # 杀掉占用指定端口的进程（SIGTERM → SIGKILL）
 #   ./setup.sh list [port]            # 列出占用端口的进程（不杀）
-#   ./setup.sh install                # 安装 nlt-port-kill 包装到 ~/opt/nlt/bin
-#   ./setup.sh update                 # 更新已安装的包装脚本
-#   ./setup.sh reinstall              # 重装（TTY 下 gum 确认）
-#   ./setup.sh uninstall              # 移除已安装的包装脚本
+#   ./setup.sh install                # 无需单独安装，清理历史包装脚本
+#   ./setup.sh uninstall              # 清理历史包装脚本
 #   NONINTERACTIVE=1 ./setup.sh kill 8080   # 非交互，无需确认直接杀
 #
 # 作为库使用（source）：
@@ -33,7 +31,7 @@ if [[ -n "${_NLT_LIB}" ]]; then
   source "${_NLT_LIB}/nlt-common.sh"
 fi
 
-# ── 安装目标路径 ──────────────────────────────────────────────────────────────
+# ── 历史独立入口（仅用于清理）─────────────────────────────────────────────────
 NLT_BIN_DIR="${NLT_BIN_DIR:-${HOME}/opt/nlt/bin}"
 INSTALL_NAME="nlt-port-kill"
 
@@ -201,38 +199,6 @@ nlt_kill_ports() {
   return 0
 }
 
-# ── 安装 / 卸载 ───────────────────────────────────────────────────────────────
-
-_pk_install_wrapper() {
-  mkdir -p "${NLT_BIN_DIR}"
-  local target="${NLT_BIN_DIR}/${INSTALL_NAME}"
-  local src
-  src="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
-
-  cat > "${target}" <<WRAPPER
-#!/usr/bin/env bash
-# 由 nltdeploy port-kill/setup.sh install 生成
-exec bash "${src}" "\$@"
-WRAPPER
-  chmod 0755 "${target}"
-  _pk_info "已安装: ${target}"
-  _pk_say "  用法: ${INSTALL_NAME} kill <port> [port…]"
-  _pk_say "  用法: ${INSTALL_NAME} list [port]"
-
-  # 提示加 PATH
-  local profile_hint=""
-  case "${SHELL:-}" in
-    */zsh)  profile_hint="${HOME}/.zshrc" ;;
-    */bash) profile_hint="${HOME}/.bashrc" ;;
-    *)      profile_hint="${HOME}/.zshrc" ;;
-  esac
-  if [[ ":${PATH}:" != *":${NLT_BIN_DIR}:"* ]]; then
-    _pk_warn "请将 ${NLT_BIN_DIR} 加入 PATH，例如："
-    _pk_say  "  echo 'export PATH=\"${NLT_BIN_DIR}:\$PATH\"' >> ${profile_hint}"
-    _pk_say  "  source ${profile_hint}"
-  fi
-}
-
 _pk_uninstall_wrapper() {
   local target="${NLT_BIN_DIR}/${INSTALL_NAME}"
   if [[ -f "${target}" ]]; then
@@ -301,32 +267,18 @@ cmd_kill() {
 # ── Tool 标准子命令 ───────────────────────────────────────────────────────────
 
 cmd_install() {
-  _pk_header "安装 ${INSTALL_NAME}"
-  if [[ -f "${NLT_BIN_DIR}/${INSTALL_NAME}" ]]; then
-    _pk_warn "${INSTALL_NAME} 已存在（${NLT_BIN_DIR}/${INSTALL_NAME}），将覆盖。"
-  fi
-  _pk_install_wrapper
+  _pk_uninstall_wrapper
+  _pk_info "port-kill 已由 nltdeploy 提供，无需单独安装。"
+  _pk_say "  用法: nltdeploy tool port-kill kill <port> [port…]"
+  _pk_say "  用法: nltdeploy tool port-kill list [port]"
 }
 
 cmd_update() {
-  _pk_header "更新 ${INSTALL_NAME}"
-  if [[ ! -f "${NLT_BIN_DIR}/${INSTALL_NAME}" ]]; then
-    _pk_warn "尚未安装，请先执行 install。"
-    return 1
-  fi
-  _pk_install_wrapper
-  _pk_info "更新完成。"
+  cmd_install
 }
 
 cmd_reinstall() {
-  _pk_header "重装 ${INSTALL_NAME}"
-  if [[ "${NONINTERACTIVE:-0}" != "1" ]] && [[ -t 0 ]] && command -v gum >/dev/null 2>&1; then
-    gum confirm "将重新覆盖安装 ${INSTALL_NAME}，继续？" || {
-      _pk_warn "已取消。"; return 0
-    }
-  fi
-  _pk_uninstall_wrapper
-  _pk_install_wrapper
+  cmd_install
 }
 
 cmd_uninstall() {
@@ -355,8 +307,6 @@ _interactive_main() {
     pick="$(gum choose --header "port-kill — 选择操作" \
       "kill  — 终止占用指定端口的进程" \
       "list  — 列出占用指定端口的进程" \
-      "install   — 安装 ${INSTALL_NAME} 到 ${NLT_BIN_DIR}" \
-      "uninstall — 移除 ${INSTALL_NAME}" \
       "退出")" || { _pk_warn "已取消。"; return 0; }
 
     case "${pick}" in
@@ -373,8 +323,6 @@ _interactive_main() {
         [[ -z "${port}" ]] && continue
         cmd_list "${port}"
         ;;
-      install*)   cmd_install ;;
-      uninstall*) cmd_uninstall ;;
       "退出") _pk_say "已退出。"; return 0 ;;
       *) _pk_warn "无效选项。" ;;
     esac
@@ -393,10 +341,8 @@ _usage() {
   list [port]           列出占用端口的进程（不终止）
 
 Tool 管理子命令:
-  install               安装 ${INSTALL_NAME} 包装脚本到 ${NLT_BIN_DIR}
-  update                更新已安装的包装脚本
-  reinstall             重新安装（破坏性操作需 gum 确认）
-  uninstall             移除已安装的包装脚本
+  install/update        无需单独安装；清理旧版 ${INSTALL_NAME} 包装脚本
+  uninstall             清理旧版 ${INSTALL_NAME} 包装脚本
 
 库 source 模式:
   source setup.sh --lib
@@ -406,7 +352,7 @@ Tool 管理子命令:
 
 环境变量:
   NONINTERACTIVE=1      跳过所有 gum 确认
-  NLT_BIN_DIR           安装目标目录（默认 ~/opt/nlt/bin）
+  NLT_BIN_DIR           旧版入口清理目录（默认 ~/opt/nlt/bin）
 EOF
 }
 

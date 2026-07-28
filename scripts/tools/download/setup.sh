@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# nlt-download — 对 GitHub 族 HTTPS URL 做可选改写后调用 curl，或单独解析 URL。
+# nltdeploy tool download — 对 GitHub 族 HTTPS URL 做可选改写后调用 curl，或单独解析 URL。
 #
 # 用法:
 #   ./setup.sh curl [curl 参数…]     # 扫描参数中的 http(s) URL 并改写后 exec curl
@@ -68,7 +68,7 @@ cmd_resolve_url() {
 
 _cmd_tool_meta() {
   local verb="$1"
-  _dl_say "[nlt-download] ${verb}：本 CLI 由 nltdeploy 安装器同步到 libexec；无需写入其它目录。"
+  _dl_say "[nltdeploy download] ${verb}：本工具随 nltdeploy 提供，无需单独安装。"
   if [[ "${NONINTERACTIVE:-0}" == "1" ]] && [[ "$verb" == "install" ]]; then
     if [[ -x "${_SCRIPT_DIR}/selftest.sh" ]]; then
       bash "${_SCRIPT_DIR}/selftest.sh"
@@ -81,13 +81,13 @@ cmd_update() { _cmd_tool_meta "update"; }
 cmd_reinstall() { _cmd_tool_meta "reinstall"; }
 
 cmd_uninstall() {
-  _dl_say "[nlt-download] uninstall：移除请使用 nltdeploy 根目录 ./install.sh uninstall（将删除整棵安装树）。"
+  _dl_say "[nltdeploy download] uninstall：请使用 nltdeploy uninstall。"
 }
 
 _interactive_main() {
   while true; do
     local pick
-    pick="$(gum choose --header "nlt-download — GitHub 下载加速" \
+    pick="$(gum choose --header "nltdeploy / download — GitHub 下载加速" \
       "查看用法 (help)" \
       "运行内置自测" \
       "退出")" || {

@@ -72,7 +72,7 @@ _nlt_github_download_resolve_url() {
       return 0
     fi
     local out="${hub_pre}${url}"
-    printf '%s\n' "[nlt-download] URL rewrite (hub proxy): ${url} -> ${out}" >&2
+    printf '%s\n' "[nltdeploy download] URL rewrite (hub proxy): ${url} -> ${out}" >&2
     printf '%s\n' "$out"
     return 0
   fi
@@ -84,21 +84,21 @@ _nlt_github_download_resolve_url() {
     fi
     local new_url="${raw_base%/}${path}"
     if [[ "$new_url" != "$url" ]]; then
-      printf '%s\n' "[nlt-download] URL rewrite (mirror_raw): ${url} -> ${new_url}" >&2
+      printf '%s\n' "[nltdeploy download] URL rewrite (mirror_raw): ${url} -> ${new_url}" >&2
     fi
     printf '%s\n' "$new_url"
     return 0
   fi
 
   if [[ "$mode" == "hub_proxy" ]] && [[ -z "$hub_pre" ]]; then
-    printf '%s\n' "[nlt-download] NLTDEPLOY_GITHUB_DOWNLOAD_MODE=hub_proxy 但未设置 NLTDEPLOY_GITHUB_HUB_PROXY_PREFIX，跳过改写。" >&2
+    printf '%s\n' "[nltdeploy download] NLTDEPLOY_GITHUB_DOWNLOAD_MODE=hub_proxy 但未设置 NLTDEPLOY_GITHUB_HUB_PROXY_PREFIX，跳过改写。" >&2
   fi
 
   printf '%s\n' "$url"
   return 0
 }
 
-# 与 nlt-download curl 子命令相同：扫描参数中 https:// 开头的 token 并改写后调用 curl（非 exec）。
+# 与 nltdeploy tool download curl 子命令相同：扫描参数中的 HTTPS URL 并改写后调用 curl。
 _nlt_github_download_curl() {
   command -v curl >/dev/null 2>&1 || {
     echo "错误: 需要 curl。" >&2

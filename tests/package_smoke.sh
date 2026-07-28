@@ -14,6 +14,9 @@ DEB="$(bash "${ROOT}/packaging/build-deb.sh" 0.0.0 "${TMP}/dist")"
 [[ "$(dpkg-deb --field "$DEB" Version)" == "0.0.0" ]]
 dpkg-deb --extract "$DEB" "${TMP}/extract"
 [[ -x "${TMP}/extract/usr/bin/nltdeploy" ]]
+for entry in "${TMP}/extract/usr/bin/"*; do
+  [[ "$(basename "$entry")" == "nltdeploy" ]] || { echo "unexpected package command: $(basename "$entry")" >&2; exit 1; }
+done
 ! grep -Fq "$TMP" "${TMP}/extract/usr/bin/nltdeploy"
 
 OUT="$(NLTDEPLOY_ROOT="${TMP}/extract/usr" "${TMP}/extract/usr/bin/nltdeploy" list)"

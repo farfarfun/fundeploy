@@ -36,12 +36,10 @@ _nlt_listener_pid_for_port() {
   echo ""
 }
 
-# 解析 nlt-tools 可执行路径（bin 包装 → 仓库源两种布局）；找不到返回非 0。
+# 解析内部工具路由脚本；找不到返回非 0。
 _nlt_resolve_nlt_tools() {
-  local NLTDEPLOY_ROOT="${NLTDEPLOY_ROOT:-${HOME}/.local/nltdeploy}"
   local _cand
   for _cand in \
-    "${NLTDEPLOY_ROOT}/bin/nlt-tools" \
     "${_NLT_COMMON_LIB_DIR}/../../tools/nlt-tools.sh" \
     "${_NLT_COMMON_LIB_DIR}/../tools/nlt-tools.sh"; do
     if [[ -f "${_cand}" || -x "${_cand}" ]]; then
@@ -49,14 +47,12 @@ _nlt_resolve_nlt_tools() {
       return 0
     fi
   done
-  # 也尝试 PATH 上已有的 nlt-tools（适用于仓库内 shebang 直接执行的场景）
-  command -v nlt-tools >/dev/null 2>&1 && { command -v nlt-tools; return 0; }
   return 1
 }
 
 # 确保 gum 可用（WAR-402）：
 #   1. 已可用 → 立即返回 0（O(1) 幂等路径）。
-#   2. 找到 nlt-tools → 委派 `nlt-tools gum install`（规范路径，服务内部依赖走此处）。
+#   2. 找到内部工具路由脚本 → 委派 gum install。
 #   3. 兜底 → 原始 curl 直接拉取 utils/setup.sh 安装（独立脚本 / 首次 bootstrap 场景）。
 _nlt_ensure_gum() {
   export PATH="${HOME}/opt/gum/bin:${PATH}"
@@ -67,28 +63,28 @@ _nlt_ensure_gum() {
     command -v gum >/dev/null 2>&1 && return 0
   fi
 
-  # 规范路径：委派给 nlt-tools gum install（幂等）。
+  # 规范路径：委派给内部工具路由脚本（幂等）。
   local _nlt_tools_bin
   if _nlt_tools_bin="$(_nlt_resolve_nlt_tools 2>/dev/null)"; then
-    echo "未检测到 gum，执行: nlt-tools gum install" >&2
+    echo "未检测到 gum，执行: nltdeploy tool gum install" >&2
     if [[ -x "${_nlt_tools_bin}" ]]; then
       "${_nlt_tools_bin}" gum install || {
-        echo "错误: nlt-tools gum install 失败。" >&2
+        echo "错误: nltdeploy tool gum install 失败。" >&2
         return 1
       }
     else
       bash "${_nlt_tools_bin}" gum install || {
-        echo "错误: nlt-tools gum install 失败。" >&2
+        echo "错误: nltdeploy tool gum install 失败。" >&2
         return 1
       }
     fi
     export PATH="${HOME}/opt/gum/bin:${PATH}"
     command -v gum >/dev/null 2>&1 && return 0
-    echo "错误: gum 仍未可用（nlt-tools gum install 后）。" >&2
+    echo "错误: gum 仍未可用（nltdeploy tool gum install 后）。" >&2
     return 1
   fi
 
-  # 兜底：curl 直接拉取（独立脚本 / 首次 bootstrap 场景，nlt-tools 尚未安装时）。
+  # 兜底：curl 直接拉取（独立脚本 / 首次 bootstrap 场景）。
   command -v curl >/dev/null 2>&1 || {
     echo "错误: 需要 curl 以安装 gum。" >&2
     return 1

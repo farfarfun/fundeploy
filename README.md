@@ -12,7 +12,7 @@
 
 ## 统一入口
 
-- `nltdeploy`：唯一推荐入口；无参数时打开可搜索的分层菜单。
+- `nltdeploy`：唯一命令入口；无参数时打开可搜索的分层菜单。
   ```bash
   nltdeploy service status
   nltdeploy service code-server official install
@@ -27,7 +27,7 @@
   nltdeploy upgrade --source github
   ```
 - 领域固定为 `service`、`dev`、`tool`、`ai`，后面依次是模块和动作。
-- `nlt-services`、`nlt-dev`、`nlt-tools`、`nlt-ai-cli` 以及各 `nlt-*` 服务命令继续保留兼容，但不需要记忆。
+- 不再安装其它 `nlt-*` 兼容命令；旧版本升级时会自动清理这些历史入口。
 
 Homebrew 可通过官方安装器显式安装：
 
@@ -122,10 +122,10 @@ brew uninstall nltdeploy
 scripts/
   dev/        开发工具统一入口
   tools/      非常驻工具与环境脚本
-  services/   常驻服务脚本与 nlt-services 聚合入口
+  services/   常驻服务脚本与 service 聚合入口
   lib/        公共 Bash 库
 tests/        冒烟测试
-install.sh    安装 nlt-* 包装命令
+install.sh    安装唯一的 nltdeploy 包装命令
 ```
 
 ## 说明

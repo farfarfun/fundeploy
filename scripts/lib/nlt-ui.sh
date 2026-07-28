@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # nlt-ui：可复用的终端交互主题（gum 封装）。由各入口/服务脚本 source。
 #
-# 目标：让 nltdeploy / nlt-tools / nlt-dev / 各服务的 gum 菜单看起来是「同一套系统」——
+# 目标：让 nltdeploy 各领域的 gum 菜单看起来是「同一套系统」——
 #   统一配色、统一 banner、统一光标与选中样式、统一确认/输入风格。
 #
 # 设计约定:

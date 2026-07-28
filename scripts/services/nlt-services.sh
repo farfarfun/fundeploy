@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# nlt-services：服务总览、路由与安装入口聚合。
+# nltdeploy service：服务总览、路由与安装入口聚合。
 #
 # 用法:
-#   nlt-services                    # gum：status / install / help / quit
-#   nlt-services status [--no-http]
-#   nlt-services <服务> [动作...]   # 透传给对应服务
-#   nlt-services install            # gum：先选「安装 / 卸载」，再选模块
-#   nlt-services install add <名>   # 安装类（install 与 add 同义）
-#   nlt-services install remove <名> # 卸载类（uninstall 与 remove 同义）
-#   nlt-services help
+#   nltdeploy service                    # gum：status / install / help / quit
+#   nltdeploy service status [--no-http]
+#   nltdeploy service <服务> [动作...]   # 透传给对应服务
+#   nltdeploy service install            # gum：先选「安装 / 卸载」，再选模块
+#   nltdeploy service install add <名>    # 安装类（install 与 add 同义）
+#   nltdeploy service install remove <名> # 卸载类（uninstall 与 remove 同义）
+#   nltdeploy service help
 #
 # 模块名: airflow, celery, paperclip, code-server, new-api, sub2api, open-pencil,
 #         pip-sources, python-env, utils, github-net, cockpit-tools
@@ -21,9 +21,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../lib/nlt-common.sh
 source "${SCRIPT_DIR}/../lib/nlt-common.sh"
-
-NLTDEPLOY_ROOT="${NLTDEPLOY_ROOT:-${HOME}/.local/nltdeploy}"
-NLT_BIN="${NLTDEPLOY_ROOT}/bin"
 
 die() { echo "错误: $*" >&2; exit 1; }
 
@@ -65,12 +62,12 @@ _service_known() {
 
 cmd_list() { printf '%s\n' "${_SERVICE_NAMES[@]}"; }
 
-_resolve_service_entry() {
+_resolve_module_entry() {
   local name="$1" candidate
   for candidate in \
-    "${NLT_BIN}/nlt-${name}" \
     "${SCRIPT_DIR}/${name}/setup.sh" \
-    "${SCRIPT_DIR}/../${name}/setup.sh"; do
+    "${SCRIPT_DIR}/../${name}/setup.sh" \
+    "${SCRIPT_DIR}/../tools/${name}/setup.sh"; do
     [[ -f "$candidate" ]] && { printf '%s\n' "$candidate"; return 0; }
   done
   return 1
@@ -79,13 +76,13 @@ _resolve_service_entry() {
 _dispatch_service() {
   local name="$1" target
   shift
-  target="$(_resolve_service_entry "$name")" || die "找不到服务入口: ${name}"
+  target="$(_resolve_module_entry "$name")" || die "找不到服务入口: ${name}"
   exec bash "$target" "$@"
 }
 
 _open_service_menu() {
   local target
-  target="$(_resolve_service_entry "$1")" || die "找不到服务入口: $1"
+  target="$(_resolve_module_entry "$1")" || die "找不到服务入口: $1"
   bash "$target"
 }
 
@@ -325,46 +322,25 @@ _module_supports_uninstall() {
 _dispatch_install_or_remove() {
   local action="$1"
   local name="$2"
-
-  [[ -d "$NLT_BIN" ]] || die "未找到 ${NLT_BIN}，请先执行 install.sh"
+  local target
+  target="$(_resolve_module_entry "$name")" || die "找不到模块入口: ${name}"
 
   if [[ "$action" == "remove" ]]; then
     _module_supports_uninstall "$name" || die "模块「${name}」不支持卸载（或请使用各命令自带的 uninstall）"
-    case "$name" in
-      airflow) exec "${NLT_BIN}/nlt-airflow" uninstall ;;
-      paperclip) exec "${NLT_BIN}/nlt-paperclip" uninstall ;;
-      code-server) exec "${NLT_BIN}/nlt-code-server" uninstall ;;
-      new-api) exec "${NLT_BIN}/nlt-new-api" uninstall ;;
-      sub2api) exec "${NLT_BIN}/nlt-sub2api" uninstall ;;
-      open-pencil) exec "${NLT_BIN}/nlt-open-pencil" uninstall ;;
-      pip-sources) exec "${NLT_BIN}/nlt-pip-sources" uninstall ;;
-      python-env) exec "${NLT_BIN}/nlt-python-env" uninstall ;;
-      github-net) exec "${NLT_BIN}/nlt-github-net" uninstall ;;
-      cockpit-tools) exec "${NLT_BIN}/nlt-cockpit-tools" uninstall ;;
-      *) die "内部错误: remove ${name}" ;;
-    esac
+    exec bash "$target" uninstall
   fi
 
   case "$name" in
-    airflow) exec "${NLT_BIN}/nlt-airflow" install ;;
-    celery) exec "${NLT_BIN}/nlt-celery" install ;;
-    paperclip) exec "${NLT_BIN}/nlt-paperclip" install ;;
-    code-server) exec "${NLT_BIN}/nlt-code-server" install ;;
-    new-api) exec "${NLT_BIN}/nlt-new-api" install ;;
-    sub2api) exec "${NLT_BIN}/nlt-sub2api" install ;;
-    open-pencil) exec "${NLT_BIN}/nlt-open-pencil" install ;;
-    pip-sources) exec "${NLT_BIN}/nlt-pip-sources" ;;
-    python-env) exec "${NLT_BIN}/nlt-python-env" ;;
-    utils) exec "${NLT_BIN}/nlt-utils" ;;
-    github-net) exec "${NLT_BIN}/nlt-github-net" ;;
-    cockpit-tools) exec "${NLT_BIN}/nlt-cockpit-tools" install ;;
+    pip-sources | python-env | utils | github-net) exec bash "$target" ;;
+    airflow | celery | paperclip | code-server | new-api | sub2api | open-pencil | cockpit-tools)
+      exec bash "$target" install
+      ;;
     *) die "未知模块: ${name}（见 nltdeploy service help）" ;;
   esac
 }
 
 cmd_install() {
   local action="" name=""
-  [[ -d "$NLT_BIN" ]] || die "未找到 ${NLT_BIN}，请先执行 install.sh"
 
   if [[ $# -eq 0 ]]; then
     if [[ "${NONINTERACTIVE:-}" == "1" ]]; then

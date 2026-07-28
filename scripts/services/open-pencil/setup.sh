@@ -92,7 +92,7 @@ _resolve_npm() {
     echo "${OPEN_PENCIL_NPM_BIN}"
     return
   fi
-  command -v npm >/dev/null 2>&1 || die "未找到 npm（可参考 nlt-dev / nlt-services 里的 nodejs 安装）"
+  command -v npm >/dev/null 2>&1 || die "未找到 npm（可先运行 nltdeploy dev nodejs install）"
   command -v npm
 }
 

@@ -198,7 +198,7 @@ _nlt_post_install_refresh_shell() {
       [[ -f "${HOME}/.zshrc" ]] &&
       command -v zsh >/dev/null 2>&1
   then
-    echo "检测到由 zsh 启动安装：将 exec zsh -l 以加载 ~/.zshrc（nlt-* 立即可用；exit 回到上一层 shell）。" >&2
+    echo "检测到由 zsh 启动安装：将 exec zsh -l 以加载 ~/.zshrc（nltdeploy 立即可用；exit 回到上一层 shell）。" >&2
     exec zsh -l
   fi
 
@@ -465,31 +465,31 @@ do_install_or_update() {
   _nlt_cp_first "${LIBEXEC}/nltdeploy-install.sh" \
     "${SCRIPTS}/../install.sh"
 
-  _emit_wrapper nlt-dev dev/setup.sh
-  _emit_wrapper nlt-ai-cli ai-cli/setup.sh
-  _emit_wrapper nlt-pip-sources pip-sources/setup.sh
-  _emit_wrapper nlt-python-env python-env/setup.sh
-  _emit_wrapper nlt-utils utils/setup.sh
-  _emit_wrapper nlt-github-net github-net/setup.sh
-  _emit_wrapper nlt-port-kill port-kill/setup.sh
-  _emit_wrapper nlt-download download/setup.sh
-  _emit_wrapper nlt-cockpit-tools cockpit-tools/setup.sh
-  _emit_wrapper nlt-services services/nlt-services.sh
-
-  _emit_wrapper nlt-tools tools/nlt-tools.sh
   _emit_wrapper nltdeploy nltdeploy.sh
 
-  _emit_wrapper nlt-airflow airflow/setup.sh
-  _emit_wrapper nlt-celery celery/setup.sh
-  _emit_wrapper nlt-paperclip paperclip/setup.sh
-  _emit_wrapper nlt-code-server code-server/setup.sh
-  _emit_wrapper nlt-new-api new-api/setup.sh
-  _emit_wrapper nlt-sub2api sub2api/setup.sh
-  _emit_wrapper nlt-open-pencil open-pencil/setup.sh
   rm -rf "${LIBEXEC}/build"
-  rm -f "${NLTDEPLOY_ROOT}/bin/nlt-build"
-  rm -f "${NLTDEPLOY_ROOT}/bin/nlt"
+  # 更新旧版本时只清理本项目曾安装过的包装器，保留用户的其它命令。
   rm -f \
+    "${NLTDEPLOY_ROOT}/bin/nlt" \
+    "${NLTDEPLOY_ROOT}/bin/nlt-build" \
+    "${NLTDEPLOY_ROOT}/bin/nlt-dev" \
+    "${NLTDEPLOY_ROOT}/bin/nlt-ai-cli" \
+    "${NLTDEPLOY_ROOT}/bin/nlt-pip-sources" \
+    "${NLTDEPLOY_ROOT}/bin/nlt-python-env" \
+    "${NLTDEPLOY_ROOT}/bin/nlt-utils" \
+    "${NLTDEPLOY_ROOT}/bin/nlt-github-net" \
+    "${NLTDEPLOY_ROOT}/bin/nlt-port-kill" \
+    "${NLTDEPLOY_ROOT}/bin/nlt-download" \
+    "${NLTDEPLOY_ROOT}/bin/nlt-cockpit-tools" \
+    "${NLTDEPLOY_ROOT}/bin/nlt-services" \
+    "${NLTDEPLOY_ROOT}/bin/nlt-tools" \
+    "${NLTDEPLOY_ROOT}/bin/nlt-airflow" \
+    "${NLTDEPLOY_ROOT}/bin/nlt-celery" \
+    "${NLTDEPLOY_ROOT}/bin/nlt-paperclip" \
+    "${NLTDEPLOY_ROOT}/bin/nlt-code-server" \
+    "${NLTDEPLOY_ROOT}/bin/nlt-new-api" \
+    "${NLTDEPLOY_ROOT}/bin/nlt-sub2api" \
+    "${NLTDEPLOY_ROOT}/bin/nlt-open-pencil" \
     "${NLTDEPLOY_ROOT}/bin/nlt-airflow-install" \
     "${NLTDEPLOY_ROOT}/bin/nlt-celery-install" \
     "${NLTDEPLOY_ROOT}/bin/nlt-celery-update" \
@@ -497,6 +497,9 @@ do_install_or_update() {
     "${NLTDEPLOY_ROOT}/bin/nlt-code-server-install" \
     "${NLTDEPLOY_ROOT}/bin/nlt-new-api-install" \
     "${NLTDEPLOY_ROOT}/bin/nlt-sub2api-install"
+  if [[ -z "${NLTDEPLOY_PACKAGE_MANAGER:-}" ]]; then
+    rm -f "${HOME}/opt/nlt/bin/nlt-port-kill"
+  fi
 
   if [[ "${NLTDEPLOY_SKIP_PROFILE_HINT:-}" != "1" ]]; then
     echo ""

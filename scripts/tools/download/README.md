@@ -1,4 +1,4 @@
-# nlt-download（GitHub 下载 URL 加速）
+# nltdeploy tool download（GitHub 下载 URL 加速）
 
 对 **`curl` 参数中的 `https://` URL** 在调用前做 **可选** 改写，仅作用于常见 GitHub 主机；未配置环境变量时与直连 `curl` 行为一致。
 
@@ -20,11 +20,11 @@
 
 若设置 `NLTDEPLOY_GITHUB_DOWNLOAD_MODE=hub_proxy` 却 **未** 设置 `NLTDEPLOY_GITHUB_HUB_PROXY_PREFIX`，会向 stderr 提示并跳过改写。
 
-发生改写时，会向 **stderr** 打印一行：`[nlt-download] URL rewrite (…) : <原> -> <新>`。
+发生改写时，会向 **stderr** 打印一行：`[nltdeploy download] URL rewrite (…) : <原> -> <新>`。
 
 **不会改写**：非 `https://` 的 URL、不在白名单内的主机、已是 hub 前缀开头的 URL（避免双写）。
 
-**大文件下载进度条**：`nlt-new-api` / `nlt-code-server` 的 `install` / `update` 在已 `source` 到 `nlt-progress.sh` 时，会用 **`nlt_pb_curl_to_file`** 拉取 Release 资产（stdout 为 TTY 时显示条形进度；否则仅周期性字节日志）。
+**大文件下载进度条**：new-api / code-server 的 `install` / `update` 在已 `source` 到 `nlt-progress.sh` 时，会用 **`nlt_pb_curl_to_file`** 拉取 Release 资产（stdout 为 TTY 时显示条形进度；否则仅周期性字节日志）。
 
 **直连提示**：未配置任何加速变量时，上述服务在下载前会向 stderr 打一行说明；不需要可设 **`NLTDEPLOY_GITHUB_DOWNLOAD_HINT=0`**。
 
@@ -49,17 +49,17 @@ _nlt_github_download_resolve_url "https://raw.githubusercontent.com/…"
 
 ```bash
 # 关闭加速（默认）
-nlt-download resolve-url https://github.com/foo/bar
+nltdeploy tool download resolve-url https://github.com/foo/bar
 # → 原样输出
 
 # 类 ghproxy：前缀 + 完整 URL（请替换为你信任且可用的网关域名）
 export NLTDEPLOY_GITHUB_HUB_PROXY_PREFIX='https://ghproxy.example/https://'
-nlt-download curl -fsSL https://raw.githubusercontent.com/farfarfun/nltdeploy/HEAD/README.md -o /tmp/README.md
+nltdeploy tool download curl -fsSL https://raw.githubusercontent.com/farfarfun/nltdeploy/HEAD/README.md -o /tmp/README.md
 
 # 仅 raw 走镜像前缀（示例 base 为占位；镜像布局需与你的服务商文档一致）
 export NLTDEPLOY_GITHUB_DOWNLOAD_MODE=mirror_raw
 export NLTDEPLOY_GITHUB_RAW_MIRROR_BASE='https://mirror.example/gh-raw'
-nlt-download resolve-url https://raw.githubusercontent.com/o/r/v/file.txt
+nltdeploy tool download resolve-url https://raw.githubusercontent.com/o/r/v/file.txt
 ```
 
 ## 自测

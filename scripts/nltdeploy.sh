@@ -56,7 +56,7 @@ usage() {
   list                                     显示领域入口
   help / -h / --help                       本说明
 
-无参数时打开可搜索菜单。各 nlt-* 命令保留为兼容入口。
+无参数时打开可搜索菜单。nltdeploy 是唯一命令入口。
 
 示例:
   nltdeploy service status
@@ -91,13 +91,6 @@ _entry_rel() {
     sub2api)        echo "sub2api/setup.sh" ;;
     open-pencil)    echo "open-pencil/setup.sh" ;;
     *)              return 1 ;;
-  esac
-}
-
-_entry_bin() {
-  case "$1" in
-    tools) echo "nlt-tools" ;;
-    *)     echo "nlt-$1" ;;
   esac
 }
 
@@ -213,20 +206,15 @@ cmd_uninstall() {
 }
 
 _resolve_entry() {
-  local name="$1" rel bin c
+  local name="$1" rel c
   rel="$(_entry_rel "${name}")" || die "未知入口: ${name}（nltdeploy list 查看）"
-  bin="${NLTDEPLOY_ROOT}/bin/$(_entry_bin "${name}")"
-  if [[ -x "${bin}" ]]; then
-    printf '%s\n' "$bin"
-    return 0
-  fi
   for c in \
     "${SCRIPT_DIR}/${rel}" \
     "${SCRIPT_DIR}/../${rel}" \
     "${NLTDEPLOY_ROOT}/libexec/nltdeploy/${rel}"; do
     [[ -f "$c" ]] && { printf '%s\n' "$c"; return 0; }
   done
-  die "未找到 $(_entry_bin "${name}")（请先安装：install.sh install）"
+  die "未找到入口脚本: ${rel}（请先安装：install.sh install）"
 }
 
 cmd_entry() {
