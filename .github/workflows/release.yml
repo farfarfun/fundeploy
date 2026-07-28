@@ -128,15 +128,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - id: config
-        name: Check Homebrew Tap token
+        name: Check Homebrew Tap deploy key
         env:
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          HOMEBREW_TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
         run: |
-          if [[ -n "$HOMEBREW_TAP_TOKEN" ]]; then
+          if [[ -n "$HOMEBREW_TAP_DEPLOY_KEY" ]]; then
             echo "tap=true" >>"$GITHUB_OUTPUT"
           else
             echo "tap=false" >>"$GITHUB_OUTPUT"
-            echo "HOMEBREW_TAP_TOKEN is not configured; skipping Tap update."
+            echo "HOMEBREW_TAP_DEPLOY_KEY is not configured; skipping Tap update."
           fi
 
       - uses: actions/download-artifact@v4
@@ -149,7 +149,7 @@ jobs:
         if: steps.config.outputs.tap == 'true'
         with:
           repository: farfarfun/homebrew-tap
-          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
           path: tap
 
       - name: Update Formula

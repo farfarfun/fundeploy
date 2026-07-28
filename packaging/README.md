@@ -12,7 +12,7 @@
 | --- | --- |
 | `APT_GPG_PRIVATE_KEY` | ASCII-armored APT 签名私钥 |
 | `APT_GPG_PASSPHRASE` | 私钥密码；无密码密钥可不设置 |
-| `HOMEBREW_TAP_TOKEN` | 对 `farfarfun/homebrew-tap` 有 Contents 写权限的 fine-grained PAT |
+| `HOMEBREW_TAP_DEPLOY_KEY` | `farfarfun/homebrew-tap` 专用的可写 SSH Deploy Key 私钥 |
 
 可用现有 GPG 密钥配置 APT 签名：
 
@@ -20,7 +20,17 @@
 gpg --list-secret-keys --keyid-format LONG
 gpg --armor --export-secret-keys <KEY_ID> | gh secret set APT_GPG_PRIVATE_KEY
 gh secret set APT_GPG_PASSPHRASE
-gh secret set HOMEBREW_TAP_TOKEN
+```
+
+Homebrew Tap 使用仅限该仓库的可写 Deploy Key：
+
+```bash
+ssh-keygen -t ed25519 -N '' -C 'nltdeploy release workflow' -f homebrew_tap_deploy
+gh api --method POST repos/farfarfun/homebrew-tap/keys \
+  -f title='nltdeploy release workflow' \
+  -f key="$(cat homebrew_tap_deploy.pub)" \
+  -F read_only=false
+gh secret set HOMEBREW_TAP_DEPLOY_KEY < homebrew_tap_deploy
 ```
 
 ## 发布
