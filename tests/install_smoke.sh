@@ -134,7 +134,8 @@ out="$(NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" tools list)"
 grep -q "github-net" <<<"${out}" || exit 1
 grep -q "brew" <<<"${out}" || exit 1
 NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" dev --help >/dev/null || exit 1
-NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" services status --no-http >/dev/null || exit 1
+out="$(HOME="${TMP}/status-home" PATH=/usr/bin:/bin NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" services status --no-http)"
+grep -q '^服务,状态,PID,端口/访问,HTTP$' <<<"${out}" || exit 1
 NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nlt-dev" --help >/dev/null || exit 1
 NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nlt-dev" uv --help >/dev/null || exit 1
 NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nlt-ai-cli" --help >/dev/null || exit 1

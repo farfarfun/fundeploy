@@ -179,9 +179,14 @@ _status_csv_line() {
 # stdin 为数据行 CSV（无表头；列名由 --columns 指定）→ gum table 静态打印
 _render_status_table_from_csv() {
   PATH="${HOME}/opt/gum/bin:${PATH}"
-  gum table -p -s ',' \
-    --columns '服务,状态,PID,端口/访问,HTTP' \
-    --border rounded
+  if command -v gum >/dev/null 2>&1; then
+    gum table -p -s ',' \
+      --columns '服务,状态,PID,端口/访问,HTTP' \
+      --border rounded
+  else
+    printf '%s\n' '服务,状态,PID,端口/访问,HTTP'
+    cat
+  fi
 }
 
 _mark_alive() {
