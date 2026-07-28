@@ -329,6 +329,7 @@ dispatch() {
 }
 
 interactive_main() {
+  _nlt_ensure_gum || exit 1
   declare -F nlt_ui_apply_theme >/dev/null 2>&1 && nlt_ui_apply_theme
   if declare -F nlt_ui_banner >/dev/null 2>&1; then
     nlt_ui_banner "nltdeploy / service / code-server / manual" "本地安装 · ${CODE_SERVER_SERVICE_HOME} · ${CODE_SERVER_BIND}"
@@ -363,7 +364,6 @@ main() {
         ;;
     esac
   fi
-  _nlt_ensure_gum || exit 1
   if [[ $# -eq 0 ]]; then
     interactive_main
     return 0
