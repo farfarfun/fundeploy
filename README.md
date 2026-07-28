@@ -37,6 +37,25 @@ nltdeploy tool brew install
 
 ## 安装
 
+### APT
+
+发布仓库启用后，首次添加签名密钥和软件源：
+
+```bash
+curl -fsSL https://farfarfun.github.io/nltdeploy/nltdeploy.gpg | sudo tee /usr/share/keyrings/nltdeploy.gpg >/dev/null
+echo "deb [signed-by=/usr/share/keyrings/nltdeploy.gpg] https://farfarfun.github.io/nltdeploy stable main" | sudo tee /etc/apt/sources.list.d/nltdeploy.list
+sudo apt update
+sudo apt install nltdeploy
+```
+
+### Homebrew
+
+```bash
+brew install farfarfun/tap/nltdeploy
+```
+
+### 官方安装脚本
+
 ```bash
 chmod +x install.sh
 ./install.sh
@@ -61,6 +80,17 @@ export PATH="$HOME/.local/nltdeploy/bin:$PATH"
 - `NLTDEPLOY_SKIP_GIT_PULL=1`：跳过安装前 `git pull`
 - `NLTDEPLOY_SKIP_PROFILE_HINT=1`：不写 shell 配置，适合 CI
 - `NLTDEPLOY_UNINSTALL_YES=1`：非交互卸载确认
+
+通过 APT 或 Homebrew 安装时，升级和卸载由对应包管理器负责：
+
+```bash
+sudo apt update && sudo apt install --only-upgrade nltdeploy
+sudo apt remove nltdeploy
+brew upgrade nltdeploy
+brew uninstall nltdeploy
+```
+
+发行包入口应设置 `NLTDEPLOY_PACKAGE_MANAGER=apt` 或 `brew`；此时 `nltdeploy upgrade` 和 `nltdeploy uninstall` 只显示对应命令，不会修改包管理器维护的目录。
 
 ## 领域
 
@@ -106,6 +136,7 @@ install.sh    安装 nlt-* 包装命令
 ```bash
 bash tests/install_smoke.sh
 bash tests/progress_smoke.sh
+bash tests/package_smoke.sh
 ```
 - 没执行权限：`chmod +x install.sh` 或对应 `setup.sh`
 - PATH 未生效：手动 `export PATH="$HOME/.local/nltdeploy/bin:$PATH"`
@@ -117,7 +148,7 @@ bash tests/progress_smoke.sh
 - [scripts/dev/README.md](scripts/dev/README.md)
 - [scripts/tools/pip-sources/README.md](scripts/tools/pip-sources/README.md)
 - [scripts/tools/python-env/README.md](scripts/tools/python-env/README.md)
-- [pyproject.toml](pyproject.toml)
+- [packaging/README.md](packaging/README.md)
 
 ## 许可证
 

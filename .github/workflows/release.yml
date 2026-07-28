@@ -1,0 +1,170 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v[0-9]*"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Test
+        run: |
+          bash tests/install_smoke.sh
+          bash tests/progress_smoke.sh
+          bash tests/package_smoke.sh
+
+      - name: Build release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          bash packaging/build-deb.sh "$version" dist
+          curl -fsSL "https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz" \
+            -o "dist/nltdeploy-${version}.tar.gz"
+          sha256="$(sha256sum "dist/nltdeploy-${version}.tar.gz" | awk '{print $1}')"
+          NLTDEPLOY_GITHUB_REPOSITORY="${GITHUB_REPOSITORY}" \
+            bash packaging/render-homebrew-formula.sh "$version" "$sha256" dist/nltdeploy.rb
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: dist/*
+          retention-days: 7
+
+  apt-repository:
+    needs: release
+    runs-on: ubuntu-latest
+    outputs:
+      configured: ${{ steps.config.outputs.apt }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: config
+        name: Check APT signing key
+        env:
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+        run: |
+          if [[ -n "$APT_GPG_PRIVATE_KEY" ]]; then
+            echo "apt=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "apt=false" >>"$GITHUB_OUTPUT"
+            echo "APT_GPG_PRIVATE_KEY is not configured; skipping APT Pages publication."
+          fi
+
+      - uses: actions/download-artifact@v4
+        if: steps.config.outputs.apt == 'true'
+        with:
+          name: release-assets
+          path: dist
+
+      - name: Install APT repository tools
+        if: steps.config.outputs.apt == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y apt-utils dpkg-dev
+
+      - id: signing-key
+        name: Import APT signing key
+        if: steps.config.outputs.apt == 'true'
+        env:
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          fingerprint="$(printf '%s' "$APT_GPG_PRIVATE_KEY" | gpg --batch --with-colons --import-options show-only --import 2>/dev/null | awk -F: '$1 == "fpr" {print $10; exit}')"
+          [[ -n "$fingerprint" ]]
+          printf '%s' "$APT_GPG_PRIVATE_KEY" | gpg --batch --import
+          echo "fingerprint=$fingerprint" >>"$GITHUB_OUTPUT"
+
+      - name: Build signed APT repository
+        if: steps.config.outputs.apt == 'true'
+        env:
+          APT_GPG_PASSPHRASE: ${{ secrets.APT_GPG_PASSPHRASE }}
+        run: |
+          deb="$(find dist -maxdepth 1 -type f -name '*.deb' -print -quit)"
+          bash packaging/build-apt-repo.sh "$deb" public "${{ steps.signing-key.outputs.fingerprint }}"
+
+      - uses: actions/upload-pages-artifact@v3
+        if: steps.config.outputs.apt == 'true'
+        with:
+          path: public
+
+  deploy-apt-pages:
+    needs: apt-repository
+    if: needs.apt-repository.outputs.configured == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
+  homebrew-tap:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - id: config
+        name: Check Homebrew Tap token
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [[ -n "$HOMEBREW_TAP_TOKEN" ]]; then
+            echo "tap=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "tap=false" >>"$GITHUB_OUTPUT"
+            echo "HOMEBREW_TAP_TOKEN is not configured; skipping Tap update."
+          fi
+
+      - uses: actions/download-artifact@v4
+        if: steps.config.outputs.tap == 'true'
+        with:
+          name: release-assets
+          path: dist
+
+      - uses: actions/checkout@v4
+        if: steps.config.outputs.tap == 'true'
+        with:
+          repository: farfarfun/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - name: Update Formula
+        if: steps.config.outputs.tap == 'true'
+        working-directory: tap
+        run: |
+          set -euo pipefail
+          mkdir -p Formula
+          cp ../dist/nltdeploy.rb Formula/nltdeploy.rb
+          git add Formula/nltdeploy.rb
+          if git diff --cached --quiet; then
+            echo "Formula is already current."
+            exit 0
+          fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m "Update nltdeploy to ${GITHUB_REF_NAME}"
+          git push

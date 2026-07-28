@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TMP="$(mktemp -d)"
+trap 'rm -rf -- "$TMP"' EXIT
+
+for cmd in apt-ftparchive dpkg-deb dpkg-scanpackages gpg gpgv; do
+  command -v "$cmd" >/dev/null 2>&1 || { echo "package_smoke skip: missing $cmd"; exit 0; }
+done
+
+DEB="$(bash "${ROOT}/packaging/build-deb.sh" 0.0.0 "${TMP}/dist")"
+[[ "$(dpkg-deb --field "$DEB" Package)" == "nltdeploy" ]]
+[[ "$(dpkg-deb --field "$DEB" Version)" == "0.0.0" ]]
+dpkg-deb --extract "$DEB" "${TMP}/extract"
+[[ -x "${TMP}/extract/usr/bin/nltdeploy" ]]
+! grep -Fq "$TMP" "${TMP}/extract/usr/bin/nltdeploy"
+
+OUT="$(NLTDEPLOY_ROOT="${TMP}/extract/usr" "${TMP}/extract/usr/bin/nltdeploy" list)"
+grep -q "service" <<<"$OUT"
+OUT="$(NLTDEPLOY_ROOT="${TMP}/extract/usr" "${TMP}/extract/usr/bin/nltdeploy" upgrade)"
+grep -q "apt install --only-upgrade nltdeploy" <<<"$OUT"
+
+GNUPGHOME="${TMP}/gnupg"
+export GNUPGHOME
+mkdir -m 0700 "$GNUPGHOME"
+gpg --batch --passphrase '' --quick-generate-key 'nltdeploy package test' ed25519 sign 0 >/dev/null 2>&1
+KEY_ID="$(gpg --batch --with-colons --list-secret-keys 2>/dev/null | awk -F: '$1 == "fpr" { print $10; exit }')"
+bash "${ROOT}/packaging/build-apt-repo.sh" "$DEB" "${TMP}/apt" "$KEY_ID" >/dev/null
+gpgv --keyring "${TMP}/apt/nltdeploy.gpg" "${TMP}/apt/dists/stable/InRelease" >/dev/null 2>&1
+grep -q '^Package: nltdeploy$' "${TMP}/apt/dists/stable/main/binary-amd64/Packages"
+if command -v apt-get >/dev/null 2>&1 && command -v apt-cache >/dev/null 2>&1; then
+  mkdir -p "${TMP}/apt-client/lists/partial" "${TMP}/apt-client/cache/archives/partial"
+  printf 'deb [signed-by=%s] file:%s stable main\n' \
+    "${TMP}/apt/nltdeploy.gpg" "${TMP}/apt" >"${TMP}/apt-client/sources.list"
+  APT_OPTIONS=(
+    -o "Dir::Etc::sourcelist=${TMP}/apt-client/sources.list"
+    -o "Dir::Etc::sourceparts=-"
+    -o "Dir::State::lists=${TMP}/apt-client/lists"
+    -o "Dir::Cache=${TMP}/apt-client/cache"
+    -o "APT::Sandbox::User=${USER:-root}"
+  )
+  apt-get "${APT_OPTIONS[@]}" update >/dev/null
+  apt-cache "${APT_OPTIONS[@]}" show nltdeploy | grep -q '^Version: 0.0.0$'
+fi
+
+bash "${ROOT}/packaging/render-homebrew-formula.sh" 0.0.0 "$(printf '0%.0s' {1..64})" "${TMP}/nltdeploy.rb" >/dev/null
+grep -q 'NLTDEPLOY_PACKAGE_MANAGER=brew' "${TMP}/nltdeploy.rb"
+if command -v ruby >/dev/null 2>&1; then
+  ruby -c "${TMP}/nltdeploy.rb" >/dev/null
+fi
+
+echo "package_smoke OK"
