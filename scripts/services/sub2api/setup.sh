@@ -6,6 +6,7 @@
 # 用法：
 #   ./setup.sh              # gum 菜单
 #   ./setup.sh install      # 下载二进制与 deploy 资料到 ${SUB2API_SERVICE_HOME}
+#   ./setup.sh install-official # 执行上游推荐脚本，安装 systemd 服务到 /opt/sub2api
 #   ./setup.sh update       # 重新下载（同 install）
 #   ./setup.sh install -v v0.1.144
 #   ./setup.sh list-versions
@@ -77,6 +78,7 @@ usage() {
 命令:
   install / update   从 GitHub Releases 下载二进制到 ${SUB2API_SERVICE_HOME}
                      可配合 -v/--version 指定版本；交互模式默认列版本并预选 latest
+  install-official   执行上游推荐脚本（需 root；安装到 /opt/sub2api，systemd 服务默认端口 8802）
   start              后台启动（日志 ${LOG_FILE}；默认 ${SUB2API_HOST}:${SUB2API_PORT}）
   run                前台启动（同环境；不写 PID；后台已在跑时拒绝）
   stop / restart / status
@@ -415,6 +417,19 @@ cmd_install() {
   _download_install
 }
 
+cmd_install_official() {
+  require_curl
+  local -a runner=(bash)
+  if [[ "$(id -u)" -ne 0 ]]; then
+    command -v sudo >/dev/null 2>&1 || die "官方安装脚本需要 root 权限，但未找到 sudo"
+    runner=(sudo bash)
+  fi
+  echo "==> 执行 Sub2API 上游官方安装脚本（/opt/sub2api + systemd，默认端口 8802）" >&2
+  curl -fsSL "https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/install.sh" \
+    | sed 's/^SERVER_PORT="8080"$/SERVER_PORT="8802"/' \
+    | "${runner[@]}"
+}
+
 cmd_update() {
   if [[ -z "${SUB2API_VERSION:-}" ]] && [[ -t 0 && -t 1 ]]; then
     SUB2API_VERSION="$(choose_install_version)" || exit 1
@@ -554,12 +569,13 @@ interactive_main() {
   set +e
   while true; do
     local pick
-    pick="$(gum choose --header "sub2api" "install" "update" "start" "run" "stop" "restart" "status" "list-versions" "uninstall" "help" "quit")" || break
+    pick="$(gum choose --header "sub2api" "install" "install-official" "update" "start" "run" "stop" "restart" "status" "list-versions" "uninstall" "help" "quit")" || break
     [[ -z "$pick" ]] && break
     case "$pick" in
       quit) break ;;
       help) usage; echo "" ;;
       install) cmd_install ;;
+      install-official) cmd_install_official ;;
       update) cmd_update ;;
       start) cmd_start ;;
       run) cmd_run ;;
@@ -605,6 +621,7 @@ main() {
   fi
   case "$cmd" in
     install) cmd_install ;;
+    install-official) cmd_install_official ;;
     update) cmd_update ;;
     start) cmd_start ;;
     run) cmd_run ;;

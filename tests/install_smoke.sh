@@ -27,6 +27,12 @@ bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/code-server/setup.sh" || exit 1
 bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/new-api/setup.sh" || exit 1
 bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/open-pencil/setup.sh" || exit 1
 bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/paperclip/setup.sh" || exit 1
+bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/sub2api/setup.sh" || exit 1
+curl() { printf '%s\n' 'SERVER_PORT="8080"' 'echo "official-sub2api-installer-ran:${SERVER_PORT}"'; }
+sudo() { "$@"; }
+export -f curl sudo
+"${NLTDEPLOY_ROOT}/bin/nlt-sub2api" install-official | grep -q "official-sub2api-installer-ran:8802" || exit 1
+unset -f curl sudo
 node() { [[ "${1:-}" == "-p" ]] && echo 20; }
 npm() { [[ "$*" == "install -g --registry https://registry.npmjs.org paperclipai@latest" ]]; }
 paperclipai() { [[ "${1:-}" == "--version" ]]; }
