@@ -111,7 +111,7 @@ nlt_ui_confirm() {
     return $?
   fi
   local a; read -r -p "${prompt} [y/N] " a || return 1
-  [[ "${a,,}" == "y" || "${a,,}" == "yes" ]]
+  case "$a" in [yY]|[yY][eE][sS]) return 0 ;; *) return 1 ;; esac
 }
 
 # 语义化单行提示（带颜色，输出到 stderr，便于与 stdout 数据分离）。

@@ -342,14 +342,17 @@ EOF
 _download_install() {
   require_curl
   require_tar
-  local tag asset url checksum_url tmpdir release_json
+  local tag asset url checksum_url tmpdir release_json picked_url
+  local -a picked_urls=()
   tag="$(_resolve_tag)"
   asset="$(_asset_name_for_tag "$tag")"
   release_json="$(_fetch_release_json_for_tag "$tag" || true)"
   if [[ -n "$release_json" ]]; then
-    mapfile -t _picked_urls < <(_pick_release_asset_urls "$release_json" "$asset") || true
-    url="${_picked_urls[0]:-}"
-    checksum_url="${_picked_urls[1]:-}"
+    while IFS= read -r picked_url; do
+      picked_urls+=("$picked_url")
+    done < <(_pick_release_asset_urls "$release_json" "$asset")
+    url="${picked_urls[0]:-}"
+    checksum_url="${picked_urls[1]:-}"
   fi
   url="${url:-https://github.com/${SUB2API_GITHUB_REPO}/releases/download/${tag}/${asset}}"
   checksum_url="${checksum_url:-https://github.com/${SUB2API_GITHUB_REPO}/releases/download/${tag}/checksums.txt}"

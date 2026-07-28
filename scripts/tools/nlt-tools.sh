@@ -153,7 +153,7 @@ _nlt_tools_gum_uninstall() {
       gum confirm "将删除 gum 安装目录 ${root}，确认？" || { echo "已取消。"; return 0; }
     else
       local a; read -r -p "确认删除 ${root}？[y/N] " a
-      [[ "${a,,}" == "y" || "${a,,}" == "yes" ]] || { echo "已取消。"; return 0; }
+      case "$a" in [yY]|[yY][eE][sS]) ;; *) echo "已取消。"; return 0 ;; esac
     fi
   fi
   rm -rf "${root}"

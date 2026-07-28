@@ -5,6 +5,7 @@
 set -euo pipefail
 
 NLTDEPLOY_ROOT="${NLTDEPLOY_ROOT:-${HOME}/.local/nltdeploy}"
+NLTDEPLOY_WRAPPER_ROOT="${NLTDEPLOY_WRAPPER_ROOT:-${NLTDEPLOY_ROOT}}"
 NLTDEPLOY_GITHUB_REPO="${NLTDEPLOY_GITHUB_REPO:-https://github.com/farfarfun/nltdeploy.git}"
 NLTDEPLOY_GITEE_REPO="${NLTDEPLOY_GITEE_REPO:-https://gitee.com/farfarfun/nltdeploy.git}"
 NLTDEPLOY_SRC_DIR="${NLTDEPLOY_SRC_DIR:-${NLTDEPLOY_ROOT}/src/nltdeploy}"
@@ -33,6 +34,8 @@ usage() {
 
 环境变量:
   NLTDEPLOY_ROOT              安装根目录（默认 ~/.local/nltdeploy）
+  NLTDEPLOY_WRAPPER_ROOT      包装命令中的运行根目录（默认同 NLTDEPLOY_ROOT，发行包构建专用）
+  NLTDEPLOY_PACKAGE_MANAGER   写入包装命令的包管理器标记：apt 或 brew（发行包构建专用）
   NLTDEPLOY_SKIP_GIT_PULL     设为 1 时不执行 git pull（仍同步文件）
   NLTDEPLOY_SKIP_PROFILE_HINT 设为 1 时不写入 PATH、不打印 PATH 说明（适合 CI）
   NLTDEPLOY_AUTO_EXEC_ZSH_AFTER_INSTALL  默认 1：安装结束且为交互 TTY、且检测到由 zsh 启动本脚本时，执行 exec zsh -l 以加载 ~/.zshrc（无法改父进程环境时的折中）。设为 0 则只提示手动 source。
@@ -262,7 +265,10 @@ _emit_wrapper() {
   {
     printf '%s\n' '#!/usr/bin/env bash'
     printf '%s\n' 'set -euo pipefail'
-    printf 'NLTDEPLOY_ROOT=${NLTDEPLOY_ROOT:-%q}\n' "${NLTDEPLOY_ROOT}"
+    printf 'NLTDEPLOY_ROOT=${NLTDEPLOY_ROOT:-%q}\n' "${NLTDEPLOY_WRAPPER_ROOT}"
+    if [[ -n "${NLTDEPLOY_PACKAGE_MANAGER:-}" ]]; then
+      printf 'export NLTDEPLOY_PACKAGE_MANAGER=%q\n' "${NLTDEPLOY_PACKAGE_MANAGER}"
+    fi
     if [[ $# -gt 0 ]]; then
       printf 'exec "${NLTDEPLOY_ROOT}/libexec/nltdeploy/%s"' "$rel"
       local a

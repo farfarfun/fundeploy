@@ -133,7 +133,9 @@ cmd_uninstall() {
     brew uninstall code-server
     removed=1
   elif [[ -d "${CODE_SERVER_OFFICIAL_PREFIX}/lib" ]] && find "${CODE_SERVER_OFFICIAL_PREFIX}/lib" -mindepth 1 -maxdepth 1 -type d -name 'code-server-*' -print -quit | grep -q .; then
-    mapfile -t standalone_dirs < <(find "${CODE_SERVER_OFFICIAL_PREFIX}/lib" -mindepth 1 -maxdepth 1 -type d -name 'code-server-*' -print)
+    while IFS= read -r arg; do
+      standalone_dirs+=("$arg")
+    done < <(find "${CODE_SERVER_OFFICIAL_PREFIX}/lib" -mindepth 1 -maxdepth 1 -type d -name 'code-server-*' -print)
     rm -rf -- "${standalone_dirs[@]}"
     rm -f -- "${CODE_SERVER_OFFICIAL_PREFIX}/bin/code-server"
     removed=1

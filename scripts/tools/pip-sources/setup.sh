@@ -417,10 +417,11 @@ test_package_download_speed() {
     # 尝试找到一个小的wheel文件（.whl），优先选择较小的文件
     local wheel_url=""
     local smallest_size=999999999
+    local wheel_href_re='href="([^"]+\.whl)"'
     
     # 使用正则表达式查找wheel文件链接
     while IFS= read -r line; do
-        if [[ "$line" =~ href=\"([^\"]+\.whl)\" ]]; then
+        if [[ "$line" =~ $wheel_href_re ]]; then
             local wheel_file="${BASH_REMATCH[1]}"
             # 构建完整的URL
             if [[ "$wheel_file" =~ ^https?:// ]]; then
@@ -788,6 +789,8 @@ test_all_sources() {
 read_existing_sources() {
     local config_file="$1"
     local existing_sources=()
+    local unavailable_source_re='^[[:space:]]*#[[:space:]]*unavailable-source:[[:space:]]*(https?://[^[:space:]]+)'
+    local extra_index_re='^[[:space:]]*extra-index-url[[:space:]]*=[[:space:]]*(.+)'
     
     if [ ! -f "$config_file" ]; then
         EXISTING_SOURCES=()
@@ -809,7 +812,7 @@ read_existing_sources() {
         fi
         
         # 读取注释中的不可用源（格式：# unavailable-source: URL  # 说明）
-        if [[ "$line" =~ ^[[:space:]]*#[[:space:]]*unavailable-source:[[:space:]]*(https?://[^[:space:]]+) ]]; then
+        if [[ "$line" =~ $unavailable_source_re ]]; then
             local url="${BASH_REMATCH[1]}"
             if [ -n "$url" ]; then
                 existing_sources+=("$url")
@@ -823,7 +826,7 @@ read_existing_sources() {
         fi
         
         # 匹配 extra-index-url 行
-        if [[ "$line" =~ ^[[:space:]]*extra-index-url[[:space:]]*=[[:space:]]*(.+) ]]; then
+        if [[ "$line" =~ $extra_index_re ]]; then
             in_extra_index=true
             local urls="${BASH_REMATCH[1]}"
             # 分割多个 URL（可能在同一行，用空格分隔）
@@ -869,12 +872,14 @@ generate_custom_source_id() {
 # 获取自定义源的显示名称（隐藏密码）
 get_custom_source_display_name() {
     local url=$1
+    local auth_url_re='^https?://([^:]+):([^@]+)@(.+)$'
+    local host_url_re='^https?://([^/]+)'
     # 如果 URL 包含 @，说明有认证信息，隐藏密码部分
-    if [[ "$url" =~ ^https?://([^:]+):([^@]+)@(.+)$ ]]; then
+    if [[ "$url" =~ $auth_url_re ]]; then
         local user="${BASH_REMATCH[1]}"
         local host="${BASH_REMATCH[3]}"
         echo "自定义源 (${user}@${host})"
-    elif [[ "$url" =~ ^https?://([^/]+) ]]; then
+    elif [[ "$url" =~ $host_url_re ]]; then
         local host="${BASH_REMATCH[1]}"
         echo "自定义源 (${host})"
     else
@@ -1023,6 +1028,8 @@ create_config_directory() {
 # 生成 pip 配置文件内容
 generate_pip_config_content() {
     local config_content=""
+    local auth_host_re='https?://([^@]+)@([^/]+)'
+    local host_re='https?://([^/]+)'
     
     # 文件头注释
     config_content+="# pip 配置文件\n"
@@ -1063,10 +1070,10 @@ generate_pip_config_content() {
         local source_url=$(get_pip_source_url "$source_name")
         # 提取主机名，处理带认证信息的 URL（如 https://user:pass@host.com）
         local host=""
-        if [[ "$source_url" =~ https?://([^@]+)@([^/]+) ]]; then
+        if [[ "$source_url" =~ $auth_host_re ]]; then
             # 带认证信息的 URL
             host="${BASH_REMATCH[2]}"
-        elif [[ "$source_url" =~ https?://([^/]+) ]]; then
+        elif [[ "$source_url" =~ $host_re ]]; then
             # 普通 URL
             host="${BASH_REMATCH[1]}"
         fi

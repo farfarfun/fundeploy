@@ -150,7 +150,7 @@ _software_ops_confirm() {
   else
     local a
     read -r -e -p "${prompt} [y/N] " a || return 1
-    [[ "${a,,}" == "y" || "${a,,}" == "yes" ]]
+    case "$a" in [yY]|[yY][eE][sS]) return 0 ;; *) return 1 ;; esac
   fi
 }
 

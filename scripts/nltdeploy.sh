@@ -18,6 +18,7 @@
 # 环境变量:
 #   NLTDEPLOY_ROOT            安装根目录（默认 ~/.local/nltdeploy）
 #   NLTDEPLOY_SRC_DIR         本地克隆仓库（默认 ${NLTDEPLOY_ROOT}/src/nltdeploy）
+#   NLTDEPLOY_PACKAGE_MANAGER 包管理器安装标记：apt 或 brew
 #   NLTDEPLOY_UNINSTALL_YES=1 非 TTY 下允许卸载
 #   NONINTERACTIVE=1          无参数时打印 help 退出，不进入菜单
 set -euo pipefail
@@ -130,6 +131,30 @@ _curl() {
   curl -LsSf "$@"
 }
 
+_managed_install_action() {
+  local action="$1" manager="${NLTDEPLOY_PACKAGE_MANAGER:-}"
+  [[ -n "$manager" ]] || return 1
+  case "${manager}:${action}" in
+    apt:upgrade)
+      echo "nltdeploy 由 APT 管理，请运行:"
+      echo "  sudo apt update && sudo apt install --only-upgrade nltdeploy"
+      ;;
+    apt:uninstall)
+      echo "nltdeploy 由 APT 管理，请运行:"
+      echo "  sudo apt remove nltdeploy"
+      ;;
+    brew:upgrade)
+      echo "nltdeploy 由 Homebrew 管理，请运行:"
+      echo "  brew upgrade nltdeploy"
+      ;;
+    brew:uninstall)
+      echo "nltdeploy 由 Homebrew 管理，请运行:"
+      echo "  brew uninstall nltdeploy"
+      ;;
+    *) die "未知包管理器标记: ${manager}" ;;
+  esac
+}
+
 upgrade_local() {
   local sh
   sh="$(_resolve_local_install_sh)" || die "未找到本地 install.sh（可改用 --source github/gitee）"
@@ -148,6 +173,7 @@ upgrade_gitee() {
 }
 
 cmd_upgrade() {
+  _managed_install_action upgrade && return 0
   local source=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -180,6 +206,7 @@ cmd_upgrade() {
 
 cmd_uninstall() {
   local sh
+  _managed_install_action uninstall && return 0
   sh="$(_resolve_local_install_sh)" || die "未找到 install.sh 以执行卸载（预期 ${NLTDEPLOY_SRC_DIR}/install.sh 或 libexec bundle）"
   echo "==> 卸载: bash ${sh} uninstall" >&2
   exec bash "${sh}" uninstall "$@"

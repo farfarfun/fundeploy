@@ -103,6 +103,14 @@ out="$(NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" tool list)"
 grep -q "brew" <<<"${out}" || exit 1
 out="$(NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" ai list)"
 grep -q "codex" <<<"${out}" || exit 1
+out="$(NLTDEPLOY_PACKAGE_MANAGER=apt NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" upgrade --source github)"
+grep -q "apt install --only-upgrade nltdeploy" <<<"${out}" || exit 1
+out="$(NLTDEPLOY_PACKAGE_MANAGER=apt NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" uninstall)"
+grep -q "apt remove nltdeploy" <<<"${out}" || exit 1
+out="$(NLTDEPLOY_PACKAGE_MANAGER=brew NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" upgrade)"
+grep -q "brew upgrade nltdeploy" <<<"${out}" || exit 1
+out="$(NLTDEPLOY_PACKAGE_MANAGER=brew NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" uninstall)"
+grep -q "brew uninstall nltdeploy" <<<"${out}" || exit 1
 systemctl() {
   [[ "${1:-}" == "cat" ]] && return 0
   printf 'systemctl:%s\n' "$*"
