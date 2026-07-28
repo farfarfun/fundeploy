@@ -308,7 +308,7 @@ do_install_or_update() {
   mkdir -p "${NLTDEPLOY_ROOT}/bin" "${LIBEXEC}" \
     "${NLTDEPLOY_ROOT}/share/nltdeploy" "${NLTDEPLOY_ROOT}/etc/nltdeploy"
   mkdir -p "${LIBEXEC}/pip-sources" "${LIBEXEC}/python-env" "${LIBEXEC}/port-kill" \
-    "${LIBEXEC}/ai-cli" \
+    "${LIBEXEC}/ai-cli/claude" "${LIBEXEC}/ai-cli/codex" "${LIBEXEC}/ai-cli/cursor" \
     "${LIBEXEC}/dev/go" "${LIBEXEC}/dev/rust" "${LIBEXEC}/dev/nodejs" "${LIBEXEC}/dev/pnpm" "${LIBEXEC}/dev/uv" \
     "${LIBEXEC}/brew" "${LIBEXEC}/download" "${LIBEXEC}/cockpit-tools" \
     "${LIBEXEC}/airflow" "${LIBEXEC}/celery" "${LIBEXEC}/utils" "${LIBEXEC}/github-net" \
@@ -354,6 +354,18 @@ do_install_or_update() {
 
   _nlt_cp_first "${LIBEXEC}/ai-cli/setup.sh" \
     "${SCRIPTS}/ai-cli/setup.sh"
+
+  _nlt_cp_first "${LIBEXEC}/ai-cli/common.sh" \
+    "${SCRIPTS}/ai-cli/common.sh"
+
+  _nlt_cp_first "${LIBEXEC}/ai-cli/claude/setup.sh" \
+    "${SCRIPTS}/ai-cli/claude/setup.sh"
+
+  _nlt_cp_first "${LIBEXEC}/ai-cli/codex/setup.sh" \
+    "${SCRIPTS}/ai-cli/codex/setup.sh"
+
+  _nlt_cp_first "${LIBEXEC}/ai-cli/cursor/setup.sh" \
+    "${SCRIPTS}/ai-cli/cursor/setup.sh"
 
   _nlt_cp_first "${LIBEXEC}/pip-sources/setup.sh" \
     "${SCRIPTS}/tools/pip-sources/setup.sh" \

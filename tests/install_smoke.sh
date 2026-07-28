@@ -37,12 +37,14 @@ curl() { printf '%s\n' 'SERVER_PORT="8080"' 'echo "official-sub2api-installer-ra
 sudo() { "$@"; }
 export -f curl sudo
 "${NLTDEPLOY_ROOT}/bin/nlt-sub2api" official install | grep -q "official-sub2api-installer-ran:install:8802" || exit 1
+"${NLTDEPLOY_ROOT}/bin/nlt-sub2api" install | grep -q "official-sub2api-installer-ran:install:8802" || exit 1
 "${NLTDEPLOY_ROOT}/bin/nlt-sub2api" official update | grep -q "official-sub2api-installer-ran:upgrade:8802" || exit 1
 "${NLTDEPLOY_ROOT}/bin/nlt-sub2api" official uninstall -y | grep -q "official-sub2api-installer-ran:uninstall:8802" || exit 1
 unset -f curl sudo
 curl() { printf '%s\n' 'echo "official-code-server-installer-ran:$*"'; }
 export -f curl
 "${NLTDEPLOY_ROOT}/bin/nlt-code-server" official install --version 4.112.0 | grep -q "official-code-server-installer-ran:--version 4.112.0" || exit 1
+"${NLTDEPLOY_ROOT}/bin/nlt-code-server" install --version 4.112.0 | grep -q "official-code-server-installer-ran:--version 4.112.0" || exit 1
 unset -f curl
 node() { [[ "${1:-}" == "-p" ]] && echo 20; }
 npm() { [[ "$*" == "install -g --registry https://registry.npmjs.org paperclipai@latest" ]]; }
@@ -62,6 +64,31 @@ unset -f brew
 bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/download/setup.sh" || exit 1
 bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/dev/setup.sh" || exit 1
 bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/ai-cli/setup.sh" || exit 1
+for tool in claude codex cursor; do
+  bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/ai-cli/${tool}/setup.sh" || exit 1
+done
+curl() {
+  case "$*" in
+    *claude.ai*) echo 'echo ai-official:claude' ;;
+    *chatgpt.com*) echo 'echo ai-official:codex' ;;
+    *cursor.com*) echo 'echo ai-official:cursor' ;;
+  esac
+}
+npm() { printf 'npm:%s\n' "$*"; }
+pnpm() { printf 'pnpm:%s\n' "$*"; }
+brew() { printf 'brew:%s\n' "$*"; }
+export -f curl npm pnpm brew
+"${NLTDEPLOY_ROOT}/bin/nlt-ai-cli" claude official install | grep -q 'ai-official:claude' || exit 1
+"${NLTDEPLOY_ROOT}/bin/nlt-ai-cli" claude pnpm install | grep -q 'pnpm:add -g @anthropic-ai/claude-code@latest' || exit 1
+"${NLTDEPLOY_ROOT}/bin/nlt-ai-cli" codex install | grep -q 'ai-official:codex' || exit 1
+"${NLTDEPLOY_ROOT}/bin/nlt-ai-cli" codex npm install | grep -q 'npm:install -g @openai/codex@latest' || exit 1
+"${NLTDEPLOY_ROOT}/bin/nlt-ai-cli" codex brew update | grep -q 'brew:upgrade --cask codex' || exit 1
+"${NLTDEPLOY_ROOT}/bin/nlt-ai-cli" cursor official install | grep -q 'ai-official:cursor' || exit 1
+unset -f curl npm pnpm brew
+mkdir -p "${TMP}/ai-home/.local/bin" "${TMP}/ai-home/.codex/packages/standalone"
+touch "${TMP}/ai-home/.local/bin/codex"
+HOME="${TMP}/ai-home" NLT_ASSUME_YES=1 "${NLTDEPLOY_ROOT}/bin/nlt-ai-cli" codex official uninstall
+[[ ! -e "${TMP}/ai-home/.local/bin/codex" && ! -e "${TMP}/ai-home/.codex/packages/standalone" ]] || exit 1
 bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/dev/go/setup.sh" || exit 1
 bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/dev/rust/setup.sh" || exit 1
 bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/dev/nodejs/setup.sh" || exit 1
@@ -85,11 +112,13 @@ sudo() { "$@"; }
 export -f systemctl curl sudo
 CODE_SERVER_OFFICIAL_USER=tester "${NLTDEPLOY_ROOT}/bin/nltdeploy" service code-server official start | grep -q "systemctl:enable --now code-server@tester" || exit 1
 CODE_SERVER_OFFICIAL_USER=tester "${NLTDEPLOY_ROOT}/bin/nltdeploy" service code-server official restart | grep -q "systemctl:restart code-server@tester" || exit 1
-out="$(CODE_SERVER_SERVICE_HOME="${TMP}/manual-code-server" CODE_SERVER_BIND=127.0.0.1:59997 "${NLTDEPLOY_ROOT}/bin/nltdeploy" service code-server status)"
+CODE_SERVER_OFFICIAL_USER=tester "${NLTDEPLOY_ROOT}/bin/nltdeploy" service code-server status | grep -q "systemctl:status code-server@tester --no-pager" || exit 1
+out="$(CODE_SERVER_SERVICE_HOME="${TMP}/manual-code-server" CODE_SERVER_BIND=127.0.0.1:59997 "${NLTDEPLOY_ROOT}/bin/nltdeploy" service code-server manual status)"
 grep -q "CODE_SERVER_SERVICE_HOME" <<<"${out}" || exit 1
 ! grep -q "systemctl:" <<<"${out}" || exit 1
 "${NLTDEPLOY_ROOT}/bin/nltdeploy" service sub2api official restart | grep -q "systemctl:restart sub2api" || exit 1
-out="$(SUB2API_SERVICE_HOME="${TMP}/manual-sub2api" SUB2API_PORT=59998 "${NLTDEPLOY_ROOT}/bin/nltdeploy" service sub2api status)"
+"${NLTDEPLOY_ROOT}/bin/nltdeploy" service sub2api status | grep -q "systemctl:status sub2api --no-pager" || exit 1
+out="$(SUB2API_SERVICE_HOME="${TMP}/manual-sub2api" SUB2API_PORT=59998 "${NLTDEPLOY_ROOT}/bin/nltdeploy" service sub2api manual status)"
 grep -q "PID 文件" <<<"${out}" || exit 1
 ! grep -q "systemctl:" <<<"${out}" || exit 1
 unset -f systemctl curl sudo

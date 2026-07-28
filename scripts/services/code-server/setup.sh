@@ -15,27 +15,28 @@ else
   exit 1
 fi
 
-MANUAL_SCRIPT="${SCRIPT_DIR}/setup-manual.sh"
 OFFICIAL_SCRIPT="${SCRIPT_DIR}/setup-offical.sh"
+MANUAL_SCRIPT="${SCRIPT_DIR}/setup-manual.sh"
 
 usage() {
   cat <<'EOF'
 用法: nltdeploy service code-server <模式> [动作]
 
 模式:
-  manual    官方 Release 包 + 本地 PID，默认安装到 ~/opt/code-server
   official  官方 install.sh + 系统包管理器和系统服务
+  manual    官方 Release 包 + 本地 PID，默认安装到 ~/opt/code-server
 
 两种模式均支持 install、update、start、stop、restart、status、uninstall。
 官方模式额外支持 logs。
 
 示例:
-  nltdeploy service code-server manual install
-  nltdeploy service code-server manual start
   nltdeploy service code-server official install
   nltdeploy service code-server official start
+  nltdeploy service code-server manual install
+  nltdeploy service code-server manual start
 
-兼容: 不写模式时沿用 manual；install-official 等价于 official install。
+默认: 不写模式时使用 official；run 仅由 manual 支持。
+兼容: install-official 等价于 official install。
 EOF
 }
 
@@ -46,14 +47,14 @@ interactive_main() {
   while true; do
     local pick
     pick="$(nlt_ui_choose "nltdeploy / service / code-server / 选择模式" \
-      "manual     手动模式 · Release 包 + 本地 PID" \
       "official   官方模式 · install.sh + 系统服务" \
+      "manual     手动模式 · Release 包 + 本地 PID" \
       "help       命令帮助" \
       "back       返回")" || break
     pick="${pick%% *}"
     case "$pick" in
-      manual) bash "${MANUAL_SCRIPT}" ;;
       official) bash "${OFFICIAL_SCRIPT}" ;;
+      manual) bash "${MANUAL_SCRIPT}" ;;
       help) usage ;;
       *) break ;;
     esac
@@ -69,19 +70,22 @@ main() {
       [[ "${NONINTERACTIVE:-}" != "1" ]] || { usage >&2; exit 1; }
       interactive_main
       ;;
-    manual|local)
-      shift
-      exec bash "${MANUAL_SCRIPT}" "$@"
-      ;;
     official|offical)
       shift
       exec bash "${OFFICIAL_SCRIPT}" "$@"
+      ;;
+    manual|local)
+      shift
+      exec bash "${MANUAL_SCRIPT}" "$@"
       ;;
     install-official)
       shift
       exec bash "${OFFICIAL_SCRIPT}" install "$@"
       ;;
-    install|update|start|run|stop|restart|status|uninstall)
+    install|update|start|stop|restart|status|uninstall)
+      exec bash "${OFFICIAL_SCRIPT}" "$@"
+      ;;
+    run)
       exec bash "${MANUAL_SCRIPT}" "$@"
       ;;
     help|-h|--help) usage ;;

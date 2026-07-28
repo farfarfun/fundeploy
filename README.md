@@ -82,8 +82,9 @@ export PATH="$HOME/.local/nltdeploy/bin:$PATH"
 
 ### AI CLI
 
-- `nltdeploy ai claude|codex|cursor <install|update|uninstall|status>`
-- 只走官方 package / installer，不支持源码安装。
+- `nltdeploy ai claude|codex [official|brew|npm|pnpm] <install|update|uninstall|status>`
+- `nltdeploy ai cursor [official] <install|update|uninstall|status>`
+- 官方方式始终排在最前且为默认；Cursor 上游目前只提供官方安装器。
 
 ## 目录结构
 
