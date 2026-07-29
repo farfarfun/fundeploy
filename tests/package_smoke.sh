@@ -9,9 +9,10 @@ for cmd in apt-ftparchive dpkg-deb dpkg-scanpackages gpg gpgv; do
   command -v "$cmd" >/dev/null 2>&1 || { echo "package_smoke skip: missing $cmd"; exit 0; }
 done
 
-DEB="$(bash "${ROOT}/packaging/build-deb.sh" 0.0.0 "${TMP}/dist")"
+VERSION="$(tr -d '[:space:]' < "${ROOT}/VERSION")"
+DEB="$(bash "${ROOT}/packaging/build-deb.sh" "" "${TMP}/dist")"
 [[ "$(dpkg-deb --field "$DEB" Package)" == "nltdeploy" ]]
-[[ "$(dpkg-deb --field "$DEB" Version)" == "0.0.0" ]]
+[[ "$(dpkg-deb --field "$DEB" Version)" == "$VERSION" ]]
 dpkg-deb --extract "$DEB" "${TMP}/extract"
 [[ -x "${TMP}/extract/usr/bin/nltdeploy" ]]
 for entry in "${TMP}/extract/usr/bin/"*; do
@@ -44,10 +45,10 @@ if command -v apt-get >/dev/null 2>&1 && command -v apt-cache >/dev/null 2>&1; t
     -o "APT::Sandbox::User=${USER:-root}"
   )
   apt-get "${APT_OPTIONS[@]}" update >/dev/null
-  apt-cache "${APT_OPTIONS[@]}" show nltdeploy | grep -q '^Version: 0.0.0$'
+  apt-cache "${APT_OPTIONS[@]}" show nltdeploy | grep -q "^Version: ${VERSION}$"
 fi
 
-bash "${ROOT}/packaging/render-homebrew-formula.sh" 0.0.0 "$(printf '0%.0s' {1..64})" "${TMP}/nltdeploy.rb" >/dev/null
+bash "${ROOT}/packaging/render-homebrew-formula.sh" "$VERSION" "$(printf '0%.0s' {1..64})" "${TMP}/nltdeploy.rb" >/dev/null
 grep -q 'NLTDEPLOY_PACKAGE_MANAGER=brew' "${TMP}/nltdeploy.rb"
 if command -v ruby >/dev/null 2>&1; then
   ruby -c "${TMP}/nltdeploy.rb" >/dev/null

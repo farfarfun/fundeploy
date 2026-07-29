@@ -126,6 +126,7 @@ scripts/
   lib/        公共 Bash 库
 tests/        冒烟测试
 install.sh    安装唯一的 nltdeploy 包装命令
+VERSION       当前发布版本
 ```
 
 ## 说明

@@ -7,6 +7,7 @@ OUTPUT_DIR="${2:-${ROOT}/dist}"
 
 die() { echo "错误: $*" >&2; exit 1; }
 
+[[ -n "$VERSION" ]] || VERSION="$(tr -d '[:space:]' < "${ROOT}/VERSION")"
 VERSION="${VERSION#v}"
 [[ -n "$VERSION" && "$VERSION" =~ ^[0-9][0-9A-Za-z.+:~-]*$ ]] || die "版本号无效: ${VERSION:-<空>}"
 command -v dpkg-deb >/dev/null 2>&1 || die "缺少 dpkg-deb"

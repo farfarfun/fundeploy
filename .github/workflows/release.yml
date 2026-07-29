@@ -26,7 +26,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
+          version="$(tr -d '[:space:]' < VERSION)"
+          [[ "$GITHUB_REF_NAME" == "v${version}" ]] || {
+            echo "Tag ${GITHUB_REF_NAME} does not match VERSION ${version}." >&2
+            exit 1
+          }
           mkdir -p dist
           bash packaging/build-deb.sh "$version" dist
           curl -fsSL "https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz" \

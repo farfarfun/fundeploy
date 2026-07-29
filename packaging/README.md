@@ -35,19 +35,20 @@ gh secret set HOMEBREW_TAP_DEPLOY_KEY < homebrew_tap_deploy
 
 ## 发布
 
-确保版本尚未使用且工作区改动已经提交，然后推送 tag：
+先修改仓库根目录的 `VERSION`，确保该版本尚未使用且工作区改动已经提交，然后推送同版本 tag：
 
 ```bash
-git tag v0.1.6
-git push origin v0.1.6
+version="$(tr -d '[:space:]' < VERSION)"
+git tag -a "v${version}" -m "v${version}"
+git push origin "v${version}"
 ```
 
-工作流将执行全部冒烟测试、创建 `nltdeploy_<version>_all.deb`、生成 Formula、发布 GitHub Release、部署签名 APT Pages，并更新 `farfarfun/homebrew-tap`。
+工作流会校验 tag 与 `VERSION` 一致，然后执行全部冒烟测试、创建 `nltdeploy_<version>_all.deb`、生成 Formula、发布 GitHub Release、部署签名 APT Pages，并更新 `farfarfun/homebrew-tap`。
 
 ## 本地验证
 
 ```bash
-bash packaging/build-deb.sh 0.1.6
+bash packaging/build-deb.sh
 bash tests/package_smoke.sh
 ```
 
