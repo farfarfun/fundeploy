@@ -1,0 +1,37 @@
+# https://github.com/marketplace/actions/hub-mirror-action
+name: syncToGitee
+on:
+  push:
+    branches:
+      - master
+
+# 最小权限：本工作流不需要写仓库内容，只把代码镜像到 Gitee。
+# 原先没有 permissions 块，job 会继承仓库默认的 GITHUB_TOKEN 范围。
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-gitee
+  cancel-in-progress: false
+
+jobs:
+  repo-sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Mirror the Github organization repos to Gitee.
+        # 必须锁到 commit SHA，不能用 @master：这是第三方仓库的可变分支，
+        # 而本步骤会拿到 Gitee 的 SSH 私钥与 token。该 action 的作者（或任何
+        # 攻破其账号的人）只要往 master 推一次提交，就能在你下一次 push 时
+        # 把这两个凭据带走。
+        # 下方 SHA 对应 v1.5，升级时请同时更新注释里的版本号。
+        uses: Yikun/hub-mirror-action@ec47170fa9d126a4bee5a1ab9359845bb1395248 # v1.5
+
+        with:
+          src: github/farfarfun
+          dst: gitee/farfarfun
+          dst_key: ${{ secrets.GITEE_RSA_PRIVATE_KEY }}
+          dst_token: ${{ secrets.GITEE_TOKEN }}
+          force_update: true
+          account_type: org
+          static_list: 'nltdeploy'

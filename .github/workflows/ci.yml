@@ -1,0 +1,109 @@
+name: ci
+
+# 此前仓库只有 release.yml（仅 tag 触发）与 sync.yml，push/PR 上没有任何检查：
+# 每次进 master 的提交都未经验证，smoke test 第一次运行是在已经开始发布
+# Release / .deb / APT repo / Homebrew formula 的那个 job 里。
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+# 最小权限：本工作流只读代码。
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: shellcheck 版本
+        run: shellcheck --version
+
+      # 12k 行 Bash 且以系统包形式分发，语义 lint 是性价比最高的一道防线。
+      # 仓库里多处已有 `# shellcheck source=...` 指令，说明有人手工跑过，
+      # 但从未接进流程。
+      - name: 对全部 .sh 运行 shellcheck
+        run: |
+          set -uo pipefail
+          mapfile -t files < <(git ls-files '*.sh')
+          echo "检查 ${#files[@]} 个文件"
+          shellcheck --severity=error --format=gcc "${files[@]}"
+
+      # 非 error 级别先只报告不阻断，便于逐步收敛存量问题。
+      - name: shellcheck（warning/info，仅报告）
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          mapfile -t files < <(git ls-files '*.sh')
+          shellcheck --severity=warning --format=gcc "${files[@]}" || true
+
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS 必须覆盖：代码声称支持 macOS 与 Bash 3.2，而 GitHub 的 macOS
+        # runner 正是以 3.2 作为 /bin/bash，这层兼容面此前从未被跑到。
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 安装打包依赖（Linux）
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -y && sudo apt-get install -y apt-utils dpkg-dev gnupg
+
+      - name: 运行测试套件
+        env:
+          # 在 Linux 上禁止 package_smoke 因缺工具而静默跳过。
+          NLTDEPLOY_REQUIRE_PACKAGE_TESTS: ${{ runner.os == 'Linux' && '1' || '' }}
+        run: bash tests/run-all.sh
+
+  entrypoints:
+    name: 入口冒烟
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 各入口的 --help / 未知子命令路径必须可用且退出码稳定。
+      - name: 各入口 help 与退出码
+        run: |
+          set -uo pipefail
+          rc=0
+          for s in scripts/nltdeploy.sh scripts/services/nlt-services.sh \
+                   scripts/tools/nlt-tools.sh scripts/dev/setup.sh scripts/ai-cli/setup.sh; do
+            if ! NONINTERACTIVE=1 bash "$s" help >/dev/null 2>&1; then
+              echo "FAIL: $s help 返回非 0"; rc=1
+            fi
+            if NONINTERACTIVE=1 bash "$s" __definitely_not_a_command__ >/dev/null 2>&1; then
+              echo "FAIL: $s 对未知子命令返回 0"; rc=1
+            fi
+          done
+          exit "$rc"
+
+      # NONINTERACTIVE=1 下任何入口都不得阻塞等待输入。
+      - name: 非交互模式不得阻塞
+        run: |
+          set -uo pipefail
+          rc=0
+          for s in scripts/nltdeploy.sh scripts/dev/setup.sh scripts/tools/nlt-tools.sh \
+                   scripts/services/nlt-services.sh scripts/ai-cli/setup.sh; do
+            if timeout 20 env NONINTERACTIVE=1 bash "$s" </dev/null >/dev/null 2>&1; then
+              code=0
+            else
+              code=$?
+            fi
+            if [[ "$code" == "124" ]]; then
+              echo "FAIL: $s 在 NONINTERACTIVE=1 下阻塞（超时）"; rc=1
+            fi
+          done
+          exit "$rc"

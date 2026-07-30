@@ -1,0 +1,192 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v[0-9]*"
+
+# 顶层默认最小权限；确实需要写权限的 job（release / deploy-apt-pages）
+# 各自单独声明。此前没有顶层默认，apt-repository 与 homebrew-tap 会继承
+# 仓库默认的 GITHUB_TOKEN 范围。
+permissions:
+  contents: read
+
+# 连续推两个 tag 时，Pages 部署与 tap 推送会互相竞争。
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 此前 release job 未安装这些工具，而 package_smoke.sh 在缺工具时会
+      # exit 0 静默跳过 —— 于是真正用于发布的 .deb 构建路径从未被冒烟测试过。
+      # （下面的 apt-repository job 显式安装它们，正说明 runner 默认没有。）
+      - name: Install packaging tools
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y apt-utils dpkg-dev gnupg
+
+      - name: Test
+        env:
+          NLTDEPLOY_REQUIRE_PACKAGE_TESTS: "1"
+        run: bash tests/run-all.sh
+
+      - name: Build release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < VERSION)"
+          [[ "$GITHUB_REF_NAME" == "v${version}" ]] || {
+            echo "Tag ${GITHUB_REF_NAME} does not match VERSION ${version}." >&2
+            exit 1
+          }
+          mkdir -p dist
+          bash packaging/build-deb.sh "$version" dist
+          curl -fsSL "https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz" \
+            -o "dist/nltdeploy-${version}.tar.gz"
+          sha256="$(sha256sum "dist/nltdeploy-${version}.tar.gz" | awk '{print $1}')"
+          NLTDEPLOY_GITHUB_REPOSITORY="${GITHUB_REPOSITORY}" \
+            bash packaging/render-homebrew-formula.sh "$version" "$sha256" dist/nltdeploy.rb
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: dist/*
+          retention-days: 7
+
+  apt-repository:
+    needs: release
+    runs-on: ubuntu-latest
+    outputs:
+      configured: ${{ steps.config.outputs.apt }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: config
+        name: Check APT signing key
+        env:
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+        run: |
+          if [[ -n "$APT_GPG_PRIVATE_KEY" ]]; then
+            echo "apt=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "apt=false" >>"$GITHUB_OUTPUT"
+            echo "APT_GPG_PRIVATE_KEY is not configured; skipping APT Pages publication."
+          fi
+
+      - uses: actions/download-artifact@v4
+        if: steps.config.outputs.apt == 'true'
+        with:
+          name: release-assets
+          path: dist
+
+      - name: Install APT repository tools
+        if: steps.config.outputs.apt == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y apt-utils dpkg-dev
+
+      - id: signing-key
+        name: Import APT signing key
+        if: steps.config.outputs.apt == 'true'
+        env:
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          fingerprint="$(printf '%s' "$APT_GPG_PRIVATE_KEY" | gpg --batch --with-colons --import-options show-only --import 2>/dev/null | awk -F: '$1 == "fpr" {print $10; exit}')"
+          [[ -n "$fingerprint" ]]
+          printf '%s' "$APT_GPG_PRIVATE_KEY" | gpg --batch --import
+          echo "fingerprint=$fingerprint" >>"$GITHUB_OUTPUT"
+
+      - name: Build signed APT repository
+        if: steps.config.outputs.apt == 'true'
+        env:
+          APT_GPG_PASSPHRASE: ${{ secrets.APT_GPG_PASSPHRASE }}
+        run: |
+          deb="$(find dist -maxdepth 1 -type f -name '*.deb' -print -quit)"
+          bash packaging/build-apt-repo.sh "$deb" public "${{ steps.signing-key.outputs.fingerprint }}"
+
+      - uses: actions/upload-pages-artifact@v3
+        if: steps.config.outputs.apt == 'true'
+        with:
+          path: public
+
+  deploy-apt-pages:
+    needs: apt-repository
+    if: needs.apt-repository.outputs.configured == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
+  homebrew-tap:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - id: config
+        name: Check Homebrew Tap deploy key
+        env:
+          HOMEBREW_TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+        run: |
+          if [[ -n "$HOMEBREW_TAP_DEPLOY_KEY" ]]; then
+            echo "tap=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "tap=false" >>"$GITHUB_OUTPUT"
+            echo "HOMEBREW_TAP_DEPLOY_KEY is not configured; skipping Tap update."
+          fi
+
+      - uses: actions/download-artifact@v4
+        if: steps.config.outputs.tap == 'true'
+        with:
+          name: release-assets
+          path: dist
+
+      - uses: actions/checkout@v4
+        if: steps.config.outputs.tap == 'true'
+        with:
+          repository: farfarfun/homebrew-tap
+          ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+          path: tap
+
+      - name: Update Formula
+        if: steps.config.outputs.tap == 'true'
+        working-directory: tap
+        run: |
+          set -euo pipefail
+          mkdir -p Formula
+          cp ../dist/nltdeploy.rb Formula/nltdeploy.rb
+          git add Formula/nltdeploy.rb
+          if git diff --cached --quiet; then
+            echo "Formula is already current."
+            exit 0
+          fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m "Update nltdeploy to ${GITHUB_REF_NAME}"
+          git push
