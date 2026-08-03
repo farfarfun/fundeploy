@@ -9,6 +9,28 @@ export NLTDEPLOY_ROOT="${TMP}/nd"
 export NLTDEPLOY_SKIP_PROFILE_HINT=1
 export NLTDEPLOY_SKIP_GIT_PULL=1
 
+# 拉取更新后必须由新版 install.sh 接管，避免旧复制清单漏装新文件。
+UPSTREAM="${TMP}/self-update-upstream"
+RUNNER="${TMP}/self-update-runner"
+mkdir -p "${UPSTREAM}/scripts"
+cp "${ROOT}/install.sh" "${UPSTREAM}/install.sh"
+touch "${UPSTREAM}/scripts/.keep"
+git -C "${UPSTREAM}" init -q
+git -C "${UPSTREAM}" add .
+git -C "${UPSTREAM}" -c user.name=test -c user.email=test@example.com commit -qm initial
+git clone -q "${UPSTREAM}" "${RUNNER}"
+cat >"${UPSTREAM}/install.sh" <<'EOF'
+#!/usr/bin/env bash
+touch "${NLTDEPLOY_SELF_UPDATE_MARKER:?}"
+EOF
+git -C "${UPSTREAM}" add install.sh
+git -C "${UPSTREAM}" -c user.name=test -c user.email=test@example.com commit -qm update
+NLTDEPLOY_ROOT="${TMP}/self-update-root" \
+NLTDEPLOY_SELF_UPDATE_MARKER="${TMP}/self-update-ok" \
+NLTDEPLOY_SKIP_GIT_PULL=0 \
+  bash "${RUNNER}/install.sh" update
+[[ -f "${TMP}/self-update-ok" ]] || { echo "updated install.sh did not take over" >&2; exit 1; }
+
 root_guard="$(sed -n '/^_guard_nltdeploy_root() {/,/^}/p' "${ROOT}/install.sh")"
 for unsafe_root in relative / /tmp "${HOME}"; do
   if (die() { exit 1; }; eval "${root_guard}"; NLTDEPLOY_ROOT="${unsafe_root}"; _guard_nltdeploy_root) 2>/dev/null; then

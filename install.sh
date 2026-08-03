@@ -109,13 +109,19 @@ _ensure_clone_for_scripts() {
 # scripts 的父目录若为 git 仓库，则拉取最新（可跳过）。
 _sync_git_upstream_for_scripts() {
   local scripts_dir="$1"
-  local root
+  local root before after
   root="$(cd "$(dirname "$scripts_dir")" && pwd)"
   [[ -d "${root}/.git" ]] || return 0
   [[ "${NLTDEPLOY_SKIP_GIT_PULL:-}" == "1" ]] && return 0
   command -v git >/dev/null 2>&1 || die "发现 git 仓库但未安装 git，无法更新: ${root}"
   echo "正在拉取最新脚本: ${root}" >&2
+  before="$(git -C "${root}" rev-parse HEAD)"
   git -C "${root}" pull --ff-only || die "git pull 失败: ${root}"
+  after="$(git -C "${root}" rev-parse HEAD)"
+  if [[ "${before}" != "${after}" && -f "${root}/install.sh" ]]; then
+    echo "安装器已更新，正在使用新版本继续…" >&2
+    exec env NLTDEPLOY_SKIP_GIT_PULL=1 bash "${root}/install.sh" "${_CMD}"
+  fi
 }
 
 # 规范路径，便于去重与写入 rc
@@ -355,13 +361,6 @@ do_install_or_update() {
     "${LIBEXEC}/tools" \
     "${LIBEXEC}/lib"
 
-  _nlt_cp_first "${LIBEXEC}/lib/nlt-common.sh" \
-    "${SCRIPTS}/lib/nlt-common.sh" \
-    "${SCRIPTS}/_lib/nlt-common.sh"
-
-  _nlt_cp_first "${LIBEXEC}/lib/nlt-progress.sh" \
-    "${SCRIPTS}/lib/nlt-progress.sh"
-
   _nlt_cp_first "${LIBEXEC}/lib/nlt-ui.sh" \
     "${SCRIPTS}/lib/nlt-ui.sh"
 
@@ -370,6 +369,13 @@ do_install_or_update() {
 
   _nlt_cp_first "${LIBEXEC}/lib/nlt-github-download.sh" \
     "${SCRIPTS}/lib/nlt-github-download.sh"
+
+  _nlt_cp_first "${LIBEXEC}/lib/nlt-progress.sh" \
+    "${SCRIPTS}/lib/nlt-progress.sh"
+
+  _nlt_cp_first "${LIBEXEC}/lib/nlt-common.sh" \
+    "${SCRIPTS}/lib/nlt-common.sh" \
+    "${SCRIPTS}/_lib/nlt-common.sh"
 
   _nlt_cp_first "${LIBEXEC}/dev/setup.sh" \
     "${SCRIPTS}/dev/setup.sh"
@@ -389,11 +395,11 @@ do_install_or_update() {
   _nlt_cp_first "${LIBEXEC}/dev/uv/setup.sh" \
     "${SCRIPTS}/dev/uv/setup.sh"
 
-  _nlt_cp_first "${LIBEXEC}/ai-cli/setup.sh" \
-    "${SCRIPTS}/ai-cli/setup.sh"
-
   _nlt_cp_first "${LIBEXEC}/ai-cli/common.sh" \
     "${SCRIPTS}/ai-cli/common.sh"
+
+  _nlt_cp_first "${LIBEXEC}/ai-cli/setup.sh" \
+    "${SCRIPTS}/ai-cli/setup.sh"
 
   _nlt_cp_first "${LIBEXEC}/ai-cli/claude/setup.sh" \
     "${SCRIPTS}/ai-cli/claude/setup.sh"
