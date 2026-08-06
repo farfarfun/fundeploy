@@ -31,6 +31,16 @@ NLTDEPLOY_SKIP_GIT_PULL=0 \
   bash "${RUNNER}/install.sh" update
 [[ -f "${TMP}/self-update-ok" ]] || { echo "updated install.sh did not take over" >&2; exit 1; }
 
+# 即使源码仓库已提前更新、git pull 没有产生新提交，也必须由仓库内安装器接管。
+mkdir -p "${TMP}/stale-runner"
+cp "${ROOT}/install.sh" "${TMP}/stale-runner/install.sh"
+NLTDEPLOY_ROOT="${TMP}/preupdated-root" \
+NLTDEPLOY_SRC_DIR="${RUNNER}" \
+NLTDEPLOY_SELF_UPDATE_MARKER="${TMP}/preupdated-ok" \
+NLTDEPLOY_SKIP_GIT_PULL=0 \
+  bash "${TMP}/stale-runner/install.sh" update
+[[ -f "${TMP}/preupdated-ok" ]] || { echo "pre-updated source install.sh did not take over" >&2; exit 1; }
+
 root_guard="$(sed -n '/^_guard_nltdeploy_root() {/,/^}/p' "${ROOT}/install.sh")"
 for unsafe_root in relative / /tmp "${HOME}"; do
   if (die() { exit 1; }; eval "${root_guard}"; NLTDEPLOY_ROOT="${unsafe_root}"; _guard_nltdeploy_root) 2>/dev/null; then
@@ -54,6 +64,8 @@ done
 bash "${ROOT}/install.sh" update
 [[ -x "${NLTDEPLOY_ROOT}/bin/nltdeploy" ]] || { echo "missing: bin/nltdeploy" >&2; exit 1; }
 bash -n "${NLTDEPLOY_ROOT}/bin/nltdeploy" || exit 1
+[[ -x "${NLTDEPLOY_ROOT}/libexec/nltdeploy/skills-sync/setup.sh" ]] || { echo "missing: skills-sync/setup.sh" >&2; exit 1; }
+NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" tool skills-sync --help >/dev/null || exit 1
 for f in "${NLTDEPLOY_ROOT}/bin/"*; do
   [[ "$(basename "$f")" == "nltdeploy" ]] || { echo "unexpected command entry: bin/$(basename "$f")" >&2; exit 1; }
 done

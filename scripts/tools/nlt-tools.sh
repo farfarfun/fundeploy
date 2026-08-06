@@ -162,9 +162,10 @@ dispatch() {
   local tool="$1"; shift
   local verb="${1:-}"; [[ $# -gt 0 ]] && shift
 
-  local setup
+  local setup expected
+  expected="$(_nlt_tools_tail "${tool}")"
   setup="$(_nlt_tools_resolve "${tool}" 2>/dev/null)" \
-    || die "未知工具或找不到 setup.sh: ${tool}（nltdeploy tool list 查看）"
+    || die "安装不完整：缺少 ${expected}。请运行 nltdeploy upgrade 后重试"
 
   # gum 一等工具：映射到 utils setup.sh 的 gum 子命令。
   if [[ "${tool}" == "gum" ]]; then

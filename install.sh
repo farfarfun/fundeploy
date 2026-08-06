@@ -109,7 +109,7 @@ _ensure_clone_for_scripts() {
 # scripts 的父目录若为 git 仓库，则拉取最新（可跳过）。
 _sync_git_upstream_for_scripts() {
   local scripts_dir="$1"
-  local root before after
+  local root current before after
   root="$(cd "$(dirname "$scripts_dir")" && pwd)"
   [[ -d "${root}/.git" ]] || return 0
   [[ "${NLTDEPLOY_SKIP_GIT_PULL:-}" == "1" ]] && return 0
@@ -118,7 +118,9 @@ _sync_git_upstream_for_scripts() {
   before="$(git -C "${root}" rev-parse HEAD)"
   git -C "${root}" pull --ff-only || die "git pull 失败: ${root}"
   after="$(git -C "${root}" rev-parse HEAD)"
-  if [[ "${before}" != "${after}" && -f "${root}/install.sh" ]]; then
+  current="${BASH_SOURCE[0]:-}"
+  if [[ -f "${root}/install.sh" ]] && \
+    [[ "${before}" != "${after}" || ! -f "${current}" || ! "${current}" -ef "${root}/install.sh" ]]; then
     echo "安装器已更新，正在使用新版本继续…" >&2
     exec env NLTDEPLOY_SKIP_GIT_PULL=1 bash "${root}/install.sh" "${_CMD}"
   fi
