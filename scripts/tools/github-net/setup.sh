@@ -218,7 +218,25 @@ EOF
     touch "${KNOWN_HOSTS_PATH}"
     chmod 600 "${KNOWN_HOSTS_PATH}"
     if ! ssh-keygen -F "[ssh.github.com]:443" -f "${KNOWN_HOSTS_PATH}" >/dev/null 2>&1; then
-      ssh-keyscan -p 443 ssh.github.com >> "${KNOWN_HOSTS_PATH}" 2>/dev/null || true
+      # 必须核对指纹再写入。盲目 `ssh-keyscan >> known_hosts` 会把网络当场返回的
+      # 任何主机密钥永久标记为可信 —— 而这个脚本恰恰是在「网络异常/受限」时才被
+      # 运行，正是中间人最可能在场的场景。
+      # 指纹取自 GitHub 官方公示（https://api.github.com/meta）。
+      local _gh_ed25519_fp="SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU"
+      local _scan _fp
+      _scan="$(ssh-keyscan -t ed25519 -p 443 ssh.github.com 2>/dev/null || true)"
+      if [[ -n "${_scan}" ]]; then
+        _fp="$(printf '%s\n' "${_scan}" | ssh-keygen -lf - 2>/dev/null | awk '{print $2}' | head -1)"
+        if [[ "${_fp}" == "${_gh_ed25519_fp}" ]]; then
+          printf '%s\n' "${_scan}" >>"${KNOWN_HOSTS_PATH}"
+          say_info "[OK] 已校验并写入 ssh.github.com:443 的 ed25519 主机密钥"
+        else
+          say_warn "ssh.github.com:443 指纹与 GitHub 公示值不符，拒绝写入 known_hosts。"
+          say_warn "  实际: ${_fp:-<无法解析>}"
+          say_warn "  期望: ${_gh_ed25519_fp}"
+          say_warn "  这可能意味着中间人劫持，也可能是 GitHub 轮换了密钥（请对照 https://api.github.com/meta 核实）。"
+        fi
+      fi
     fi
   fi
   say_info "[OK] 已写入 ${SSH_CONFIG_PATH}"

@@ -65,6 +65,19 @@ _nlt_github_download_resolve_url() {
     return 0
   fi
 
+  # 改写前缀/基址必须是 https://。这两个变量能把本仓库所有 GitHub 族下载
+  # （gum、code-server、sub2api、new-api、cockpit-tools…）重定向到任意主机，
+  # 而 README 又主动建议用户设置它们 —— "粘贴这行 ghproxy 就能提速" 正是最容易
+  # 被从随手搜到的博客里抄走的配置。至少不能允许降级到明文 http://。
+  if [[ -n "$hub_pre" && "$hub_pre" != https://* ]]; then
+    printf '%s\n' "[nltdeploy download] 拒绝非 https:// 的 NLTDEPLOY_GITHUB_HUB_PROXY_PREFIX（${hub_pre}），本次不改写。" >&2
+    hub_pre=""
+  fi
+  if [[ -n "$raw_base" && "$raw_base" != https://* ]]; then
+    printf '%s\n' "[nltdeploy download] 拒绝非 https:// 的 NLTDEPLOY_GITHUB_RAW_MIRROR_BASE（${raw_base}），本次不改写。" >&2
+    raw_base=""
+  fi
+
   # 优先级：hub 前缀 > mirror_raw > off（与设计文档一致）
   if [[ -n "$hub_pre" ]]; then
     if [[ "$url" == "${hub_pre}"* ]]; then
@@ -113,7 +126,11 @@ _nlt_github_download_curl() {
       args+=("$a")
     fi
   done
-  curl "${args[@]}"
+  # TLS 下限统一在这里设置，一处覆盖绝大多数调用点：
+  #   --proto '=https'        只允许 https 发起
+  #   --proto-redir '=https'  -L 跟随重定向时同样只允许 https（否则可被 302 到 http://）
+  #   --tlsv1.2               拒绝已废弃的 TLS 版本
+  curl --proto '=https' --proto-redir '=https' --tlsv1.2 "${args[@]}"
 }
 
 # 未启用任何镜像/前缀策略时，向 stderr 打一行说明（NLTDEPLOY_GITHUB_DOWNLOAD_HINT=0 可关）。

@@ -76,21 +76,21 @@ else
   exit 1
 fi
 
-say_info() {
-  gum style --foreground 212 "$*"
-}
+# 复用 lib/nlt-ui.sh 的统一输出层：原实现直接调 `gum style`，
+# 缺 gum 时整条日志语句返回 127，在 set -e 下把脚本打断在无关位置。
+say_info() { nlt_ui_info "$*"; }
+say_warn() { nlt_ui_warn "$*"; }
+die() { nlt_die "$*"; }
 
-say_warn() {
-  gum style --foreground 214 "$*" >&2
-}
-
-# 破坏性/不可逆操作前确认。非交互 stdin（无 TTY）时自动通过，便于 CI/脚本。
+# 幂等操作（重装依赖 / stop）前的确认。非交互时自动通过，便于 CI/脚本 —— 这是
+# 刻意行为，两个调用点（install 续做、stop）在自动化环境下本就应当继续。
+# 真正不可逆的 uninstall 不走这里，另有 AIRFLOW_UNINSTALL_YES 把关。
+# 交互路径改用 nlt_ui_confirm：缺 gum 时降级为 read y/N，而不是返回 127
+# 被 `if ! confirm_yes` 判成「用户拒绝」从而无故中止。
 confirm_yes() {
   local prompt="${1:-是否继续？}"
-  if [[ ! -t 0 ]]; then
-    return 0
-  fi
-  gum confirm "$prompt"
+  nlt_interactive || return 0
+  nlt_ui_confirm "$prompt"
 }
 
 usage() {
@@ -489,17 +489,9 @@ cmd_uninstall() {
   echo "  AIRFLOW_HOME=${AIRFLOW_HOME}"
   echo ""
 
-  if [[ -t 0 ]]; then
-    if ! gum confirm "确认永久删除以上路径？数据库、DAG、日志与虚拟环境将全部移除。"; then
-      echo "已取消。"
-      exit 0
-    fi
-  else
-    if [[ "${AIRFLOW_UNINSTALL_YES:-}" != "1" ]]; then
-      echo "错误: 非交互环境执行 uninstall 必须设置 AIRFLOW_UNINSTALL_YES=1 以确认删除。" >&2
-      exit 1
-    fi
-  fi
+  nlt_confirm_destructive \
+    "确认永久删除以上路径？数据库、DAG、日志与虚拟环境将全部移除。" \
+    AIRFLOW_UNINSTALL_YES || return 1
 
   _stop_standalone_impl 1
 
@@ -517,7 +509,7 @@ cmd_uninstall() {
 }
 
 cmd_restart() {
-  cmd_stop || true
+  cmd_stop || die "停止失败，已中止 restart（服务可能仍在运行）"
   cmd_start
 }
 

@@ -2,6 +2,18 @@
 # Homebrew：通过官方安装器安装 / 升级 / 卸载。
 set -euo pipefail
 
+# 尽力加载公共库（独立执行时缺失也能跑）。主要为拿到 _nlt_github_download_curl：
+# 下面两个 URL 指向 raw.githubusercontent.com，正是镜像改写层负责的主机。
+_BREW_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+for _cand in "${_BREW_SCRIPT_DIR}/../lib/nlt-common.sh" "${_BREW_SCRIPT_DIR}/../../lib/nlt-common.sh"; do
+  if [[ -f "${_cand}" ]]; then
+    # shellcheck source=/dev/null
+    source "${_cand}" || true
+    break
+  fi
+done
+unset _cand
+
 BREW_INSTALL_URL="${BREW_INSTALL_URL:-https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh}"
 BREW_UNINSTALL_URL="${BREW_UNINSTALL_URL:-https://raw.githubusercontent.com/Homebrew/install/HEAD/uninstall.sh}"
 
@@ -20,11 +32,28 @@ find_brew() {
 }
 
 run_official_script() {
-  local url="$1" script
+  local url="$1" tmpdir script
   shift
   command -v curl >/dev/null 2>&1 || die "需要 curl"
-  script="$(curl -fsSL "${url}")" || die "下载安装脚本失败: ${url}"
-  /bin/bash -c "${script}" nltdeploy "$@"
+  tmpdir="$(mktemp -d)"
+  # shellcheck disable=SC2064
+  trap "rm -rf '${tmpdir}'" RETURN EXIT
+  script="${tmpdir}/brew-official.sh"
+  echo "==> 下载: ${url}" >&2
+  # 走 _nlt_github_download_curl（若可用）：URL 指向 raw.githubusercontent.com，
+  # 正是 nlt-github-download.sh 负责改写的主机 —— 原来的裸 curl 让
+  # NLTDEPLOY_GITHUB_HUB_PROXY_PREFIX 对 brew 安装完全失效。同时获得统一的
+  # --proto '=https' TLS 下限。
+  if declare -F _nlt_github_download_curl >/dev/null 2>&1; then
+    _nlt_github_download_curl -fsSL "${url}" -o "${script}" || die "下载安装脚本失败: ${url}"
+  else
+    curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 "${url}" -o "${script}" \
+      || die "下载安装脚本失败: ${url}"
+  fi
+  [[ -s "${script}" ]] || die "下载到的安装脚本为空: ${url}"
+  # 落盘后执行文件，而不是把内容插值进 `bash -c "<脚本正文>"`：
+  # 后者既脆弱（引号/长度），也让「先读一眼再执行」无从谈起。
+  /bin/bash "${script}" nltdeploy "$@"
 }
 
 do_install() {

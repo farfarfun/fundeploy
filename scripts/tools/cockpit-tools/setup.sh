@@ -177,21 +177,15 @@ cmd_update() {
 }
 
 cmd_reinstall() {
-  if [[ "${NONINTERACTIVE:-}" != "1" ]] && [[ -t 0 ]]; then
-    _nlt_ensure_gum || exit 1
-    gum confirm "将覆盖重装 ${COCKPIT_TOOLS_HOME} 下 Cockpit Tools，继续？" || exit 0
+  if nlt_interactive; then
+    nlt_ui_confirm "将覆盖重装 ${COCKPIT_TOOLS_HOME} 下 Cockpit Tools，继续？" || return 0
   fi
   rm -f "${COCKPIT_TOOLS_APPIMAGE}"
   cmd_install
 }
 
 cmd_uninstall() {
-  if [[ "${COCKPIT_TOOLS_UNINSTALL_YES:-}" != "1" ]] && [[ "${NONINTERACTIVE:-}" != "1" ]] && [[ -t 0 ]]; then
-    _nlt_ensure_gum || exit 1
-    gum confirm "删除 ${COCKPIT_TOOLS_HOME} 与桌面入口？" || exit 0
-  elif [[ "${COCKPIT_TOOLS_UNINSTALL_YES:-}" != "1" ]] && [[ ! -t 0 ]] && [[ "${NONINTERACTIVE:-}" != "1" ]]; then
-    _ct_die "非交互卸载请设置 COCKPIT_TOOLS_UNINSTALL_YES=1 或 NONINTERACTIVE=1"
-  fi
+  nlt_confirm_destructive "删除 ${COCKPIT_TOOLS_HOME} 与桌面入口？" COCKPIT_TOOLS_UNINSTALL_YES || return 1
   rm -rf "${COCKPIT_TOOLS_HOME}"
   rm -f "${COCKPIT_TOOLS_DESKTOP_FILE}"
   echo "已卸载 cockpit-tools。"

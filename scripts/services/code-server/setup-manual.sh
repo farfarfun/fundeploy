@@ -190,9 +190,18 @@ cmd_start() {
   fi
   rm -f "$PID_FILE"
   echo "==> 启动 code-server，绑定 ${CODE_SERVER_BIND}，日志: ${LOG_FILE}" >&2
+  # 日志里会出现 code-server 自动生成的登录密码（下方提示也让用户去日志里看），
+  # 而 `>>` 在默认 umask 下建出 0644 —— 同机任何用户读到密码即等同拿到 shell。
+  if [[ ! -f "${LOG_FILE}" ]]; then
+    ( umask 077; : >>"${LOG_FILE}" )
+  fi
+  chmod go-rwx "${LOG_FILE}" 2>/dev/null || true
+
   pushd "${HOME}" >/dev/null
   if [[ -n "${PASSWORD:-}" ]]; then
-    nohup env PASSWORD="${PASSWORD}" "${CODE_SERVER_BIN}" --bind-addr "${CODE_SERVER_BIND}" >>"${LOG_FILE}" 2>&1 &
+    # 用子 shell export，而不是 `env PASSWORD=… cmd`：后者会把密码放进 env(1)
+    # 自己的 argv，而 /proc/<pid>/cmdline 是全局可读的（环境本身则不是）。
+    ( export PASSWORD; exec nohup "${CODE_SERVER_BIN}" --bind-addr "${CODE_SERVER_BIND}" >>"${LOG_FILE}" 2>&1 ) &
   else
     nohup "${CODE_SERVER_BIN}" --bind-addr "${CODE_SERVER_BIND}" >>"${LOG_FILE}" 2>&1 &
   fi
@@ -225,7 +234,12 @@ cmd_run() {
   exec "${CODE_SERVER_BIN}" --bind-addr "${CODE_SERVER_BIND}"
 }
 
+# cmd_stop [--yes]
+#   --yes 跳过确认（供 restart / uninstall 调用，避免二次追问）。
+#   用户拒绝时返回 1（而非 exit 0），否则 restart/uninstall 会被静默截断。
 cmd_stop() {
+  local assume_yes=""
+  [[ "${1:-}" == "--yes" ]] && assume_yes=1
   local pid
   pid="$(read_pid)"
   local listener_pid
@@ -236,8 +250,10 @@ cmd_stop() {
   elif ! process_alive "$pid"; then
     rm -f "$PID_FILE"
   fi
-  if [[ -n "$pid" || -n "$listener_pid" ]] && [[ "${NONINTERACTIVE:-}" != "1" ]] && [[ -t 0 ]]; then
-    gum confirm "停止 code-server（PID ${pid}）？" || exit 0
+  if [[ -z "$assume_yes" ]] && [[ -n "$pid" || -n "$listener_pid" ]] && nlt_interactive; then
+    # 用 nlt_ui_confirm 而非裸 gum：缺 gum 时降级为 read y/N，
+    # 而不是返回 127 让 `|| exit 0` 谎报「已停止」。
+    nlt_ui_confirm "停止 code-server（PID ${pid}）？" || return 1
   fi
   if [[ -n "$pid" ]] && process_alive "$pid"; then
     kill -TERM "$pid" 2>/dev/null || true
@@ -256,7 +272,7 @@ cmd_stop() {
 }
 
 cmd_restart() {
-  cmd_stop || true
+  cmd_stop --yes || die "停止失败，已中止 restart（服务可能仍在运行）"
   cmd_start
 }
 
@@ -290,20 +306,11 @@ cmd_status() {
 }
 
 cmd_uninstall() {
-  cmd_stop || true
   echo "将删除: ${CODE_SERVER_SERVICE_HOME}" >&2
-  if [[ -t 0 ]]; then
-    gum confirm "确认删除？" || exit 0
-  else
-    [[ "${CODE_SERVER_UNINSTALL_YES:-}" == "1" ]] || die "非交互请设 CODE_SERVER_UNINSTALL_YES=1"
-  fi
-  local hp ap
-  hp="$(cd "$HOME" && pwd -P)"
-  ap="$(cd "${CODE_SERVER_SERVICE_HOME}" 2>/dev/null && pwd -P)" || ap="${CODE_SERVER_SERVICE_HOME}"
-  if [[ "$ap" == "/" || "$ap" == "$hp" ]]; then
-    die "拒绝删除根目录或 \$HOME"
-  fi
-  rm -rf "${CODE_SERVER_SERVICE_HOME}"
+  # 先确认再动手：确认通过后 cmd_stop 用 --yes，避免二次追问把卸载拦腰截断。
+  nlt_confirm_destructive "确认删除 ${CODE_SERVER_SERVICE_HOME}？" CODE_SERVER_UNINSTALL_YES || return 1
+  cmd_stop --yes || nlt_ui_warn "停止失败，仍继续删除。"
+  nlt_safe_rm "${CODE_SERVER_SERVICE_HOME}" || return 1
   echo "已删除。用户配置可能在 ~/.config/code-server"
 }
 

@@ -15,7 +15,14 @@
 #   nlt_list_port 8080          # 列出占用 8080 的进程信息
 #   nlt_kill_ports 8080 8443    # 批量终止
 
-set -euo pipefail
+# 本文件同时用作可 source 的库（见头部 `--lib` 用法）。直接执行时才收紧 shell 选项——
+# 原先无条件 `set -euo pipefail` 会把 nounset/pipefail 泄漏进调用方 shell，
+# 让未按 set -u 编写的宿主脚本在无关位置崩溃。
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  set -euo pipefail
+else
+  set -o pipefail
+fi
 
 # ── 路径解析 & 公共库 ────────────────────────────────────────────────────────
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -52,6 +59,20 @@ _pk_warn() {
   fi
 }
 _pk_err()  { printf '[ERROR] %s\n' "$*" >&2; }
+
+# 确认：优先用 lib 的统一实现，独立运行（无 lib）时回退 read y/N。
+# 关键：绝不以「有没有 gum」作为是否询问的条件——原实现在无 gum 时直接跳过确认，
+# 于是 kill 会在完全没有提示的情况下执行。
+_pk_confirm() {
+  local prompt="$1"
+  if declare -F nlt_ui_confirm >/dev/null 2>&1; then
+    nlt_ui_confirm "${prompt}"
+    return $?
+  fi
+  local a
+  read -r -p "${prompt} [y/N] " a || return 1
+  case "$a" in [yY] | [yY][eE][sS]) return 0 ;; *) return 1 ;; esac
+}
 
 _pk_header() {
   if command -v gum >/dev/null 2>&1; then
@@ -131,9 +152,10 @@ nlt_kill_port() {
     pids+=("$pid")
   done
 
-  # 交互确认（非 NONINTERACTIVE、有 TTY、有 gum）
-  if [[ "${NONINTERACTIVE:-0}" != "1" ]] && [[ -t 0 ]] && command -v gum >/dev/null 2>&1; then
-    gum confirm "确认终止以上 ${#pids[@]} 个进程（端口 ${port}）？" || {
+  # 交互确认（非 NONINTERACTIVE、有 TTY）。不再要求 gum：缺 gum 时回退 read y/N，
+  # 而不是跳过确认直接开杀。
+  if [[ "${NONINTERACTIVE:-0}" != "1" ]] && [[ -t 0 ]]; then
+    _pk_confirm "确认终止以上 ${#pids[@]} 个进程（端口 ${port}）？" || {
       _pk_warn "已取消（端口 ${port}）。"
       return 0
     }
@@ -283,8 +305,8 @@ cmd_reinstall() {
 
 cmd_uninstall() {
   _pk_header "卸载 ${INSTALL_NAME}"
-  if [[ "${NONINTERACTIVE:-0}" != "1" ]] && [[ -t 0 ]] && command -v gum >/dev/null 2>&1; then
-    gum confirm "将移除 ${NLT_BIN_DIR}/${INSTALL_NAME}，继续？" || {
+  if [[ "${NONINTERACTIVE:-0}" != "1" ]] && [[ -t 0 ]]; then
+    _pk_confirm "将移除 ${NLT_BIN_DIR}/${INSTALL_NAME}，继续？" || {
       _pk_warn "已取消。"; return 0
     }
   fi

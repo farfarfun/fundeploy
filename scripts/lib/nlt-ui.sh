@@ -24,6 +24,8 @@ NLT_UI_C_ERR="${NLT_UI_C_ERR:-203}"           # 错误（红）
 _nlt_ui_styled() {
   [[ -n "${NO_COLOR:-}" ]] && return 1
   [[ "${NLT_UI_PLAIN:-0}" == "1" ]] && return 1
+  # 原实现漏了这一条，导致 ANSI 转义会被写进管道与日志文件。
+  [[ -t 2 ]] || return 1
   return 0
 }
 
@@ -98,6 +100,8 @@ nlt_ui_choose() {
   read -r reply || return 1
   [[ -z "${reply}" ]] && return 1
   [[ "${reply}" =~ ^[0-9]+$ ]] || return 1
+  # 显式十进制：否则 "08"/"09" 被当作八进制，报 "value too great for base"。
+  reply=$((10#${reply}))
   [[ "${reply}" -ge 1 && "${reply}" -le $# ]] || return 1
   printf '%s\n' "${!reply}"
 }
@@ -119,3 +123,60 @@ nlt_ui_info()  { if _nlt_ui_styled; then printf '\033[38;5;%sm%s\033[0m\n' "${NL
 nlt_ui_ok()    { if _nlt_ui_styled; then printf '\033[38;5;%sm✓ %s\033[0m\n' "${NLT_UI_C_OK}" "$*" >&2; else printf 'OK: %s\n' "$*" >&2; fi; }
 nlt_ui_warn()  { if _nlt_ui_styled; then printf '\033[38;5;%sm! %s\033[0m\n' "${NLT_UI_C_WARN}" "$*" >&2; else printf '警告: %s\n' "$*" >&2; fi; }
 nlt_ui_err()   { if _nlt_ui_styled; then printf '\033[38;5;%sm✗ %s\033[0m\n' "${NLT_UI_C_ERR}" "$*" >&2; else printf '错误: %s\n' "$*" >&2; fi; }
+
+# 统一致命错误出口（替代 18 处各自定义的 die）。
+nlt_die() { nlt_ui_err "$*"; exit 1; }
+
+# 是否可交互：有 stdin TTY 且未显式声明非交互。
+nlt_interactive() {
+  [[ "${NONINTERACTIVE:-0}" == "1" ]] && return 1
+  [[ -t 0 ]]
+}
+
+# nlt_confirm_destructive "<提示>" [ENV_VAR_NAME]
+#   交互态 → nlt_ui_confirm（无 gum 自动降级为 read y/N，不会因缺 gum 而 127）。
+#   非交互 → 仅当 ${ENV_VAR_NAME}=1 或 NLT_ASSUME_YES=1 才放行，否则返回 1。
+# 返回 1 表示「未获批准」，调用方应 return 而非 exit，以免吞掉 restart/uninstall 的后续步骤。
+nlt_confirm_destructive() {
+  local prompt="$1" env_name="${2:-}"
+  if nlt_interactive; then
+    nlt_ui_confirm "${prompt}" && return 0
+    nlt_ui_info "已取消。"
+    return 1
+  fi
+  [[ "${NLT_ASSUME_YES:-}" == "1" ]] && return 0
+  if [[ -n "${env_name}" ]]; then
+    [[ "${!env_name:-}" == "1" ]] && return 0
+    nlt_ui_err "非交互模式需设置 ${env_name}=1（或 NLT_ASSUME_YES=1）以确认此操作。"
+  else
+    nlt_ui_err "非交互模式需设置 NLT_ASSUME_YES=1 以确认此操作。"
+  fi
+  return 1
+}
+
+# nlt_safe_rm <path>
+# 删除服务目录前的统一守卫。拒绝：空路径、相对路径、/、$HOME、深度小于 2 的路径
+# （如 /opt、/usr），以及一批系统关键目录。深度门槛是关键——各服务原有的守卫只比对
+# 「是否等于 / 或 $HOME」，因此 SERVICE_HOME=/opt 这类误设会被直接放行。
+nlt_safe_rm() {
+  local target="$1" rp hp depth
+  [[ -n "${target}" ]] || { nlt_ui_err "拒绝删除空路径"; return 1; }
+  [[ "${target}" == /* ]] || { nlt_ui_err "拒绝删除相对路径: ${target}"; return 1; }
+  rp="$(cd "${target}" 2>/dev/null && pwd -P)" || rp="${target}"
+  rp="${rp%/}"
+  hp="$(cd "${HOME}" 2>/dev/null && pwd -P || printf '%s' "${HOME}")"
+  hp="${hp%/}"
+
+  case "${rp}" in
+    "" | / | "${hp}")
+      nlt_ui_err "拒绝删除根目录或 \$HOME: ${rp:-/}"; return 1 ;;
+    /bin | /boot | /dev | /etc | /home | /lib* | /opt | /proc | /root | /run | /sbin | /srv | /sys | /tmp | /usr | /var | /Users | /Applications | /System | /Library)
+      nlt_ui_err "拒绝删除系统目录: ${rp}"; return 1 ;;
+  esac
+
+  # 深度 >= 2（如 /opt/code-server 合法，/opt 不合法）。
+  depth="${rp//[!\/]/}"
+  (( ${#depth} >= 2 )) || { nlt_ui_err "拒绝删除层级过浅的路径: ${rp}"; return 1; }
+
+  rm -rf "${rp}"
+}

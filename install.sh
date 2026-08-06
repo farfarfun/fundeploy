@@ -12,6 +12,24 @@ NLTDEPLOY_SRC_DIR="${NLTDEPLOY_SRC_DIR:-${NLTDEPLOY_ROOT}/src/nltdeploy}"
 
 die() { echo "错误: $*" >&2; exit 1; }
 
+# 首次安装时公共库尚不存在，因此安装根目录必须在本文件内守卫。
+_guard_nltdeploy_root() {
+  local create="${1:-0}" root hp depth
+  [[ "${NLTDEPLOY_ROOT}" == /* ]] || die "NLTDEPLOY_ROOT 必须是绝对路径: ${NLTDEPLOY_ROOT}"
+  [[ "${create}" == "1" ]] && mkdir -p "${NLTDEPLOY_ROOT}"
+  [[ -d "${NLTDEPLOY_ROOT}" ]] || die "安装目录不存在: ${NLTDEPLOY_ROOT}"
+
+  root="$(cd "${NLTDEPLOY_ROOT}" && pwd -P)"
+  hp="$(cd "${HOME}" && pwd -P)"
+  case "${root}" in
+    / | "${hp}" | /bin | /boot | /dev | /etc | /home | /lib* | /opt | /proc | /root | /run | /sbin | /srv | /sys | /tmp | /usr | /var | /Users | /Applications | /System | /Library)
+      die "拒绝使用系统目录或 \$HOME 作为 NLTDEPLOY_ROOT: ${root}" ;;
+  esac
+
+  depth="${root//[!\/]/}"
+  (( ${#depth} >= 2 )) || die "NLTDEPLOY_ROOT 路径层级过浅: ${root}"
+}
+
 usage() {
   cat <<'EOF'
 用法: install.sh [install|update|uninstall]
@@ -91,13 +109,19 @@ _ensure_clone_for_scripts() {
 # scripts 的父目录若为 git 仓库，则拉取最新（可跳过）。
 _sync_git_upstream_for_scripts() {
   local scripts_dir="$1"
-  local root
+  local root before after
   root="$(cd "$(dirname "$scripts_dir")" && pwd)"
   [[ -d "${root}/.git" ]] || return 0
   [[ "${NLTDEPLOY_SKIP_GIT_PULL:-}" == "1" ]] && return 0
   command -v git >/dev/null 2>&1 || die "发现 git 仓库但未安装 git，无法更新: ${root}"
   echo "正在拉取最新脚本: ${root}" >&2
+  before="$(git -C "${root}" rev-parse HEAD)"
   git -C "${root}" pull --ff-only || die "git pull 失败: ${root}"
+  after="$(git -C "${root}" rev-parse HEAD)"
+  if [[ "${before}" != "${after}" && -f "${root}/install.sh" ]]; then
+    echo "安装器已更新，正在使用新版本继续…" >&2
+    exec env NLTDEPLOY_SKIP_GIT_PULL=1 bash "${root}/install.sh" "${_CMD}"
+  fi
 }
 
 # 规范路径，便于去重与写入 rc
@@ -225,33 +249,42 @@ _remove_managed_path_block_from_file() {
   [[ -f "$f" ]] || return 0
   grep -Fq -e '--- nltdeploy PATH' "$f" || return 0
   local start end tmp
-  start="$(grep -nF '# --- nltdeploy PATH (github.com/farfarfun/nltdeploy install.sh) ---' "$f" | head -1 | cut -d: -f1)"
-  end="$(grep -nF '# --- end nltdeploy PATH ---' "$f" | head -1 | cut -d: -f1)"
-  [[ -n "$start" && -n "$end" && "$end" -ge "$start" ]] || return 0
+  # `|| true`：标记缺失时 grep 返回 1，在 set -e + pipefail 下会直接终止整个
+  # install.sh —— 于是用户手工编辑过 rc 文件后，uninstall 什么都没删就退出 1，
+  # 下面那行本该兜底的守卫永远走不到。
+  start="$(grep -nF '# --- nltdeploy PATH (github.com/farfarfun/nltdeploy install.sh) ---' "$f" | head -1 | cut -d: -f1 || true)"
+  end="$(grep -nF '# --- end nltdeploy PATH ---' "$f" | head -1 | cut -d: -f1 || true)"
+  if [[ -z "$start" || -z "$end" || "$end" -lt "$start" ]]; then
+    echo "警告: ${f} 中的 nltdeploy PATH 标记不完整，跳过自动清理（请手动检查）。" >&2
+    return 0
+  fi
   tmp="$(mktemp)"
   awk -v s="$start" -v e="$end" 'NR < s || NR > e' "$f" >"$tmp" && mv "$tmp" "$f"
   echo "已从 ${f} 移除 nltdeploy PATH 片段" >&2
 }
 
+# 输出所选子命令；用户选择「退出」或取消时输出 quit。
+# 注意：本函数总是在 `$( )` 命令替换里被调用，因此 **不能用 exit 表达退出** ——
+# exit 只会终止那层子 shell，调用方拿到空串后落进 `case *)` 报「未知命令: 」并以 1 退出。
 _pick_cmd_interactive() {
   if command -v gum >/dev/null 2>&1; then
     local p
-    p="$(gum choose --header "nltdeploy" "安装" "更新" "卸载" "退出")" || exit 0
+    p="$(gum choose --header "nltdeploy" "安装" "更新" "卸载" "退出")" || { echo "quit"; return 0; }
     case "$p" in
       安装) echo "install" ;;
       更新) echo "update" ;;
       卸载) echo "uninstall" ;;
-      *) exit 0 ;;
+      *) echo "quit" ;;
     esac
   else
     echo "请选择:" >&2
     echo "  1) 安装   2) 更新   3) 卸载   4) 退出" >&2
-    read -r -p "输入 1-4: " sel
+    read -r -p "输入 1-4: " sel || { echo "quit"; return 0; }
     case "$sel" in
       1) echo "install" ;;
       2) echo "update" ;;
       3) echo "uninstall" ;;
-      *) exit 0 ;;
+      *) echo "quit" ;;
     esac
   fi
 }
@@ -265,7 +298,10 @@ _emit_wrapper() {
   {
     printf '%s\n' '#!/usr/bin/env bash'
     printf '%s\n' 'set -euo pipefail'
-    printf 'NLTDEPLOY_ROOT=${NLTDEPLOY_ROOT:-%q}\n' "${NLTDEPLOY_WRAPPER_ROOT}"
+    # 必须 export：wrapper 用 exec 启动真正的入口脚本，只有环境变量能传递过去。
+    # 漏掉 export 时 deb(/usr) 与 brew(opt_prefix) 安装下的入口会回落到
+    # ~/.local/nltdeploy，导致 _resolve_local_install_sh / NLTDEPLOY_SRC_DIR 找错位置。
+    printf 'export NLTDEPLOY_ROOT=${NLTDEPLOY_ROOT:-%q}\n' "${NLTDEPLOY_WRAPPER_ROOT}"
     if [[ -n "${NLTDEPLOY_PACKAGE_MANAGER:-}" ]]; then
       printf 'export NLTDEPLOY_PACKAGE_MANAGER=%q\n' "${NLTDEPLOY_PACKAGE_MANAGER}"
     fi
@@ -300,6 +336,7 @@ _nlt_cp_first() {
 
 do_install_or_update() {
   local SCRIPTS LIBEXEC
+  _guard_nltdeploy_root 1
   SCRIPTS=""
   if SCRIPTS="$(_resolve_scripts_from_install_sh)"; then
     :
@@ -316,20 +353,13 @@ do_install_or_update() {
   mkdir -p "${LIBEXEC}/pip-sources" "${LIBEXEC}/python-env" "${LIBEXEC}/port-kill" \
     "${LIBEXEC}/ai-cli/claude" "${LIBEXEC}/ai-cli/codex" "${LIBEXEC}/ai-cli/cursor" \
     "${LIBEXEC}/dev/go" "${LIBEXEC}/dev/rust" "${LIBEXEC}/dev/nodejs" "${LIBEXEC}/dev/pnpm" "${LIBEXEC}/dev/uv" \
-    "${LIBEXEC}/brew" "${LIBEXEC}/download" "${LIBEXEC}/cockpit-tools" \
+    "${LIBEXEC}/brew" "${LIBEXEC}/download" "${LIBEXEC}/cockpit-tools" "${LIBEXEC}/skills-sync" \
     "${LIBEXEC}/airflow" "${LIBEXEC}/celery" "${LIBEXEC}/utils" "${LIBEXEC}/github-net" \
     "${LIBEXEC}/paperclip" "${LIBEXEC}/code-server" "${LIBEXEC}/new-api" "${LIBEXEC}/sub2api" \
     "${LIBEXEC}/open-pencil" \
     "${LIBEXEC}/services" \
     "${LIBEXEC}/tools" \
     "${LIBEXEC}/lib"
-
-  _nlt_cp_first "${LIBEXEC}/lib/nlt-common.sh" \
-    "${SCRIPTS}/lib/nlt-common.sh" \
-    "${SCRIPTS}/_lib/nlt-common.sh"
-
-  _nlt_cp_first "${LIBEXEC}/lib/nlt-progress.sh" \
-    "${SCRIPTS}/lib/nlt-progress.sh"
 
   _nlt_cp_first "${LIBEXEC}/lib/nlt-ui.sh" \
     "${SCRIPTS}/lib/nlt-ui.sh"
@@ -339,6 +369,13 @@ do_install_or_update() {
 
   _nlt_cp_first "${LIBEXEC}/lib/nlt-github-download.sh" \
     "${SCRIPTS}/lib/nlt-github-download.sh"
+
+  _nlt_cp_first "${LIBEXEC}/lib/nlt-progress.sh" \
+    "${SCRIPTS}/lib/nlt-progress.sh"
+
+  _nlt_cp_first "${LIBEXEC}/lib/nlt-common.sh" \
+    "${SCRIPTS}/lib/nlt-common.sh" \
+    "${SCRIPTS}/_lib/nlt-common.sh"
 
   _nlt_cp_first "${LIBEXEC}/dev/setup.sh" \
     "${SCRIPTS}/dev/setup.sh"
@@ -358,11 +395,11 @@ do_install_or_update() {
   _nlt_cp_first "${LIBEXEC}/dev/uv/setup.sh" \
     "${SCRIPTS}/dev/uv/setup.sh"
 
-  _nlt_cp_first "${LIBEXEC}/ai-cli/setup.sh" \
-    "${SCRIPTS}/ai-cli/setup.sh"
-
   _nlt_cp_first "${LIBEXEC}/ai-cli/common.sh" \
     "${SCRIPTS}/ai-cli/common.sh"
+
+  _nlt_cp_first "${LIBEXEC}/ai-cli/setup.sh" \
+    "${SCRIPTS}/ai-cli/setup.sh"
 
   _nlt_cp_first "${LIBEXEC}/ai-cli/claude/setup.sh" \
     "${SCRIPTS}/ai-cli/claude/setup.sh"
@@ -413,6 +450,9 @@ do_install_or_update() {
 
   _nlt_cp_first "${LIBEXEC}/cockpit-tools/setup.sh" \
     "${SCRIPTS}/tools/cockpit-tools/setup.sh"
+
+  _nlt_cp_first "${LIBEXEC}/skills-sync/setup.sh" \
+    "${SCRIPTS}/tools/skills-sync/setup.sh"
 
   _nlt_cp_first "${LIBEXEC}/paperclip/setup.sh" \
     "${SCRIPTS}/services/paperclip/setup.sh" \
@@ -515,16 +555,12 @@ do_install_or_update() {
 }
 
 do_uninstall() {
-  local root hp ap rc
+  local ap rc
   if [[ ! -d "${NLTDEPLOY_ROOT}" ]]; then
     echo "未找到安装目录，跳过: ${NLTDEPLOY_ROOT}" >&2
     exit 0
   fi
-
-  root="$(cd "${NLTDEPLOY_ROOT}" && pwd -P)"
-  hp="$(cd "$HOME" && pwd -P)"
-  [[ "$root" == "/" ]] && die "拒绝删除根目录"
-  [[ "$root" == "$hp" ]] && die "拒绝删除 \$HOME"
+  _guard_nltdeploy_root
 
   if [[ "${NLTDEPLOY_UNINSTALL_YES:-}" != "1" ]]; then
     if [[ -t 0 ]]; then
@@ -563,6 +599,10 @@ else
 fi
 
 case "${_CMD}" in
+  quit)
+    echo "已退出。" >&2
+    exit 0
+    ;;
   install | update)
     do_install_or_update
     ;;

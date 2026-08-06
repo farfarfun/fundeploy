@@ -90,34 +90,28 @@ _ensure_gum_for_interactive_menu() {
 }
 
 _interactive_main() {
+  # 用字面量常量而非通配符匹配菜单项。原实现按 *别名*/*依次*/*gum* 依次匹配，
+  # 而「gum 与别名（依次执行）」同时含「别名」和「gum」，会先命中 *别名*，
+  # 于是该项只写别名、从不装 gum，cmd_all 成为死代码。
+  local L_GUM L_ALIAS L_ALL L_HELP L_QUIT
+  L_GUM="安装 / 更新 gum（${GUM_HOME}）"
+  L_ALIAS="写入 ll / la / lla 别名"
+  L_ALL="gum 与别名（依次执行）"
+  L_HELP="查看帮助"
+  L_QUIT="退出"
+
   while true; do
     local pick
     pick="$(gum choose --header "nlt-utils" \
-      "安装 / 更新 gum（${GUM_HOME}）" \
-      "写入 ll / la / lla 别名" \
-      "gum 与别名（依次执行）" \
-      "查看帮助" \
-      "退出")" || return 0
+      "${L_GUM}" "${L_ALIAS}" "${L_ALL}" "${L_HELP}" "${L_QUIT}")" || return 0
     [[ -z "${pick}" ]] && return 0
     case "${pick}" in
-      *退出) return 0 ;;
-      *帮助)
-        usage
-        echo ""
-        ;;
-      *别名*)
-        cmd_shell_aliases
-        ;;
-      *依次*)
-        cmd_all ""
-        ;;
-      *gum*)
-        cmd_gum ""
-        ;;
-      *)
-        usage
-        echo ""
-        ;;
+      "${L_QUIT}")  return 0 ;;
+      "${L_HELP}")  usage; echo "" ;;
+      "${L_ALIAS}") cmd_shell_aliases ;;
+      "${L_ALL}")   cmd_all "" ;;
+      "${L_GUM}")   cmd_gum "" ;;
+      *)            usage; echo "" ;;
     esac
     echo ""
   done

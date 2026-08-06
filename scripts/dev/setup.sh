@@ -94,6 +94,14 @@ _pick_menu() {
 main() {
   local cmd="${1:-}"
   if [[ -z "$cmd" ]]; then
+    # 与 nltdeploy.sh / nlt-tools.sh 保持一致：非交互（NONINTERACTIVE=1 或
+    # stdin 非 TTY）时打印帮助后退出，而不是弹出 gum 菜单。此前本入口漏了
+    # 这道判断，CI 上一旦装了 gum，`NONINTERACTIVE=1 nltdeploy dev` 会直接
+    # 进入阻塞式 TUI。
+    if [[ "${NONINTERACTIVE:-0}" == "1" || ! -t 0 ]]; then
+      usage
+      return 0
+    fi
     local pick
     if pick="$(_pick_menu)"; then
       case "$pick" in
@@ -134,7 +142,13 @@ main() {
     -h | --help | help)
       usage
       ;;
-    *) die "未知子命令: ${cmd}（见 nltdeploy dev --help）" ;;
+    *)
+      # 退出码 2 = 用法错误，与 nltdeploy.sh / nlt-tools.sh / nlt-services.sh
+      # 对齐（此前本入口用 1，调用方无法靠 $?==2 区分「用法错」与「执行失败」）。
+      echo "错误: 未知子命令: ${cmd}（见 nltdeploy dev --help）" >&2
+      usage >&2
+      exit 2
+      ;;
   esac
 }
 

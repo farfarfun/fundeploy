@@ -282,12 +282,17 @@ cmd_run() {
   exec paperclipai run
 }
 
+# cmd_stop [--yes]
+#   --yes 跳过确认（供 restart / uninstall 调用，避免二次追问）。
+#   用户拒绝时返回 1（而非 exit 0），否则 restart/uninstall 会被静默截断。
 cmd_stop() {
+  local assume_yes=""
+  [[ "${1:-}" == "--yes" ]] && assume_yes=1
   local pid
   pid="$(read_pid)"
-  if [[ -n "$pid" ]] && [[ "${NONINTERACTIVE:-}" != "1" ]] && [[ -t 0 ]]; then
-    _nlt_ensure_gum || exit 1
-    gum confirm "停止 Paperclip（PID ${pid:--}）？" || exit 0
+  if [[ -z "$assume_yes" ]] && [[ -n "$pid" ]] && nlt_interactive; then
+    # nlt_ui_confirm 在缺 gum 时降级为 read y/N，无需 _nlt_ensure_gum 硬拉依赖。
+    nlt_ui_confirm "停止 Paperclip（PID ${pid:--}）？" || return 1
   fi
 
   local server_pid
@@ -319,7 +324,7 @@ cmd_stop() {
 }
 
 cmd_restart() {
-  cmd_stop || true
+  cmd_stop --yes || die "停止失败，已中止 restart（服务可能仍在运行）"
   cmd_start
 }
 
@@ -358,24 +363,14 @@ cmd_status() {
 }
 
 cmd_uninstall() {
-  cmd_stop || true
   echo "将删除目录: ${PAPERCLIP_SERVICE_HOME}" >&2
   echo "Paperclip 数据目录默认位于: ${PAPERCLIP_HOME}（不会自动删除）" >&2
-  if [[ -t 0 ]]; then
-    _nlt_ensure_gum || exit 1
-    gum confirm "确认永久删除上述服务目录？" || exit 0
-  else
-    [[ "${PAPERCLIP_UNINSTALL_YES:-}" == "1" ]] || die "非交互卸载请设置 PAPERCLIP_UNINSTALL_YES=1"
-  fi
-  local hp ap
-  hp="$(cd "$HOME" && pwd -P)"
-  ap="$(cd "${PAPERCLIP_SERVICE_HOME}" 2>/dev/null && pwd -P)" || ap="${PAPERCLIP_SERVICE_HOME}"
-  if [[ "$ap" == "/" || "$ap" == "$hp" ]]; then
-    die "拒绝删除根目录或 \$HOME"
-  fi
+  # 先确认再动手：确认通过后 cmd_stop 用 --yes，避免二次追问把卸载拦腰截断。
+  nlt_confirm_destructive "确认永久删除 ${PAPERCLIP_SERVICE_HOME}？" PAPERCLIP_UNINSTALL_YES || return 1
+  cmd_stop --yes || nlt_ui_warn "停止失败，仍继续卸载。"
   command -v npm >/dev/null 2>&1 || die "未找到 npm，无法卸载全局 paperclipai"
   npm uninstall -g paperclipai
-  rm -rf "${PAPERCLIP_SERVICE_HOME}"
+  nlt_safe_rm "${PAPERCLIP_SERVICE_HOME}" || return 1
   echo "已卸载全局 paperclipai 并删除 ${PAPERCLIP_SERVICE_HOME}。若需彻底清理数据，请自行删除 ${PAPERCLIP_HOME}"
 }
 

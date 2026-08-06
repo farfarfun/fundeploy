@@ -48,8 +48,7 @@ git push origin "v${version}"
 ## 本地验证
 
 ```bash
-bash packaging/build-deb.sh
-bash tests/package_smoke.sh
+bash tests/run-all.sh
 ```
 
 `dist/` 已被 Git 忽略。APT 仓库构建需要 `apt-ftparchive`、`dpkg-scanpackages` 和 GnuPG。

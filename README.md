@@ -108,7 +108,7 @@ brew uninstall nltdeploy
 ### 工具
 
 - `nltdeploy tool list`：列出工具
-- `nltdeploy tool brew|gum|download|github-net|port-kill|cockpit-tools`
+- `nltdeploy tool brew|gum|download|github-net|skills-sync|port-kill|cockpit-tools`
 
 ### AI CLI
 
@@ -135,9 +135,7 @@ VERSION       当前发布版本
 - 模块依赖与环境变量：以各自 `setup.sh` 文件头注释为准
 - 冒烟测试：
 ```bash
-bash tests/install_smoke.sh
-bash tests/progress_smoke.sh
-bash tests/package_smoke.sh
+bash tests/run-all.sh
 ```
 - 没执行权限：`chmod +x install.sh` 或对应 `setup.sh`
 - PATH 未生效：手动 `export PATH="$HOME/.local/nltdeploy/bin:$PATH"`

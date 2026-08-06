@@ -64,6 +64,7 @@ _nlt_tools_tail() {
     pip-sources)   echo "pip-sources/setup.sh" ;;
     python-env)    echo "python-env/setup.sh" ;;
     github-net)    echo "github-net/setup.sh" ;;
+    skills-sync)   echo "skills-sync/setup.sh" ;;
     port-kill)     echo "port-kill/setup.sh" ;;
     cockpit-tools) echo "cockpit-tools/setup.sh" ;;
     utils)         echo "utils/setup.sh" ;;
@@ -78,7 +79,7 @@ _nlt_tools_tail() {
 
 # 已知工具名（供 list / 菜单 / 校验），顺序即展示顺序。
 _NLT_TOOLS_NAMES=(
-  brew gum download github-net port-kill cockpit-tools
+  brew gum download github-net skills-sync port-kill cockpit-tools
 )
 
 # 解析某工具 setup.sh 的绝对路径（自适应仓库内 / libexec 两种布局）。
@@ -108,7 +109,7 @@ usage() {
   <其它>      原样透传给该工具 setup.sh（如 reinstall、status 等）。
 
 工具:
-  brew gum download github-net port-kill cockpit-tools
+  brew gum download github-net skills-sync port-kill cockpit-tools
 
 示例:
   nltdeploy tool brew install
@@ -149,12 +150,8 @@ _nlt_tools_gum_uninstall() {
     *) die "gum 安装目录不在 \$HOME 下，出于安全拒绝自动删除: ${root}（请手动清理）" ;;
   esac
   if [[ "${NONINTERACTIVE:-0}" != "1" && -t 0 ]]; then
-    if command -v gum >/dev/null 2>&1; then
-      gum confirm "将删除 gum 安装目录 ${root}，确认？" || { echo "已取消。"; return 0; }
-    else
-      local a; read -r -p "确认删除 ${root}？[y/N] " a
-      case "$a" in [yY]|[yY][eE][sS]) ;; *) echo "已取消。"; return 0 ;; esac
-    fi
+    # nlt_ui_confirm 自身已内建 gum/read 双路径，无需在此再分叉一次。
+    nlt_ui_confirm "将删除 gum 安装目录 ${root}，确认？" || { echo "已取消。"; return 0; }
   fi
   rm -rf "${root}"
   echo "已卸载 gum（删除 ${root}）。PATH 中的 gum 片段请按需手动清理。"
@@ -182,7 +179,11 @@ dispatch() {
 
   # 其它工具：upgrade 归一化为各脚本支持的动词。
   case "${verb}" in
-    ""|help|-h|--help)
+    "")
+      [[ "${tool}" == "skills-sync" ]] && exec bash "${setup}"
+      exec bash "${setup}" help
+      ;;
+    help|-h|--help)
       exec bash "${setup}" help
       ;;
     install)
@@ -215,6 +216,7 @@ _nlt_tool_desc() {
     pip-sources)   echo "pip 镜像源切换" ;;
     python-env)    echo "Python 虚拟环境管理" ;;
     github-net)    echo "GitHub 网络诊断" ;;
+    skills-sync)   echo "Gitee skills 仓库同步" ;;
     port-kill)     echo "按端口杀进程" ;;
     cockpit-tools) echo "Cockpit 运维面板工具" ;;
     go)            echo "Go 工具链" ;;

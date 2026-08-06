@@ -5,8 +5,19 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf -- "$TMP"' EXIT
 
+# 打包工具缺失时默认跳过（方便 macOS / 精简环境下跑其余测试）。
+# 但 CI 必须设置 NLTDEPLOY_REQUIRE_PACKAGE_TESTS=1 —— 否则本测试会静默 exit 0
+# 绿灯通过，而实际发布用的 .deb 构建路径从未被验证过。
 for cmd in apt-ftparchive dpkg-deb dpkg-scanpackages gpg gpgv; do
-  command -v "$cmd" >/dev/null 2>&1 || { echo "package_smoke skip: missing $cmd"; exit 0; }
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    if [[ "${NLTDEPLOY_REQUIRE_PACKAGE_TESTS:-}" == "1" ]]; then
+      echo "package_smoke FAIL: 缺少 $cmd（已设置 NLTDEPLOY_REQUIRE_PACKAGE_TESTS=1，不允许跳过）" >&2
+      echo "  Debian/Ubuntu 安装: sudo apt-get install -y apt-utils dpkg-dev gnupg" >&2
+      exit 1
+    fi
+    echo "package_smoke skip: missing $cmd"
+    exit 0
+  fi
 done
 
 VERSION="$(tr -d '[:space:]' < "${ROOT}/VERSION")"

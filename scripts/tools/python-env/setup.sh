@@ -3,7 +3,9 @@
 # 自动创建Python环境并安装基础包的脚本
 # 使用uv创建Python 3.12环境
 
-set -e  # 遇到错误立即退出
+# 原为裸 set -e：缺 -u 会让拼错的变量静默展开为空，缺 pipefail 会让管道中
+# 非最后一环的失败被吞掉。本文件大量使用 local x=$(cmd) 与管道，两者都需要。
+set -euo pipefail
 
 _PSDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ -f "${_PSDIR}/../lib/nlt-common.sh" ]]; then
@@ -28,8 +30,8 @@ PYTHON_VERSION=""
 ENV_PATH=""
 DEFAULT_VERSION="3.12"
 # 支持的Python版本列表（从高到低排序）
-PYTHON_VERSIONS=("3.14" "3.13" "3.12" "3.11" "3.10" "3.9" "3.8")
-PACKAGES=("funbuild" "funinstall" "funsecret")
+PYTHON_VERSIONS=("3.14" "3.13" "3.12" "3.11" "3.10" "3.9")
+PACKAGES=("nltbuild" "funinstall" "nltsecret")
 
 # 检测是否可以交互（在脚本开始时检测一次）
 # 优先级：环境变量 > 实际检测
@@ -37,8 +39,12 @@ PACKAGES=("funbuild" "funinstall" "funsecret")
 # 关键：即使通过管道执行，如果 /dev/tty 可用，也可以交互
 if [ "${NONINTERACTIVE:-}" = "1" ]; then
     IS_INTERACTIVE=false
-elif [ -c /dev/tty ] 2>/dev/null && [ -r /dev/tty ] && [ -w /dev/tty ]; then
-    # /dev/tty 可用且可读写，即使通过管道执行也可以交互
+elif { exec 3</dev/tty; } 2>/dev/null; then
+    # 真正打开 /dev/tty 才算可交互。原实现用 [ -c/-r/-w /dev/tty ]，那是对
+    # 路径的 access(2) 检查；/dev/tty 权限为 0666，在 cron/systemd/docker
+    # （无 -t）下也会通过，于是 IS_INTERACTIVE=true，之后 read < /dev/tty
+    # 打开失败，set -e 让脚本以 "cannot open /dev/tty" 中止，而不是回退默认值。
+    exec 3<&-
     IS_INTERACTIVE=true
 elif [ -t 0 ] && [ -t 1 ]; then
     # stdin 和 stdout 都是终端
@@ -69,9 +75,8 @@ check_uv() {
         print_info "正在从官方源安装 uv..."
         
         # 使用官方安装脚本安装 uv
-        curl -LsSf https://astral.sh/uv/install.sh | sh
-        
-        if [ $? -eq 0 ]; then
+        if curl -LsSf --proto '=https' --proto-redir '=https' --tlsv1.2 \
+             https://astral.sh/uv/install.sh | sh; then
             # 将 uv 添加到 PATH（通常安装在 ~/.cargo/bin）
             if [ -f "$HOME/.cargo/env" ]; then
                 source "$HOME/.cargo/env"
@@ -162,7 +167,7 @@ select_python_version() {
     else
         # 可以交互（包括通过 curl 执行但 /dev/tty 可用的情况），使用read从/dev/tty读取输入
         while true; do
-            read -p "请选择版本 [1-$count, 直接回车使用默认 $DEFAULT_VERSION]: " choice < /dev/tty
+            read -r -p "请选择版本 [1-$count, 直接回车使用默认 $DEFAULT_VERSION]: " choice < /dev/tty
             
             # 如果直接回车，使用默认版本
             if [ -z "$choice" ] || [ "$choice" = "" ]; then
@@ -228,9 +233,9 @@ create_venv() {
             print_info "删除现有环境..."
             rm -rf "$ENV_PATH"
             print_info "正在创建Python ${PYTHON_VERSION}环境: $ENV_PATH"
-            uv venv "$ENV_PATH" --python "$PYTHON_VERSION"
-            
-            if [ $? -eq 0 ]; then
+            # set -e 下 uv venv 失败会直接终止脚本，`if [ $? -eq 0 ]` 永远为真，
+            # else 分支不可达、报错信息从不打印。改为直接判断命令本身。
+            if uv venv "$ENV_PATH" --python "$PYTHON_VERSION"; then
                 print_info "Python环境创建成功"
             else
                 print_error "Python环境创建失败"
@@ -242,9 +247,7 @@ create_venv() {
         fi
     else
         print_info "正在创建Python ${PYTHON_VERSION}环境: $ENV_PATH"
-        uv venv "$ENV_PATH" --python "$PYTHON_VERSION"
-        
-        if [ $? -eq 0 ]; then
+        if uv venv "$ENV_PATH" --python "$PYTHON_VERSION"; then
             print_info "Python环境创建成功"
         else
             print_error "Python环境创建失败"
@@ -263,9 +266,7 @@ install_packages() {
     # 使用uv pip安装包
     for package in "${PACKAGES[@]}"; do
         print_info "正在安装: $package"
-        uv pip install -U "$package"
-        
-        if [ $? -eq 0 ]; then
+        if uv pip install -U "$package"; then
             print_info "$package 安装成功"
         else
             print_error "$package 安装失败"
@@ -340,10 +341,9 @@ cmd_pyenv_update() {
 
 # 删除并重建默认版本环境
 cmd_pyenv_reinstall() {
-    _nlt_ensure_gum || exit 1
-    if [ "${NONINTERACTIVE:-}" != "1" ]; then
-        gum confirm "将删除并重建 Python ${DEFAULT_VERSION} 环境（~/opt/py*），继续？" || exit 0
-    fi
+    # 不再为一次是非题去装 gum：nlt_ui_confirm 无 gum 时降级为 read y/N。
+    nlt_confirm_destructive "将删除并重建 Python ${DEFAULT_VERSION} 环境（~/opt/py*），继续？" \
+        PYTHON_ENV_ASSUME_YES || return 1
     PYTHON_VERSION="$DEFAULT_VERSION"
     local num
     num=$(echo "$PYTHON_VERSION" | tr -d '.')
@@ -371,10 +371,8 @@ cmd_pyenv_uninstall() {
     else
         select_python_version
     fi
-    if [ "${NONINTERACTIVE:-}" != "1" ]; then
-        gum confirm "永久删除 $ENV_PATH？" || exit 0
-    fi
-    rm -rf "$ENV_PATH"
+    nlt_confirm_destructive "永久删除 $ENV_PATH？" PYTHON_ENV_ASSUME_YES || return 1
+    nlt_safe_rm "$ENV_PATH" || return 1
     print_info "已删除 $ENV_PATH"
 }
 

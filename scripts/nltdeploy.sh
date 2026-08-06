@@ -120,8 +120,10 @@ _resolve_local_install_sh() {
 }
 
 _curl() {
-  command -v curl >/dev/null 2>&1 || die "需要 curl 才能从 ${1:-远端} 升级"
-  curl -LsSf "$@"
+  local source="$1"
+  shift
+  command -v curl >/dev/null 2>&1 || die "需要 curl 才能从 ${source} 升级"
+  curl --proto '=https' --proto-redir '=https' --tlsv1.2 -LsSf "$@"
 }
 
 _managed_install_action() {
@@ -170,7 +172,12 @@ cmd_upgrade() {
   local source=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --source) source="${2:-}"; shift 2 ;;
+      # `shift 2` 在只剩 --source 一个参数时返回 1，在 set -e 下会静默 exit 1，
+      # 使下面精心准备的错误提示永远打不出来。先校验再 shift。
+      --source)
+        [[ $# -ge 2 ]] || die "--source 缺少取值（github|gitee|local）"
+        source="$2"; shift 2
+        ;;
       --source=*) source="${1#*=}"; shift ;;
       github|gitee|local) source="$1"; shift ;;
       -h|--help|help) usage; exit 0 ;;

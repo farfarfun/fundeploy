@@ -1,50 +1,33 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-build/
-develop-eggs/
+# nltdeploy 是纯 Bash 项目。此前这里是 fundeploy（Python）时期遗留的模板：
+# 既忽略了一堆本仓库不会产生的东西，又漏掉了实际会产生的构建产物。
+# 尤其注意旧模板里的 `/lib/` —— 它会忽略顶层 lib/ 目录，对本仓库是误伤风险。
+
+# ── 构建与发布产物 ────────────────────────────────────────────────
 dist/
-downloads/
-eggs/
-.eggs/
-/lib/
-/lib64/
-parts/
-sdist/
-var/
-wheels/
-pip-wheel-metadata/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
+# packaging/build-apt-repo.sh 的输出目录。该脚本在目录非空时会硬失败，
+# 因此残留的本地 public/ 既是噪声也是坑。
+public/
+*.deb
+nltdeploy-*.tar.gz
+# 生成的 Homebrew formula
+nltdeploy.rb
 
-# Virtual environments
-venv/
-ENV/
-env/
-.venv
+# ── 日志 ─────────────────────────────────────────────────────────
+logs/
+*.log
+*.log.gz
 
-# IDEs
+# ── 编辑器 / IDE ─────────────────────────────────────────────────
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
-# OS
+# ── 操作系统 ─────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
 
-# Testing
+# ── 外部工具留下的缓存 ───────────────────────────────────────────
+# .pytest_cache 并非本仓库测试产生（本仓库无 Python），而是外部 nltbuild 工具留下的。
 .pytest_cache/
-.coverage
-htmlcov/
-.tox/
-
-# Distribution
-*.whl

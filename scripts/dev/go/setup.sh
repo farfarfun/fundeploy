@@ -84,7 +84,7 @@ do_uninstall_pkg() {
 # ---- source 方式 ----
 do_install_source() {
   command -v curl >/dev/null 2>&1 || die "需要 curl"
-  local plat ver parent tmp url
+  local plat ver tmp url
   plat="$(_nlt_go_platform)"
   if [[ -n "${GO_VERSION:-}" ]]; then
     ver="${GO_VERSION}"
@@ -93,14 +93,20 @@ do_install_source() {
   fi
   [[ "$ver" == go* ]] || ver="go${ver#go}"
   url="https://go.dev/dl/${ver}.${plat}.tar.gz"
-  parent="$(dirname "${GO_INSTALL_ROOT}")"
-  mkdir -p "${parent}"
+  mkdir -p "$(dirname "${GO_INSTALL_ROOT}")"
   tmp="$(mktemp)"
+  # trap 确保下载/解压失败时不残留临时包（官方包数百 MB）。
+  trap 'rm -f "${tmp}"' RETURN EXIT
   _nlt_say_step "下载官方包: ${url}"
-  curl -fL --progress-bar "${url}" -o "${tmp}"
+  curl -fL --proto '=https' --proto-redir '=https' --tlsv1.2 --progress-bar "${url}" -o "${tmp}"
   rm -rf "${GO_INSTALL_ROOT}"
-  tar -C "${parent}" -xzf "${tmp}"
+  mkdir -p "${GO_INSTALL_ROOT}"
+  # 官方 tarball 自带 go/ 顶层目录。原实现解到 dirname(GO_INSTALL_ROOT) 并依赖
+  # 该目录恰好叫 go —— 一旦 GO_INSTALL_ROOT=~/opt/golang，就会先删掉 golang、
+  # 再把内容写进 ~/opt/go（覆盖既有安装），且成功信息还是错的。
+  tar -C "${GO_INSTALL_ROOT}" --strip-components=1 -xzf "${tmp}"
   rm -f "${tmp}"
+  trap - RETURN EXIT
   _nlt_say_ok "已安装 Go ${ver} 到 ${GO_INSTALL_ROOT}"
   echo "请将下列行加入 shell 配置（若尚未配置）：" >&2
   echo "  export PATH=\"${GO_INSTALL_ROOT}/bin:\${PATH}\"" >&2

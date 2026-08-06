@@ -62,6 +62,11 @@ interactive_main() {
 
 main() {
   if [[ $# -eq 0 ]]; then
+    # 与其余入口一致：非交互时打印帮助而非进入 gum 菜单。
+    if [[ "${NONINTERACTIVE:-0}" == "1" || ! -t 0 ]]; then
+      usage
+      return 0
+    fi
     interactive_main
     return
   fi
@@ -76,7 +81,8 @@ main() {
       for item in "${TOOLS[@]}"; do run_tool "${item}" "$@"; done
       ;;
     claude|codex|cursor) run_tool "${tool}" "$@" ;;
-    *) usage >&2; ai_die "未知工具: ${tool}" ;;
+    # 退出码 2 = 用法错误，与其余入口对齐。
+    *) echo "错误: 未知工具: ${tool}" >&2; usage >&2; exit 2 ;;
   esac
 }
 

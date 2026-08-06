@@ -319,6 +319,10 @@ _maybe_seed_example_config() {
     cp -f "${SUB2API_DEPLOY_DIR}/config.example.yaml" "${SUB2API_CONFIG_EXAMPLE_DEST}"
   fi
   if [[ ! -f "${SUB2API_ENV_FILE}" ]]; then
+    # 该文件按设计承载 DATABASE_PASSWORD / JWT_SECRET / TOTP_ENCRYPTION_KEY /
+    # ADMIN_PASSWORD，且随后会被 source。默认 umask 下 `cat >` 会生成 0644，
+    # 同机任何用户都能读走这些密钥。
+    ( umask 077
     cat >"${SUB2API_ENV_FILE}" <<'EOF'
 # Sub2API 运行环境变量示例
 # DATABASE_HOST=127.0.0.1
@@ -336,6 +340,12 @@ _maybe_seed_example_config() {
 # ADMIN_EMAIL=admin@sub2api.local
 # ADMIN_PASSWORD=change-me
 EOF
+    )
+    chmod 600 "${SUB2API_ENV_FILE}"
+  fi
+  # 已存在的文件也收紧一次：早期版本以 0644 创建过它。
+  if [[ -f "${SUB2API_ENV_FILE}" ]]; then
+    chmod go-rwx "${SUB2API_ENV_FILE}" 2>/dev/null || true
   fi
 }
 
@@ -469,7 +479,12 @@ cmd_run() {
   exec "${SUB2API_BIN}"
 }
 
+# cmd_stop [--yes]
+#   --yes 跳过确认（供 restart / uninstall 调用，避免二次追问）。
+#   用户拒绝时返回 1（而非 exit 0），否则 restart/uninstall 会被静默截断。
 cmd_stop() {
+  local assume_yes=""
+  [[ "${1:-}" == "--yes" ]] && assume_yes=1
   local pid listener_pid
   pid="$(read_pid)"
   listener_pid="$(listener_pid_for_port "${SUB2API_PORT}")"
@@ -479,8 +494,10 @@ cmd_stop() {
   elif ! process_alive "$pid"; then
     rm -f "$PID_FILE"
   fi
-  if [[ -n "$pid" || -n "$listener_pid" ]] && [[ "${NONINTERACTIVE:-}" != "1" ]] && [[ -t 0 ]]; then
-    gum confirm "停止 Sub2API（PID ${pid:-unknown}）？" || exit 0
+  if [[ -z "$assume_yes" ]] && [[ -n "$pid" || -n "$listener_pid" ]] && nlt_interactive; then
+    # 用 nlt_ui_confirm 而非裸 gum：缺 gum 时降级为 read y/N，
+    # 而不是返回 127 让 `|| exit 0` 谎报「已停止」。
+    nlt_ui_confirm "停止 Sub2API（PID ${pid:-unknown}）？" || return 1
   fi
   if [[ -n "$pid" ]] && process_alive "$pid"; then
     kill -TERM "$pid" 2>/dev/null || true
@@ -526,22 +543,21 @@ cmd_status() {
   echo "部署资料: ${SUB2API_DEPLOY_DIR}"
 }
 
-cmd_restart() { cmd_stop || true; cmd_start; }
+cmd_restart() {
+  cmd_stop --yes || die "停止失败，已中止 restart（服务可能仍在运行）"
+  cmd_start
+}
 
 cmd_uninstall() {
   if [[ ! -d "${SUB2API_SERVICE_HOME}" ]]; then
     echo "未找到安装目录，跳过: ${SUB2API_SERVICE_HOME}" >&2
-    exit 0
+    return 0
   fi
-  if [[ "${SUB2API_UNINSTALL_YES:-}" != "1" ]]; then
-    if [[ -t 0 ]]; then
-      gum confirm "将删除整个 ${SUB2API_SERVICE_HOME}，确认？" || exit 0
-    else
-      die "非交互卸载请设置 SUB2API_UNINSTALL_YES=1"
-    fi
-  fi
-  cmd_stop || true
-  rm -rf "${SUB2API_SERVICE_HOME}"
+  # 原实现在这里确认一次，随后 cmd_stop 又问一次；对第二问答 No 会 exit 0，
+  # 导致「已确认卸载」却什么都没删。确认一次，然后 --yes 直通。
+  nlt_confirm_destructive "将删除整个 ${SUB2API_SERVICE_HOME}，确认？" SUB2API_UNINSTALL_YES || return 1
+  cmd_stop --yes || nlt_ui_warn "停止失败，仍继续删除。"
+  nlt_safe_rm "${SUB2API_SERVICE_HOME}" || return 1
   echo "已卸载 ${SUB2API_SERVICE_HOME}"
 }
 

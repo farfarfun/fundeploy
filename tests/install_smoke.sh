@@ -8,6 +8,39 @@ mkdir -p "$HOME"
 export NLTDEPLOY_ROOT="${TMP}/nd"
 export NLTDEPLOY_SKIP_PROFILE_HINT=1
 export NLTDEPLOY_SKIP_GIT_PULL=1
+
+# 拉取更新后必须由新版 install.sh 接管，避免旧复制清单漏装新文件。
+UPSTREAM="${TMP}/self-update-upstream"
+RUNNER="${TMP}/self-update-runner"
+mkdir -p "${UPSTREAM}/scripts"
+cp "${ROOT}/install.sh" "${UPSTREAM}/install.sh"
+touch "${UPSTREAM}/scripts/.keep"
+git -C "${UPSTREAM}" init -q
+git -C "${UPSTREAM}" add .
+git -C "${UPSTREAM}" -c user.name=test -c user.email=test@example.com commit -qm initial
+git clone -q "${UPSTREAM}" "${RUNNER}"
+cat >"${UPSTREAM}/install.sh" <<'EOF'
+#!/usr/bin/env bash
+touch "${NLTDEPLOY_SELF_UPDATE_MARKER:?}"
+EOF
+git -C "${UPSTREAM}" add install.sh
+git -C "${UPSTREAM}" -c user.name=test -c user.email=test@example.com commit -qm update
+NLTDEPLOY_ROOT="${TMP}/self-update-root" \
+NLTDEPLOY_SELF_UPDATE_MARKER="${TMP}/self-update-ok" \
+NLTDEPLOY_SKIP_GIT_PULL=0 \
+  bash "${RUNNER}/install.sh" update
+[[ -f "${TMP}/self-update-ok" ]] || { echo "updated install.sh did not take over" >&2; exit 1; }
+
+root_guard="$(sed -n '/^_guard_nltdeploy_root() {/,/^}/p' "${ROOT}/install.sh")"
+for unsafe_root in relative / /tmp "${HOME}"; do
+  if (die() { exit 1; }; eval "${root_guard}"; NLTDEPLOY_ROOT="${unsafe_root}"; _guard_nltdeploy_root) 2>/dev/null; then
+    echo "unsafe NLTDEPLOY_ROOT accepted: ${unsafe_root}" >&2
+    exit 1
+  fi
+done
+mkdir -p "${TMP}/safe-root"
+(die() { exit 1; }; eval "${root_guard}"; NLTDEPLOY_ROOT="${TMP}/safe-root"; _guard_nltdeploy_root) || exit 1
+
 bash "${ROOT}/install.sh" install
 legacy_bins=(
   nlt nlt-build nlt-tools nlt-dev nlt-ai-cli nlt-pip-sources nlt-python-env nlt-utils nlt-github-net nlt-port-kill nlt-download nlt-services nlt-cockpit-tools
@@ -34,9 +67,30 @@ bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/paperclip/setup.sh" || exit 1
 bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/sub2api/setup.sh" || exit 1
 bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/sub2api/setup-manual.sh" || exit 1
 bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/sub2api/setup-offical.sh" || exit 1
-curl() { printf '%s\n' 'SERVER_PORT="8080"' 'echo "official-sub2api-installer-ran:${1}:${SERVER_PORT}"'; }
+curl() {
+  [[ "$*" == "--proto =https --proto-redir =https --tlsv1.2 -LsSf https://example.invalid/install.sh" ]] || return 64
+  printf 'exit 0\n'
+}
+export -f curl
+NLTDEPLOY_GITHUB_RAW="https://example.invalid/install.sh" "${NLTDEPLOY_ROOT}/bin/nltdeploy" upgrade github >/dev/null
+unset -f curl
+# sub2api 官方模式现在会「先下载到文件、校验、改写端口，再以 root 执行文件」，
+# 而不是 `curl … | sudo bash`。因此 stub 必须支持 -o <file>。
+curl() {
+  local out="" prev=""
+  for a in "$@"; do
+    [[ "$prev" == "-o" ]] && out="$a"
+    prev="$a"
+  done
+  local body
+  body="$(printf '%s\n' 'SERVER_PORT="8080"' 'echo "official-sub2api-installer-ran:${1}:${SERVER_PORT}"')"
+  if [[ -n "$out" ]]; then printf '%s\n' "$body" >"$out"; else printf '%s\n' "$body"; fi
+}
 sudo() { "$@"; }
 export -f curl sudo
+# stub 内容与仓库记录的 pinned 校验和自然不同，这里显式关闭校验。
+# 真实场景下的校验行为由 tests/supplychain_smoke.sh 覆盖。
+export SUB2API_INSTALLER_SHA256=""
 "${NLTDEPLOY_ROOT}/bin/nltdeploy" service sub2api official install | grep -q "official-sub2api-installer-ran:install:8802" || exit 1
 "${NLTDEPLOY_ROOT}/bin/nltdeploy" service sub2api install | grep -q "official-sub2api-installer-ran:install:8802" || exit 1
 "${NLTDEPLOY_ROOT}/bin/nltdeploy" service sub2api official update | grep -q "official-sub2api-installer-ran:upgrade:8802" || exit 1

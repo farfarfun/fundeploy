@@ -59,6 +59,13 @@ get_pip_source_info() {
     esac
 }
 
+# 该源是否走明文 HTTP（即需要 trusted-host、且流量可被篡改）。
+_pip_source_is_insecure() {
+    local url
+    url="$(get_pip_source_url "$1")"
+    [[ "$url" == http://* ]]
+}
+
 # 与 get_pip_source_info 中预定义源顺序一致（避免 sed 解析函数体）
 PIP_PREDEFINED_SOURCES=(
     tsinghua aliyun douban tencent huawei ustc bfsu sjtu hust
@@ -758,6 +765,21 @@ test_all_sources() {
         local source=$(echo "$item" | LC_ALL=C cut -d'|' -f1)
         local latency=$(echo "$item" | LC_ALL=C cut -d'|' -f2)
         local has_pkg=$(echo "$item" | LC_ALL=C cut -d'|' -f4)
+
+        # 明文 HTTP 源默认排除。测速时明文往往更快，很容易夺得第一名而被写成
+        # index-url，于是此后每一次 pip install 都在明文信道上取 wheel，且
+        # trusted-host 还压掉了 pip 的 TLS 告警 —— 同网段攻击者即可注入恶意
+        # wheel 并取得用户权限的代码执行。这个配置是持久写进 pip.conf 的。
+        if _pip_source_is_insecure "$source"; then
+            if [ "${PIP_SOURCES_ALLOW_INSECURE:-}" = "1" ]; then
+                print_warn "已启用明文 HTTP 源 $source（PIP_SOURCES_ALLOW_INSECURE=1）：该源的下载可被中间人篡改。"
+            else
+                print_warn "跳过明文 HTTP 源 $source（如确需使用请设置 PIP_SOURCES_ALLOW_INSECURE=1）"
+                UNAVAILABLE_SOURCES+=("$source")
+                continue
+            fi
+        fi
+
         AVAILABLE_SOURCES+=("$source")
         SOURCE_SPEEDS+=("$latency")
         SOURCE_HAS_PACKAGE+=("$has_pkg")
@@ -1062,11 +1084,16 @@ generate_pip_config_content() {
         done
     fi
     
-    # trusted-host（所有源的主机名，处理带认证信息的 URL）
-    config_content+="trusted-host ="
+    # trusted-host —— 只为明文 HTTP 源生成。
+    # 原实现把**所有**源的主机名都列进 trusted-host，包括 HTTPS 源。对 HTTPS
+    # 主机而言 trusted-host 的作用是让 pip 跳过该主机的证书校验，纯属自伤：
+    # 它把本来安全的连接降级为可被中间人篡改。pip 只有在 index 走 http://
+    # （或证书确实无法校验）时才需要这一项。
     local first_host=true
     local seen_hosts=()
+    local trusted_block=""
     for source_name in "${AVAILABLE_SOURCES[@]}"; do
+        _pip_source_is_insecure "$source_name" || continue
         local source_url=$(get_pip_source_url "$source_name")
         # 提取主机名，处理带认证信息的 URL（如 https://user:pass@host.com）
         local host=""
@@ -1077,7 +1104,7 @@ generate_pip_config_content() {
             # 普通 URL
             host="${BASH_REMATCH[1]}"
         fi
-        
+
         # 去重（同一个主机只添加一次）
         if [ -n "$host" ]; then
             local host_seen=false
@@ -1087,18 +1114,25 @@ generate_pip_config_content() {
                     break
                 fi
             done
-            
+
             if [ "$host_seen" = "false" ]; then
                 seen_hosts+=("$host")
                 if [ "$first_host" = "true" ]; then
-                    config_content+=" $host\n"
+                    trusted_block+=" $host\n"
                     first_host=false
                 else
-                    config_content+="              $host\n"
+                    trusted_block+="              $host\n"
                 fi
             fi
         fi
     done
+
+    # 没有明文源时完全不写 trusted-host —— 空的 `trusted-host =` 既无意义，
+    # 也会让人误以为这些主机被豁免了证书校验。
+    if [ -n "$trusted_block" ]; then
+        config_content+="# 以下主机通过明文 HTTP 访问，需要 trusted-host；其余 HTTPS 源不应列入。\n"
+        config_content+="trusted-host =${trusted_block}"
+    fi
     config_content+="\n"
     
     # 保存不可用的源到注释中（避免因检测问题丢失）
@@ -1271,9 +1305,8 @@ cmd_pip_uninstall_restore() {
         print_error "未找到 ${PIP_CONFIG_DIR}/${base_name}.backup.*，无法自动恢复。"
         exit 1
     fi
-    _nlt_ensure_gum || exit 1
     if [ "${NONINTERACTIVE:-}" != "1" ]; then
-        gum confirm "用备份恢复 pip 配置？ ${backup_file} -> ${PIP_CONFIG_FILE}" || exit 0
+        nlt_ui_confirm "用备份恢复 pip 配置？ ${backup_file} -> ${PIP_CONFIG_FILE}" || return 0
     fi
     cp "$backup_file" "$PIP_CONFIG_FILE"
     print_info "已从备份恢复: ${PIP_CONFIG_FILE}"

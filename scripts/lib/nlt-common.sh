@@ -7,12 +7,14 @@ _NLT_COMMON_LOADED=1
 _NLT_COMMON_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=nlt-github-download.sh
 source "${_NLT_COMMON_LIB_DIR}/nlt-github-download.sh"
-# 统一交互主题（纯装饰层，幂等；缺失则跳过，不影响任何业务逻辑）。
-# 凡是 source 本文件的域/服务脚本据此即可用 nlt_ui_* 与统一 gum 主题。
-if [[ -f "${_NLT_COMMON_LIB_DIR}/nlt-ui.sh" ]]; then
-  # shellcheck source=nlt-ui.sh
-  source "${_NLT_COMMON_LIB_DIR}/nlt-ui.sh"
-fi
+# 统一交互主题（幂等）。自 v0.2.0 起为**硬依赖**：凡 source 本文件者均可无条件
+# 调用 nlt_ui_*，无需 `declare -F` 守卫。无 gum 时 nlt-ui.sh 自身会降级为纯文本，
+# 因此「缺失即跳过」的旧策略只会掩盖安装损坏，反而在 uninstall 等路径上炸成 127。
+# shellcheck source=nlt-ui.sh
+source "${_NLT_COMMON_LIB_DIR}/nlt-ui.sh" || {
+  echo "错误: 缺少 ${_NLT_COMMON_LIB_DIR}/nlt-ui.sh（安装不完整，请重新执行 install.sh install）。" >&2
+  return 1
+}
 
 _nltdeploy_raw_base() {
   printf '%s\n' "${NLTDEPLOY_RAW_BASE:-${nltdeploy_RAW_BASE:-https://raw.githubusercontent.com/farfarfun/nltdeploy/HEAD}}"

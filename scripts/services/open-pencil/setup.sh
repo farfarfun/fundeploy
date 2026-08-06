@@ -128,8 +128,11 @@ ver = info.get("version") or ""
 print(ver)
 ' <<<"$json"
   else
-    # 无 python3 时的兜底：从字符串中抓取，格式相对宽松
-    printf '%s' "$json" | sed -n "s/.*\"${pkg}\": *{[^}]*\"version\": *\"\\([^\"]*\\)\".*/\\1/p" | head -1
+    # 无 python3 时的兜底：从字符串中抓取，格式相对宽松。
+    # 分隔符必须用 # 而非 /：包名形如 @open-pencil/cli，其中的 / 会提前终止
+    # s/// 表达式，报 "sed: unknown option to 's'"，并因 pipefail 让调用方
+    # 的 cli_ver="$(…)" 失败、set -e 中止整个脚本。
+    printf '%s' "$json" | sed -n "s#.*\"${pkg}\": *{[^}]*\"version\": *\"\\([^\"]*\\)\".*#\\1#p" | head -1
   fi
 }
 
@@ -332,23 +335,15 @@ cmd_status() {
 cmd_uninstall() {
   local npm_bin pkg
   npm_bin="$(_resolve_npm)"
-  if [[ "${NONINTERACTIVE:-}" != "1" ]] && [[ -t 0 ]]; then
-    gum confirm "将卸载 npm -g ${OPEN_PENCIL_CLI_PACKAGE} 与 ${OPEN_PENCIL_MCP_PACKAGE}，并删除 ${OPEN_PENCIL_SERVICE_HOME}。确认？" || exit 0
-  else
-    [[ "${OPEN_PENCIL_UNINSTALL_YES:-}" == "1" ]] || die "非交互卸载请设 OPEN_PENCIL_UNINSTALL_YES=1"
-  fi
+  nlt_confirm_destructive \
+    "将卸载 npm -g ${OPEN_PENCIL_CLI_PACKAGE} 与 ${OPEN_PENCIL_MCP_PACKAGE}，并删除 ${OPEN_PENCIL_SERVICE_HOME}。确认？" \
+    OPEN_PENCIL_UNINSTALL_YES || return 1
   for pkg in "${OPEN_PENCIL_MCP_PACKAGE}" "${OPEN_PENCIL_CLI_PACKAGE}"; do
     echo "==> ${npm_bin} uninstall -g ${pkg}"
     "${npm_bin}" uninstall -g "${pkg}" || echo "（忽略）卸载 ${pkg} 失败"
   done
-  local hp ap
-  hp="$(cd "$HOME" && pwd -P)"
-  ap="$(cd "${OPEN_PENCIL_SERVICE_HOME}" 2>/dev/null && pwd -P)" || ap="${OPEN_PENCIL_SERVICE_HOME}"
   if [[ -d "${OPEN_PENCIL_SERVICE_HOME}" ]]; then
-    if [[ "$ap" == "/" || "$ap" == "$hp" ]]; then
-      die "拒绝删除根目录或 \$HOME"
-    fi
-    rm -rf "${OPEN_PENCIL_SERVICE_HOME}"
+    nlt_safe_rm "${OPEN_PENCIL_SERVICE_HOME}" || return 1
     echo "已删除 ${OPEN_PENCIL_SERVICE_HOME}"
   fi
   echo "已卸载。"

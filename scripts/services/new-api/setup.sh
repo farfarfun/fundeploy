@@ -327,7 +327,12 @@ cmd_run() {
   fi
 }
 
+# cmd_stop [--yes]
+#   --yes 跳过确认（供 restart / uninstall 调用，避免二次追问）。
+#   用户拒绝时返回 1（而非 exit 0），否则 restart/uninstall 会被静默截断。
 cmd_stop() {
+  local assume_yes=""
+  [[ "${1:-}" == "--yes" ]] && assume_yes=1
   local pid
   pid="$(read_pid)"
   local effective_port listener_pid
@@ -339,8 +344,10 @@ cmd_stop() {
   elif ! process_alive "$pid"; then
     rm -f "$PID_FILE"
   fi
-  if [[ -n "$pid" || -n "$listener_pid" ]] && [[ "${NONINTERACTIVE:-}" != "1" ]] && [[ -t 0 ]]; then
-    gum confirm "停止 new-api（PID ${pid}）？" || exit 0
+  if [[ -z "$assume_yes" ]] && [[ -n "$pid" || -n "$listener_pid" ]] && nlt_interactive; then
+    # 用 nlt_ui_confirm 而非裸 gum：缺 gum 时降级为 read y/N，
+    # 而不是返回 127 让 `|| exit 0` 谎报「已停止」。
+    nlt_ui_confirm "停止 new-api（PID ${pid}）？" || return 1
   fi
   if [[ -n "$pid" ]] && process_alive "$pid"; then
     kill -TERM "$pid" 2>/dev/null || true
@@ -359,7 +366,7 @@ cmd_stop() {
 }
 
 cmd_restart() {
-  cmd_stop || true
+  cmd_stop --yes || die "停止失败，已中止 restart（服务可能仍在运行）"
   cmd_start
 }
 
@@ -396,20 +403,11 @@ cmd_status() {
 }
 
 cmd_uninstall() {
-  cmd_stop || true
   echo "将删除: ${NEW_API_SERVICE_HOME}" >&2
-  if [[ -t 0 ]]; then
-    gum confirm "确认删除？" || exit 0
-  else
-    [[ "${NEW_API_UNINSTALL_YES:-}" == "1" ]] || die "非交互请设 NEW_API_UNINSTALL_YES=1"
-  fi
-  local hp ap
-  hp="$(cd "$HOME" && pwd -P)"
-  ap="$(cd "${NEW_API_SERVICE_HOME}" 2>/dev/null && pwd -P)" || ap="${NEW_API_SERVICE_HOME}"
-  if [[ "$ap" == "/" || "$ap" == "$hp" ]]; then
-    die "拒绝删除根目录或 \$HOME"
-  fi
-  rm -rf "${NEW_API_SERVICE_HOME}"
+  # 先确认再动手：确认通过后 cmd_stop 用 --yes，避免二次追问把卸载拦腰截断。
+  nlt_confirm_destructive "确认删除 ${NEW_API_SERVICE_HOME}？" NEW_API_UNINSTALL_YES || return 1
+  cmd_stop --yes || nlt_ui_warn "停止失败，仍继续删除。"
+  nlt_safe_rm "${NEW_API_SERVICE_HOME}" || return 1
   echo "已删除。"
 }
 

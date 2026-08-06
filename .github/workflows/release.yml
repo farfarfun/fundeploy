@@ -5,6 +5,17 @@ on:
     tags:
       - "v[0-9]*"
 
+# 顶层默认最小权限；确实需要写权限的 job（release / deploy-apt-pages）
+# 各自单独声明。此前没有顶层默认，apt-repository 与 homebrew-tap 会继承
+# 仓库默认的 GITHUB_TOKEN 范围。
+permissions:
+  contents: read
+
+# 连续推两个 tag 时，Pages 部署与 tap 推送会互相竞争。
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -15,11 +26,18 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Test
+      # 此前 release job 未安装这些工具，而 package_smoke.sh 在缺工具时会
+      # exit 0 静默跳过 —— 于是真正用于发布的 .deb 构建路径从未被冒烟测试过。
+      # （下面的 apt-repository job 显式安装它们，正说明 runner 默认没有。）
+      - name: Install packaging tools
         run: |
-          bash tests/install_smoke.sh
-          bash tests/progress_smoke.sh
-          bash tests/package_smoke.sh
+          sudo apt-get update -y
+          sudo apt-get install -y apt-utils dpkg-dev gnupg
+
+      - name: Test
+        env:
+          NLTDEPLOY_REQUIRE_PACKAGE_TESTS: "1"
+        run: bash tests/run-all.sh
 
       - name: Build release assets
         env:

@@ -25,7 +25,8 @@
 #   CELERY_APP               Celery 应用路径（如 myproject.celery:app），未设置时使用 scaffold 示例
 #   CELERY_RESULT_BACKEND    结果后端（可选，默认与 broker 一致）
 #   FLOWER_PORT              Flower 监控端口（默认 8806）
-#   FLOWER_ADDRESS           Flower 监听地址（默认 0.0.0.0）
+#   FLOWER_ADDRESS           Flower 监听地址（默认 127.0.0.1；对外暴露须同时设 FLOWER_BASIC_AUTH）
+#   FLOWER_BASIC_AUTH        Flower 基本认证 user:pass（Flower 自身无认证，对外监听时必配）
 #
 # 官方文档：https://docs.celeryq.dev/
 
@@ -84,7 +85,13 @@ CELERY_BROKER_URL="${CELERY_BROKER_URL:-redis://localhost:6379/0}"
 
 # Flower 监控界面：端口与监听地址
 FLOWER_PORT="${FLOWER_PORT:-8806}"
-FLOWER_ADDRESS="${FLOWER_ADDRESS:-0.0.0.0}"
+# 默认只监听回环。Flower 自身不带任何认证，却会暴露任务参数（其中经常含有
+# 凭据）以及 revoke/terminate 操作 —— 绑 0.0.0.0 等于把这些交给整个局域网。
+# 同仓库的 code-server 默认就是 127.0.0.1，这里对齐。
+# 确需对外暴露时显式设置 FLOWER_ADDRESS=0.0.0.0，并务必配合
+# FLOWER_BASIC_AUTH=user:pass。
+FLOWER_ADDRESS="${FLOWER_ADDRESS:-127.0.0.1}"
+FLOWER_BASIC_AUTH="${FLOWER_BASIC_AUTH:-}"
 
 # PID 文件
 PID_WORKER="${CELERY_RUN_DIR}/worker.pid"
@@ -330,8 +337,10 @@ cmd_start_worker() {
   ensure_scaffold
   if ! check_redis; then
     echo "警告: 无法连接 Redis，worker 可能无法启动。请先启动 Redis 或检查 CELERY_BROKER_URL。" >&2
-    if [[ "${NONINTERACTIVE:-}" != "1" ]] && [[ -t 0 ]]; then
-      gum confirm "仍尝试启动 worker？" || return 0
+    if nlt_interactive; then
+      # nlt_ui_confirm 在缺 gum 时降级为 read y/N；原来的裸 gum 会返回 127，
+      # 被 `|| return 0` 判成「用户拒绝」，于是 Redis 不通时静默不启动。
+      nlt_ui_confirm "仍尝试启动 worker？" || return 0
     fi
   fi
   local existing
@@ -394,13 +403,23 @@ cmd_start_flower() {
     echo "Flower 已在运行（PID ${existing}）。如需重启请执行: $0 stop 后 $0 start-flower" >&2
     exit 1
   fi
-  activate_venv
   local log_file="${CELERY_LOG_DIR}/flower.log"
   echo "==> 启动 Flower（日志: ${log_file}，http://${FLOWER_ADDRESS}:${FLOWER_PORT}）..."
+
+  # Flower 无内建认证：一旦对外监听而又没配 basic auth，任何人都能看到任务
+  # 参数（常含凭据）并 revoke/terminate 任务。
+  local -a flower_args=(--port="${FLOWER_PORT}" --address="${FLOWER_ADDRESS}")
+  if [[ -n "${FLOWER_BASIC_AUTH}" ]]; then
+    flower_args+=(--basic-auth="${FLOWER_BASIC_AUTH}")
+  elif [[ "${FLOWER_ADDRESS}" != "127.0.0.1" && "${FLOWER_ADDRESS}" != "localhost" ]]; then
+    nlt_ui_warn "Flower 监听 ${FLOWER_ADDRESS} 且未设置 FLOWER_BASIC_AUTH：任务参数与 revoke/terminate 将对该网络完全开放。"
+    nlt_ui_warn "建议: FLOWER_BASIC_AUTH=user:pass nltdeploy service celery start-flower"
+  fi
+
   if [[ "${CELERY_APP}" == "celery_app:app" ]] && [[ -f "${CELERY_ETC_DIR}/celery_app.py" ]]; then
-    (cd "$CELERY_ETC_DIR" && exec nohup celery -A celery_app:app flower --port="${FLOWER_PORT}" --address="${FLOWER_ADDRESS}" >>"$log_file" 2>&1) &
+    (cd "$CELERY_ETC_DIR" && exec nohup celery -A celery_app:app flower "${flower_args[@]}" >>"$log_file" 2>&1) &
   else
-    nohup celery -A "$CELERY_APP" flower --port="${FLOWER_PORT}" --address="${FLOWER_ADDRESS}" >>"$log_file" 2>&1 &
+    nohup celery -A "$CELERY_APP" flower "${flower_args[@]}" >>"$log_file" 2>&1 &
   fi
   local pid=$!
   echo "$pid" >"$PID_FLOWER"
@@ -446,8 +465,10 @@ cmd_run_worker() {
   ensure_scaffold
   if ! check_redis; then
     echo "警告: 无法连接 Redis，worker 可能无法正常启动。请先启动 Redis 或检查 CELERY_BROKER_URL。" >&2
-    if [[ "${NONINTERACTIVE:-}" != "1" ]] && [[ -t 0 ]]; then
-      gum confirm "仍尝试启动 worker？" || return 0
+    if nlt_interactive; then
+      # nlt_ui_confirm 在缺 gum 时降级为 read y/N；原来的裸 gum 会返回 127，
+      # 被 `|| return 0` 判成「用户拒绝」，于是 Redis 不通时静默不启动。
+      nlt_ui_confirm "仍尝试启动 worker？" || return 0
     fi
   fi
   local existing
@@ -516,18 +537,18 @@ cmd_stop() {
 }
 
 cmd_restart() {
-  cmd_stop || true
+  cmd_stop || die "停止失败，已中止 restart（worker 可能仍在运行）"
   echo ""
   cmd_start_worker
   if [[ "${NONINTERACTIVE:-}" == "1" ]]; then
     return 0
   fi
   echo ""
-  if gum confirm "是否同时启动 beat？"; then
+  if nlt_ui_confirm "是否同时启动 beat？"; then
     cmd_start_beat
   fi
   echo ""
-  if gum confirm "是否同时启动 flower？"; then
+  if nlt_ui_confirm "是否同时启动 flower？"; then
     cmd_start_flower
   fi
 }
