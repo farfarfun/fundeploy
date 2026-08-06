@@ -64,6 +64,7 @@ _nlt_tools_tail() {
     pip-sources)   echo "pip-sources/setup.sh" ;;
     python-env)    echo "python-env/setup.sh" ;;
     github-net)    echo "github-net/setup.sh" ;;
+    skills-sync)   echo "skills-sync/setup.sh" ;;
     port-kill)     echo "port-kill/setup.sh" ;;
     cockpit-tools) echo "cockpit-tools/setup.sh" ;;
     utils)         echo "utils/setup.sh" ;;
@@ -78,7 +79,7 @@ _nlt_tools_tail() {
 
 # 已知工具名（供 list / 菜单 / 校验），顺序即展示顺序。
 _NLT_TOOLS_NAMES=(
-  brew gum download github-net port-kill cockpit-tools
+  brew gum download github-net skills-sync port-kill cockpit-tools
 )
 
 # 解析某工具 setup.sh 的绝对路径（自适应仓库内 / libexec 两种布局）。
@@ -108,7 +109,7 @@ usage() {
   <其它>      原样透传给该工具 setup.sh（如 reinstall、status 等）。
 
 工具:
-  brew gum download github-net port-kill cockpit-tools
+  brew gum download github-net skills-sync port-kill cockpit-tools
 
 示例:
   nltdeploy tool brew install
@@ -178,7 +179,11 @@ dispatch() {
 
   # 其它工具：upgrade 归一化为各脚本支持的动词。
   case "${verb}" in
-    ""|help|-h|--help)
+    "")
+      [[ "${tool}" == "skills-sync" ]] && exec bash "${setup}"
+      exec bash "${setup}" help
+      ;;
+    help|-h|--help)
       exec bash "${setup}" help
       ;;
     install)
@@ -211,6 +216,7 @@ _nlt_tool_desc() {
     pip-sources)   echo "pip 镜像源切换" ;;
     python-env)    echo "Python 虚拟环境管理" ;;
     github-net)    echo "GitHub 网络诊断" ;;
+    skills-sync)   echo "Gitee skills 仓库同步" ;;
     port-kill)     echo "按端口杀进程" ;;
     cockpit-tools) echo "Cockpit 运维面板工具" ;;
     go)            echo "Go 工具链" ;;

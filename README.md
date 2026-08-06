@@ -108,7 +108,7 @@ brew uninstall nltdeploy
 ### 工具
 
 - `nltdeploy tool list`：列出工具
-- `nltdeploy tool brew|gum|download|github-net|port-kill|cockpit-tools`
+- `nltdeploy tool brew|gum|download|github-net|skills-sync|port-kill|cockpit-tools`
 
 ### AI CLI
 

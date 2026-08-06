@@ -30,8 +30,8 @@ PYTHON_VERSION=""
 ENV_PATH=""
 DEFAULT_VERSION="3.12"
 # 支持的Python版本列表（从高到低排序）
-PYTHON_VERSIONS=("3.14" "3.13" "3.12" "3.11" "3.10" "3.9" "3.8")
-PACKAGES=("funbuild" "funinstall" "funsecret")
+PYTHON_VERSIONS=("3.14" "3.13" "3.12" "3.11" "3.10" "3.9")
+PACKAGES=("nltbuild" "funinstall" "nltsecret")
 
 # 检测是否可以交互（在脚本开始时检测一次）
 # 优先级：环境变量 > 实际检测

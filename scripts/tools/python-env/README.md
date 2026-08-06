@@ -9,10 +9,10 @@
 ## 主要特性
 
 - ✅ **自动安装 uv**：如果系统未安装 uv，脚本会自动安装
-- ✅ **多版本支持**：支持选择 Python 3.8、3.9、3.10、3.11、3.12、3.13、3.14 等多个版本
+- ✅ **多版本支持**：支持选择 Python 3.9、3.10、3.11、3.12、3.13、3.14 等多个版本
 - ✅ **交互式版本选择**：运行时会弹出选择菜单，默认使用 Python 3.12
 - ✅ **智能环境检测**：自动检测每个版本的环境是否已存在，显示安装时间
-- ✅ **自动安装基础包**：预装 `pip`、`funutil`、`funbuild`、`funinstall`、`funsecret`
+- ✅ **自动安装基础包**：预装 `nltbuild`、`funinstall`、`nltsecret`
 - ✅ **支持额外包**：可以通过命令行参数安装额外的 Python 包
 - ✅ **环境路径自动设置**：根据版本自动设置环境路径（例如：3.12 -> `~/opt/py312`）
 - ✅ **错误处理和友好输出**：详细的进度信息和错误提示
@@ -26,7 +26,6 @@
 - Python 3.11
 - Python 3.10
 - Python 3.9
-- Python 3.8
 
 ## 使用方法
 
@@ -103,7 +102,7 @@ curl -LsSf https://gitee.com/farfarfun/nltdeploy/raw/master/scripts/tools/python
    - 如果已安装，会显示当前版本信息
 
 2. **选择 Python 版本**：
-   - 显示交互式选择菜单，支持 3.8-3.14
+   - 显示交互式选择菜单，支持 3.9-3.14
    - **智能检测**：自动检测每个版本的环境是否已存在
    - **显示安装时间**：如果环境已存在，会显示安装/创建时间
    - 直接回车或输入对应数字选择版本
@@ -118,7 +117,7 @@ curl -LsSf https://gitee.com/farfarfun/nltdeploy/raw/master/scripts/tools/python
    - **只有明确输入 y 或 Y** 才会删除旧环境并创建新环境
    - 如果环境不存在，使用 uv 创建选定版本的 Python 虚拟环境
 
-5. **安装基础包**：依次安装 `pip`、`funutil`、`funbuild`、`funinstall`、`funsecret`
+5. **安装基础包**：依次安装 `nltbuild`、`funinstall`、`nltsecret`
 
 6. **安装额外包**：如果通过 `-p` 参数指定了额外包，会在基础包安装完成后继续安装
 
@@ -141,9 +140,8 @@ curl -LsSf https://gitee.com/farfarfun/nltdeploy/raw/master/scripts/tools/python
   4) 3.11 [未安装]
   5) 3.10 [已存在] 安装时间: 2024-01-10 09:20
   6) 3.9 [未安装]
-  7) 3.8 [未安装]
 
-请选择版本 [1-7, 直接回车使用默认 3.12]: 
+请选择版本 [1-6, 直接回车使用默认 3.12]:
 ```
 
 **说明**：
@@ -167,7 +165,6 @@ curl -LsSf https://gitee.com/farfarfun/nltdeploy/raw/master/scripts/tools/python
 - Python 3.11: `~/opt/py311`
 - Python 3.10: `~/opt/py310`
 - Python 3.9: `~/opt/py39`
-- Python 3.8: `~/opt/py38`
 
 ## 使用创建的环境
 
@@ -212,11 +209,9 @@ uv pip list
 
 脚本会自动安装以下基础包：
 
-- **pip**：Python 包管理器
-- **funutil**：工具函数库
-- **funbuild**：构建工具
+- **nltbuild**：构建工具
 - **funinstall**：卸载工具
-- **funsecret**：密钥管理工具
+- **nltsecret**：密钥管理工具
 
 这些包会在创建环境后自动安装，无需手动安装。
 
@@ -230,7 +225,7 @@ uv pip list
 
 - `DEFAULT_VERSION`：默认 Python 版本（默认：`3.12`）
 - `PYTHON_VERSIONS`：支持的 Python 版本列表
-- `PACKAGES`：要安装的基础包列表（默认：`pip`、`funutil`、`funbuild`、`funinstall`、`funsecret`）
+- `PACKAGES`：要安装的基础包列表（默认：`nltbuild`、`funinstall`、`nltsecret`）
 
 **注意**：`ENV_PATH` 会根据选择的 Python 版本自动设置，无需手动配置。
 

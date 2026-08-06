@@ -353,7 +353,7 @@ do_install_or_update() {
   mkdir -p "${LIBEXEC}/pip-sources" "${LIBEXEC}/python-env" "${LIBEXEC}/port-kill" \
     "${LIBEXEC}/ai-cli/claude" "${LIBEXEC}/ai-cli/codex" "${LIBEXEC}/ai-cli/cursor" \
     "${LIBEXEC}/dev/go" "${LIBEXEC}/dev/rust" "${LIBEXEC}/dev/nodejs" "${LIBEXEC}/dev/pnpm" "${LIBEXEC}/dev/uv" \
-    "${LIBEXEC}/brew" "${LIBEXEC}/download" "${LIBEXEC}/cockpit-tools" \
+    "${LIBEXEC}/brew" "${LIBEXEC}/download" "${LIBEXEC}/cockpit-tools" "${LIBEXEC}/skills-sync" \
     "${LIBEXEC}/airflow" "${LIBEXEC}/celery" "${LIBEXEC}/utils" "${LIBEXEC}/github-net" \
     "${LIBEXEC}/paperclip" "${LIBEXEC}/code-server" "${LIBEXEC}/new-api" "${LIBEXEC}/sub2api" \
     "${LIBEXEC}/open-pencil" \
@@ -450,6 +450,9 @@ do_install_or_update() {
 
   _nlt_cp_first "${LIBEXEC}/cockpit-tools/setup.sh" \
     "${SCRIPTS}/tools/cockpit-tools/setup.sh"
+
+  _nlt_cp_first "${LIBEXEC}/skills-sync/setup.sh" \
+    "${SCRIPTS}/tools/skills-sync/setup.sh"
 
   _nlt_cp_first "${LIBEXEC}/paperclip/setup.sh" \
     "${SCRIPTS}/services/paperclip/setup.sh" \
