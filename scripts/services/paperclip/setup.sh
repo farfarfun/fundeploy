@@ -18,7 +18,7 @@
 #   PAPERCLIP_HOST           Paperclip 监听地址（默认 0.0.0.0）
 #   PAPERCLIP_DATABASE_URL   数据库连接串（默认 postgresql://paperclip:paperclip@localhost:5432/paperclip）
 #   PAPERCLIP_AUTH_DISABLE_SIGN_UP  是否禁止注册（默认 true）
-#   PAPERCLIP_NPM_REGISTRY   npm registry（默认 https://registry.npmjs.org）
+#   PAPERCLIP_NPM_REGISTRY   用于版本对照的公共 npm registry（默认 https://registry.npmjs.org）
 #   PAPERCLIP_NPM_PACKAGE    npm 包规格（默认 paperclipai@latest）
 #   PAPERCLIP_START_HEALTH_TIMEOUT_SEC  start 时等待 /api/health 健康检查最长秒数（默认 60）
 #   PAPERCLIP_SKIP_START_HEALTH_CHECK=1 跳过 HTTP 健康检查
@@ -78,8 +78,7 @@ usage() {
   - 默认导出 DATABASE_URL=${PAPERCLIP_DATABASE_URL}
   - 默认导出 PAPERCLIP_AUTH_DISABLE_SIGN_UP=${PAPERCLIP_AUTH_DISABLE_SIGN_UP}
   - 健康检查: /api/health
-  - 若你的全局 ~/.npmrc 指向私有 registry，可设置:
-      PAPERCLIP_NPM_REGISTRY=https://registry.npmjs.org
+  - 若 ~/.npmrc 的 registry 指向私有源，会同时查询它和公共源并安装较新版本。
 USAGE
 }
 
@@ -192,12 +191,44 @@ paperclip_start_failure_hints() {
   tail -n 80 "${LOG_FILE}" 2>/dev/null >&2 || true
 }
 
+paperclip_select_npm_package() {
+  PAPERCLIP_INSTALL_REGISTRY="${PAPERCLIP_NPM_REGISTRY}"
+  PAPERCLIP_INSTALL_PACKAGE="${PAPERCLIP_NPM_PACKAGE}"
+
+  local private_registry
+  private_registry="$(npm config get registry 2>/dev/null || true)"
+  [[ -n "${private_registry}" && "${private_registry}" != "null" ]] || return 0
+  [[ "${private_registry%/}" != "${PAPERCLIP_NPM_REGISTRY%/}" ]] || return 0
+
+  local package_name="${PAPERCLIP_NPM_PACKAGE}"
+  if [[ "${package_name}" == @*/*@* || "${package_name}" != @* && "${package_name}" == *@* ]]; then
+    package_name="${package_name%@*}"
+  fi
+
+  local public_version private_version
+  public_version="$(npm view "${PAPERCLIP_NPM_PACKAGE}" version --registry "${PAPERCLIP_NPM_REGISTRY}" 2>/dev/null || true)"
+  private_version="$(npm view "${PAPERCLIP_NPM_PACKAGE}" version --registry "${private_registry}" 2>/dev/null || true)"
+  [[ -n "${public_version}" ]] || echo "[WARN] 公共 npm 源查询失败: ${PAPERCLIP_NPM_REGISTRY}" >&2
+  [[ -n "${private_version}" ]] || echo "[WARN] .npmrc 私有源查询失败: ${private_registry}" >&2
+  [[ -n "${public_version}${private_version}" ]] || die "公共源和私有源均无法查询 ${PAPERCLIP_NPM_PACKAGE}"
+
+  if [[ -n "${private_version}" ]] && { [[ -z "${public_version}" ]] || npm view "${package_name}@>${public_version} <=${private_version}" version --registry "${private_registry}" >/dev/null 2>&1; }; then
+    PAPERCLIP_INSTALL_REGISTRY="${private_registry}"
+    PAPERCLIP_INSTALL_PACKAGE="${package_name}@${private_version}"
+  else
+    PAPERCLIP_INSTALL_PACKAGE="${package_name}@${public_version}"
+  fi
+
+  echo "==> Paperclip 版本：公共源 ${public_version:--}，私有源 ${private_version:--}；选择 ${PAPERCLIP_INSTALL_PACKAGE}" >&2
+}
+
 cmd_install() {
   require_node
   command -v npm >/dev/null 2>&1 || die "未找到 npm"
   ensure_dirs
-  echo "==> npm 全局安装 Paperclip CLI（${PAPERCLIP_NPM_PACKAGE}）…" >&2
-  npm install -g --registry "${PAPERCLIP_NPM_REGISTRY}" "${PAPERCLIP_NPM_PACKAGE}"
+  paperclip_select_npm_package
+  echo "==> npm 全局安装 Paperclip CLI（${PAPERCLIP_INSTALL_PACKAGE}）…" >&2
+  npm install -g --registry "${PAPERCLIP_INSTALL_REGISTRY}" "${PAPERCLIP_INSTALL_PACKAGE}"
   paperclip_cli --version
   echo "安装完成。首次使用可执行: $0 onboard"
 }

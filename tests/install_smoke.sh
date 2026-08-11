@@ -115,7 +115,25 @@ export -f curl
 "${NLTDEPLOY_ROOT}/bin/nltdeploy" service install add code-server | grep -q "official-code-server-installer-ran:" || exit 1
 unset -f curl
 node() { [[ "${1:-}" == "-p" ]] && echo 20; }
-npm() { [[ "$*" == "install -g --registry https://registry.npmjs.org paperclipai@latest" ]]; }
+npm() {
+  [[ "$*" == "config get registry" ]] && { echo "https://registry.npmjs.org/"; return; }
+  [[ "$*" == "install -g --registry https://registry.npmjs.org paperclipai@latest" ]]
+}
+paperclipai() { [[ "${1:-}" == "--version" ]]; }
+export -f node npm paperclipai
+bash "${NLTDEPLOY_ROOT}/libexec/nltdeploy/paperclip/setup.sh" install >/dev/null || exit 1
+unset -f node npm paperclipai
+node() { [[ "${1:-}" == "-p" ]] && echo 20; }
+npm() {
+  case "$*" in
+    "config get registry") echo "https://packages.example.com/npm/" ;;
+    "view paperclipai@latest version --registry https://registry.npmjs.org") echo "2026.810.0" ;;
+    "view paperclipai@latest version --registry https://packages.example.com/npm/") echo "2026.811.0" ;;
+    "view paperclipai@>2026.810.0 <=2026.811.0 version --registry https://packages.example.com/npm/") echo "2026.811.0" ;;
+    "install -g --registry https://packages.example.com/npm/ paperclipai@2026.811.0") ;;
+    *) return 1 ;;
+  esac
+}
 paperclipai() { [[ "${1:-}" == "--version" ]]; }
 export -f node npm paperclipai
 bash "${NLTDEPLOY_ROOT}/libexec/nltdeploy/paperclip/setup.sh" install >/dev/null || exit 1
