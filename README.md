@@ -57,20 +57,40 @@ brew install farfarfun/tap/nltdeploy
 
 ### 官方安装脚本
 
+从本地脚本执行时，`github` 与 `gitee` 二选一：
+
 ```bash
 chmod +x install.sh
-./install.sh
-./install.sh install
-./install.sh update
+./install.sh install --source github
+./install.sh install --source gitee
+./install.sh update --source github
+./install.sh update --source gitee
 ./install.sh uninstall
 ```
+
+远程安装：
 
 ```bash
 curl -LsSf https://raw.githubusercontent.com/farfarfun/nltdeploy/HEAD/install.sh | bash -s -- install --source github
 curl -LsSf https://gitee.com/farfarfun/nltdeploy/raw/master/install.sh | bash -s -- install --source gitee
 ```
 
-安装来源会保存到 `~/.local/nltdeploy/etc/nltdeploy/source`。Gitee 模式下，nltdeploy 自身的安装和升级只访问 Gitee，后续 `nltdeploy upgrade` 也继续使用 Gitee。
+更新时可沿用已保存的安装来源，也可显式切换：
+
+```bash
+nltdeploy upgrade
+nltdeploy upgrade --source github
+nltdeploy upgrade --source gitee
+```
+
+也可直接执行远程更新脚本：
+
+```bash
+curl -LsSf https://raw.githubusercontent.com/farfarfun/nltdeploy/HEAD/install.sh | bash -s -- update --source github
+curl -LsSf https://gitee.com/farfarfun/nltdeploy/raw/master/install.sh | bash -s -- update --source gitee
+```
+
+安装来源会保存到 `~/.local/nltdeploy/etc/nltdeploy/source`。显式选择来源后，nltdeploy 自身的安装和更新只访问对应站点。
 
 如未自动生效，手动加入 PATH：
 
