@@ -19,7 +19,7 @@ usage() {
 命令:
   list                         查询远端并显示本地状态
   install [all|仓库名]         安装全部未安装仓库，或安装单个仓库
-  update [all|仓库名]          更新全部已安装仓库，或更新单个仓库
+  update [all|仓库名]          更新全部或单个已安装仓库；本地变更会被远端覆盖
   delete [all|仓库名] [--yes]  删除全部或单个已安装仓库
   selftest                     运行本地 Git 自检
 
@@ -152,13 +152,20 @@ _install_one() {
 }
 
 _update_one() {
-  local name="$1"
+  local name="$1" dir
   _valid_name "${name}" || { printf '无效仓库名: %s\n' "${name}" >&2; return 1; }
   _remote_url "${name}" >/dev/null 2>&1 || { printf '远端不存在: %s\n' "${name}" >&2; return 1; }
   _is_managed_repo "${name}" || { printf '[失败] 未安装或不是受管仓库: %s\n' "${name}" >&2; return 1; }
-  _is_dirty "${name}" && { printf '[跳过] 有本地修改: %s\n' "${name}" >&2; return 1; }
+  dir="${TARGET_DIR}/${name}"
   printf '[更新] %s\n' "${name}"
-  git -C "${TARGET_DIR}/${name}" pull --ff-only
+  if ! _is_dirty "${name}" && git -C "${dir}" pull --ff-only \
+    && [[ "$(git -C "${dir}" rev-parse HEAD)" == "$(git -C "${dir}" rev-parse '@{upstream}')" ]]; then
+    return 0
+  fi
+  printf '[强制更新] 丢弃本地变更: %s\n' "${name}"
+  git -C "${dir}" fetch origin
+  git -C "${dir}" reset --hard '@{upstream}'
+  git -C "${dir}" clean -fd
 }
 
 _confirm() {
@@ -305,8 +312,22 @@ _selftest() {
   printf 'two\n' >"${seed}/version"
   git -C "${seed}" commit -qam two
   git -C "${seed}" push -qu
-  _update_one "${name}" >/dev/null
+  printf 'dirty\n' >>"${TARGET_DIR}/${name}/version"
+  printf 'untracked\n' >"${TARGET_DIR}/${name}/untracked"
+  _update_one "${name}" >/dev/null 2>&1
   [[ "$(<"${TARGET_DIR}/${name}/version")" == two ]]
+  [[ ! -e "${TARGET_DIR}/${name}/untracked" ]]
+  printf 'local\n' >"${TARGET_DIR}/${name}/version"
+  git -C "${TARGET_DIR}/${name}" -c user.name=test -c user.email=test@example.com commit -qam local
+  _update_one "${name}" >/dev/null 2>&1
+  [[ "$(<"${TARGET_DIR}/${name}/version")" == two ]]
+  printf 'local\n' >"${TARGET_DIR}/${name}/version"
+  git -C "${TARGET_DIR}/${name}" -c user.name=test -c user.email=test@example.com commit -qam local
+  printf 'remote\n' >"${seed}/version"
+  git -C "${seed}" commit -qam remote
+  git -C "${seed}" push -qu
+  _update_one "${name}" >/dev/null 2>&1
+  [[ "$(<"${TARGET_DIR}/${name}/version")" == remote ]]
   printf 'dirty\n' >>"${TARGET_DIR}/${name}/version"
   ! _delete_one "${name}" yes >/dev/null 2>&1
   git -C "${TARGET_DIR}/${name}" reset --hard -q
