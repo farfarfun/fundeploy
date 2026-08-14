@@ -24,6 +24,7 @@ usage() {
   selftest                     运行本地 Git 自检
 
 无参数时打开交互菜单。目标目录: ${TARGET_DIR}
+同步后会递归删除仓库内名为 .agents 或 .skills 的目录。
 依赖: git、curl、jq
 环境变量: SKILLS_SYNC_DIR、SKILLS_SYNC_ORG、SKILLS_SYNC_API_URL、NONINTERACTIVE
 EOF
@@ -98,6 +99,12 @@ _is_dirty() {
   [[ -n "$(git -C "${TARGET_DIR}/$1" status --porcelain 2>/dev/null)" ]]
 }
 
+_remove_internal_dirs() {
+  find "$1" -mindepth 1 -name .git -prune -o \
+    \( \( -type d -o -type l \) \( -name .agents -o -name .skills \) \) \
+    -prune -exec rm -rf -- {} +
+}
+
 _state() {
   local name="$1" dir="${TARGET_DIR}/$1"
   if [[ ! -e "${dir}" && ! -L "${dir}" ]]; then
@@ -149,6 +156,7 @@ _install_one() {
   [[ ! -e "${dir}" && ! -L "${dir}" ]] || { printf '[失败] 同名目录不是受管仓库: %s\n' "${dir}" >&2; return 1; }
   printf '[安装] %s\n' "${name}"
   git clone --depth 1 "${url}" "${dir}"
+  _remove_internal_dirs "${dir}"
 }
 
 _update_one() {
@@ -160,12 +168,14 @@ _update_one() {
   printf '[更新] %s\n' "${name}"
   if ! _is_dirty "${name}" && git -C "${dir}" pull --ff-only \
     && [[ "$(git -C "${dir}" rev-parse HEAD)" == "$(git -C "${dir}" rev-parse '@{upstream}')" ]]; then
-    return 0
+    :
+  else
+    printf '[强制更新] 丢弃本地变更: %s\n' "${name}"
+    git -C "${dir}" fetch origin
+    git -C "${dir}" reset --hard '@{upstream}'
+    git -C "${dir}" clean -fd
   fi
-  printf '[强制更新] 丢弃本地变更: %s\n' "${name}"
-  git -C "${dir}" fetch origin
-  git -C "${dir}" reset --hard '@{upstream}'
-  git -C "${dir}" clean -fd
+  _remove_internal_dirs "${dir}"
 }
 
 _confirm() {
@@ -299,8 +309,11 @@ _selftest() {
   git init -q -b main "${seed}"
   git -C "${seed}" config user.name test
   git -C "${seed}" config user.email test@example.com
+  mkdir -p "${seed}/.agents/one" "${seed}/nested/deep/.skills/two"
+  printf 'remove\n' >"${seed}/.agents/one/file"
+  printf 'remove\n' >"${seed}/nested/deep/.skills/two/file"
   printf 'one\n' >"${seed}/version"
-  git -C "${seed}" add version
+  git -C "${seed}" add .
   git -C "${seed}" commit -qm one
   git -C "${seed}" remote add origin "${upstream}"
   git -C "${seed}" push -qu origin main
@@ -309,6 +322,7 @@ _selftest() {
   REMOTE_NAMES=("${name}")
   REMOTE_URLS=("${upstream}")
   _install_one "${name}" >/dev/null
+  [[ -z "$(find "${TARGET_DIR}/${name}" \( -name .agents -o -name .skills \) -print -quit)" ]]
   printf 'two\n' >"${seed}/version"
   git -C "${seed}" commit -qam two
   git -C "${seed}" push -qu
@@ -317,6 +331,7 @@ _selftest() {
   _update_one "${name}" >/dev/null 2>&1
   [[ "$(<"${TARGET_DIR}/${name}/version")" == two ]]
   [[ ! -e "${TARGET_DIR}/${name}/untracked" ]]
+  [[ -z "$(find "${TARGET_DIR}/${name}" \( -name .agents -o -name .skills \) -print -quit)" ]]
   printf 'local\n' >"${TARGET_DIR}/${name}/version"
   git -C "${TARGET_DIR}/${name}" -c user.name=test -c user.email=test@example.com commit -qam local
   _update_one "${name}" >/dev/null 2>&1
