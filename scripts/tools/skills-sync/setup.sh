@@ -24,7 +24,7 @@ usage() {
   selftest                     运行本地 Git 自检
 
 无参数时打开交互菜单。目标目录: ${TARGET_DIR}
-同步后会递归删除仓库内名为 .agents 或 .skills 的目录。
+同步后会递归删除仓库内名为 .agents、.skills、.codex、.claude 或 .cursor 的目录。
 依赖: git、curl、jq
 环境变量: SKILLS_SYNC_DIR、SKILLS_SYNC_ORG、SKILLS_SYNC_API_URL、NONINTERACTIVE
 EOF
@@ -101,7 +101,8 @@ _is_dirty() {
 
 _remove_internal_dirs() {
   find "$1" -mindepth 1 -name .git -prune -o \
-    \( \( -type d -o -type l \) \( -name .agents -o -name .skills \) \) \
+    \( \( -type d -o -type l \) \( -name .agents -o -name .skills -o \
+      -name .codex -o -name .claude -o -name .cursor \) \) \
     -prune -exec rm -rf -- {} +
 }
 
@@ -309,9 +310,8 @@ _selftest() {
   git init -q -b main "${seed}"
   git -C "${seed}" config user.name test
   git -C "${seed}" config user.email test@example.com
-  mkdir -p "${seed}/.agents/one" "${seed}/nested/deep/.skills/two"
-  printf 'remove\n' >"${seed}/.agents/one/file"
-  printf 'remove\n' >"${seed}/nested/deep/.skills/two/file"
+  mkdir -p "${seed}"/{.agents,.codex,nested/.claude,nested/deep/.skills,nested/deep/.cursor}/data
+  touch "${seed}"/{.agents,.codex,nested/.claude,nested/deep/.skills,nested/deep/.cursor}/data/file
   printf 'one\n' >"${seed}/version"
   git -C "${seed}" add .
   git -C "${seed}" commit -qm one
@@ -322,7 +322,8 @@ _selftest() {
   REMOTE_NAMES=("${name}")
   REMOTE_URLS=("${upstream}")
   _install_one "${name}" >/dev/null
-  [[ -z "$(find "${TARGET_DIR}/${name}" \( -name .agents -o -name .skills \) -print -quit)" ]]
+  [[ -z "$(find "${TARGET_DIR}/${name}" \( -name .agents -o -name .skills -o \
+    -name .codex -o -name .claude -o -name .cursor \) -print -quit)" ]]
   printf 'two\n' >"${seed}/version"
   git -C "${seed}" commit -qam two
   git -C "${seed}" push -qu
@@ -331,7 +332,8 @@ _selftest() {
   _update_one "${name}" >/dev/null 2>&1
   [[ "$(<"${TARGET_DIR}/${name}/version")" == two ]]
   [[ ! -e "${TARGET_DIR}/${name}/untracked" ]]
-  [[ -z "$(find "${TARGET_DIR}/${name}" \( -name .agents -o -name .skills \) -print -quit)" ]]
+  [[ -z "$(find "${TARGET_DIR}/${name}" \( -name .agents -o -name .skills -o \
+    -name .codex -o -name .claude -o -name .cursor \) -print -quit)" ]]
   printf 'local\n' >"${TARGET_DIR}/${name}/version"
   git -C "${TARGET_DIR}/${name}" -c user.name=test -c user.email=test@example.com commit -qam local
   _update_one "${name}" >/dev/null 2>&1
