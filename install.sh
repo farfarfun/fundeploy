@@ -9,8 +9,29 @@ NLTDEPLOY_WRAPPER_ROOT="${NLTDEPLOY_WRAPPER_ROOT:-${NLTDEPLOY_ROOT}}"
 NLTDEPLOY_GITHUB_REPO="${NLTDEPLOY_GITHUB_REPO:-https://github.com/farfarfun/nltdeploy.git}"
 NLTDEPLOY_GITEE_REPO="${NLTDEPLOY_GITEE_REPO:-https://gitee.com/farfarfun/nltdeploy.git}"
 NLTDEPLOY_SRC_DIR="${NLTDEPLOY_SRC_DIR:-${NLTDEPLOY_ROOT}/src/nltdeploy}"
+NLTDEPLOY_SOURCE_FILE="${NLTDEPLOY_ROOT}/etc/nltdeploy/source"
+_NLTDEPLOY_SOURCE_REQUESTED=""
+_NLTDEPLOY_SOURCE="auto"
 
 die() { echo "错误: $*" >&2; exit 1; }
+
+_parse_source_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --source)
+        [[ $# -ge 2 ]] || die "--source 缺少取值（github|gitee）"
+        _NLTDEPLOY_SOURCE_REQUESTED="$2"
+        shift 2
+        ;;
+      --source=*) _NLTDEPLOY_SOURCE_REQUESTED="${1#*=}"; shift ;;
+      *) die "未知参数: $1（支持 --source github|gitee）" ;;
+    esac
+  done
+  case "${_NLTDEPLOY_SOURCE_REQUESTED}" in
+    "" | github | gitee) ;;
+    *) die "未知 --source: ${_NLTDEPLOY_SOURCE_REQUESTED}（支持 github|gitee）" ;;
+  esac
+}
 
 # 首次安装时公共库尚不存在，因此安装根目录必须在本文件内守卫。
 _guard_nltdeploy_root() {
@@ -32,7 +53,8 @@ _guard_nltdeploy_root() {
 
 usage() {
   cat <<'EOF'
-用法: install.sh [install|update|uninstall]
+用法: install.sh [install|update] [--source github|gitee]
+      install.sh uninstall
 
   install / update   同步 libexec 与 bin；若 scripts 所在目录为 git 仓库则先 git pull --ff-only（可跳过）
   uninstall / remove 删除 NLTDEPLOY_ROOT，并从 shell 配置中移除本安装器写入的 PATH 片段
@@ -44,11 +66,11 @@ usage() {
 
 远端安装:
   GitHub:
-    curl -LsSf https://raw.githubusercontent.com/farfarfun/nltdeploy/HEAD/install.sh | bash -s -- install
+    curl -LsSf https://raw.githubusercontent.com/farfarfun/nltdeploy/HEAD/install.sh | bash -s -- install --source github
   Gitee:
-    curl -LsSf https://gitee.com/farfarfun/nltdeploy/raw/master/install.sh | bash -s -- install
+    curl -LsSf https://gitee.com/farfarfun/nltdeploy/raw/master/install.sh | bash -s -- install --source gitee
   更新:
-    curl -LsSf https://raw.githubusercontent.com/farfarfun/nltdeploy/HEAD/install.sh | bash -s -- update
+    nltdeploy upgrade
 
 环境变量:
   NLTDEPLOY_ROOT              安装根目录（默认 ~/.local/nltdeploy）
@@ -86,32 +108,104 @@ _nlt_git_clone_shallow() {
   fi
 }
 
-# 将仓库克隆到 NLTDEPLOY_SRC_DIR（若尚不存在）；打印 scripts 目录绝对路径（其它信息走 stderr）。
+_repo_source() {
+  local url
+  url="$(git -C "$1" config --get remote.origin.url 2>/dev/null)" || return 1
+  case "${url}" in
+    *github.com/* | git@github.com:*) echo github ;;
+    *gitee.com/* | git@gitee.com:*) echo gitee ;;
+    *) return 1 ;;
+  esac
+}
+
+_resolve_install_source() {
+  local saved=""
+  if [[ -n "${_NLTDEPLOY_SOURCE_REQUESTED}" ]]; then
+    _NLTDEPLOY_SOURCE="${_NLTDEPLOY_SOURCE_REQUESTED}"
+  elif [[ -f "${NLTDEPLOY_SOURCE_FILE}" ]]; then
+    saved="$(tr -d '[:space:]' <"${NLTDEPLOY_SOURCE_FILE}")"
+    case "${saved}" in
+      github | gitee) _NLTDEPLOY_SOURCE="${saved}" ;;
+    esac
+  elif [[ -d "${NLTDEPLOY_SRC_DIR}/.git" ]]; then
+    _NLTDEPLOY_SOURCE="$(_repo_source "${NLTDEPLOY_SRC_DIR}" || echo auto)"
+  fi
+}
+
+_set_managed_clone_source() {
+  local repo="$1" source="$2" url actual=""
+  actual="$(_repo_source "${repo}" || true)"
+  [[ "${actual}" == "${source}" ]] && return 0
+  case "${source}" in
+    github) url="${NLTDEPLOY_GITHUB_REPO}" ;;
+    gitee) url="${NLTDEPLOY_GITEE_REPO}" ;;
+    *) return 0 ;;
+  esac
+  echo "正在将更新源切换为 ${source}: ${url}" >&2
+  if git -C "${repo}" remote get-url origin >/dev/null 2>&1; then
+    git -C "${repo}" remote set-url origin "${url}"
+  else
+    git -C "${repo}" remote add origin "${url}"
+  fi
+}
+
+_persist_install_source() {
+  [[ -z "${NLTDEPLOY_PACKAGE_MANAGER:-}" ]] || return 0
+  case "${_NLTDEPLOY_SOURCE}" in
+    github | gitee)
+      mkdir -p "$(dirname "${NLTDEPLOY_SOURCE_FILE}")"
+      printf '%s\n' "${_NLTDEPLOY_SOURCE}" >"${NLTDEPLOY_SOURCE_FILE}"
+      ;;
+  esac
+}
+
+# 将仓库克隆到 NLTDEPLOY_SRC_DIR（若尚不存在）。
 _ensure_clone_for_scripts() {
   command -v git >/dev/null 2>&1 || die "通过管道安装需要 git。请安装 git 或在克隆后的仓库根目录执行 ./install.sh"
   mkdir -p "${NLTDEPLOY_ROOT}" "${NLTDEPLOY_ROOT}/src"
   local repo="${NLTDEPLOY_SRC_DIR}"
   if [[ -d "${repo}/.git" ]]; then
-    :
+    [[ "${_NLTDEPLOY_SOURCE}" == "auto" ]] && _NLTDEPLOY_SOURCE="$(_repo_source "${repo}" || echo auto)"
+    _set_managed_clone_source "${repo}" "${_NLTDEPLOY_SOURCE}"
   elif [[ -e "${repo}" ]]; then
     die "路径已存在但不是 git 仓库，请删除或移走后重试: ${repo}"
   else
-    echo "正在从 GitHub 克隆 farfarfun/nltdeploy …" >&2
-    if ! _nlt_git_clone_shallow "${NLTDEPLOY_GITHUB_REPO}" "${repo}"; then
-      echo "GitHub 不可用，正在从 Gitee 克隆 farfarfun/nltdeploy …" >&2
-      _nlt_git_clone_shallow "${NLTDEPLOY_GITEE_REPO}" "${repo}" || die "GitHub 与 Gitee 克隆均失败，请检查网络与代理"
-    fi
+    case "${_NLTDEPLOY_SOURCE}" in
+      github)
+        echo "正在从 GitHub 克隆 farfarfun/nltdeploy …" >&2
+        _nlt_git_clone_shallow "${NLTDEPLOY_GITHUB_REPO}" "${repo}" || die "GitHub 克隆失败，请检查网络与代理"
+        ;;
+      gitee)
+        echo "正在从 Gitee 克隆 farfarfun/nltdeploy …" >&2
+        _nlt_git_clone_shallow "${NLTDEPLOY_GITEE_REPO}" "${repo}" || die "Gitee 克隆失败，请检查网络与代理"
+        ;;
+      *)
+        echo "正在从 GitHub 克隆 farfarfun/nltdeploy …" >&2
+        if _nlt_git_clone_shallow "${NLTDEPLOY_GITHUB_REPO}" "${repo}"; then
+          _NLTDEPLOY_SOURCE="github"
+        else
+          echo "GitHub 不可用，正在从 Gitee 克隆 farfarfun/nltdeploy …" >&2
+          _nlt_git_clone_shallow "${NLTDEPLOY_GITEE_REPO}" "${repo}" || die "GitHub 与 Gitee 克隆均失败，请检查网络与代理"
+          _NLTDEPLOY_SOURCE="gitee"
+        fi
+        ;;
+    esac
   fi
   [[ -d "${repo}/scripts" ]] || die "克隆完成但未找到 scripts 目录: ${repo}"
-  echo "${repo}/scripts"
 }
 
 # scripts 的父目录若为 git 仓库，则拉取最新（可跳过）。
 _sync_git_upstream_for_scripts() {
   local scripts_dir="$1"
-  local root current before after
+  local root current before after source=""
   root="$(cd "$(dirname "$scripts_dir")" && pwd)"
   [[ -d "${root}/.git" ]] || return 0
+  source="$(_repo_source "${root}" || true)"
+  if [[ "${_NLTDEPLOY_SOURCE}" == "auto" ]]; then
+    _NLTDEPLOY_SOURCE="${source:-auto}"
+  elif [[ -n "${source}" && "${source}" != "${_NLTDEPLOY_SOURCE}" ]]; then
+    die "当前源码仓库 origin 与 --source ${_NLTDEPLOY_SOURCE} 不一致: ${root}"
+  fi
   [[ "${NLTDEPLOY_SKIP_GIT_PULL:-}" == "1" ]] && return 0
   command -v git >/dev/null 2>&1 || die "发现 git 仓库但未安装 git，无法更新: ${root}"
   echo "正在拉取最新脚本: ${root}" >&2
@@ -122,7 +216,12 @@ _sync_git_upstream_for_scripts() {
   if [[ -f "${root}/install.sh" ]] && \
     [[ "${before}" != "${after}" || ! -f "${current}" || ! "${current}" -ef "${root}/install.sh" ]]; then
     echo "安装器已更新，正在使用新版本继续…" >&2
-    exec env NLTDEPLOY_SKIP_GIT_PULL=1 bash "${root}/install.sh" "${_CMD}"
+    case "${_NLTDEPLOY_SOURCE}" in
+      github | gitee)
+        exec env NLTDEPLOY_SKIP_GIT_PULL=1 bash "${root}/install.sh" "${_CMD}" --source "${_NLTDEPLOY_SOURCE}"
+        ;;
+      *) exec env NLTDEPLOY_SKIP_GIT_PULL=1 bash "${root}/install.sh" "${_CMD}" ;;
+    esac
   fi
 }
 
@@ -339,15 +438,18 @@ _nlt_cp_first() {
 do_install_or_update() {
   local SCRIPTS LIBEXEC
   _guard_nltdeploy_root 1
+  _resolve_install_source
   SCRIPTS=""
   if SCRIPTS="$(_resolve_scripts_from_install_sh)"; then
     :
   else
-    SCRIPTS="$(_ensure_clone_for_scripts)"
+    _ensure_clone_for_scripts
+    SCRIPTS="${NLTDEPLOY_SRC_DIR}/scripts"
   fi
   [[ -d "$SCRIPTS" ]] || die "找不到 scripts 目录: ${SCRIPTS}"
 
   _sync_git_upstream_for_scripts "$SCRIPTS"
+  _persist_install_source
 
   LIBEXEC="${NLTDEPLOY_ROOT}/libexec/nltdeploy"
   mkdir -p "${NLTDEPLOY_ROOT}/bin" "${LIBEXEC}" \
@@ -606,9 +708,11 @@ case "${_CMD}" in
     exit 0
     ;;
   install | update)
+    _parse_source_args "$@"
     do_install_or_update
     ;;
   uninstall | remove)
+    [[ $# -eq 0 ]] || die "uninstall 不支持额外参数: $*"
     do_uninstall
     ;;
   help | -h | --help)

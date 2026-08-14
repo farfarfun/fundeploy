@@ -81,10 +81,16 @@ bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/sub2api/setup-manual.sh" || exit 1
 bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/sub2api/setup-offical.sh" || exit 1
 curl() {
   [[ "$*" == "--proto =https --proto-redir =https --tlsv1.2 -LsSf https://example.invalid/install.sh" ]] || return 64
-  printf 'exit 0\n'
+  printf '%s\n' '[[ "$*" == "update --source github" ]]'
 }
 export -f curl
 NLTDEPLOY_GITHUB_RAW="https://example.invalid/install.sh" "${NLTDEPLOY_ROOT}/bin/nltdeploy" upgrade github >/dev/null
+curl() {
+  [[ "$*" == "--proto =https --proto-redir =https --tlsv1.2 -LsSf https://gitee.example.invalid/install.sh" ]] || return 64
+  printf '%s\n' '[[ "$*" == "update --source gitee" ]]'
+}
+export -f curl
+NLTDEPLOY_GITEE_RAW="https://gitee.example.invalid/install.sh" "${NLTDEPLOY_ROOT}/bin/nltdeploy" upgrade gitee >/dev/null
 unset -f curl
 # sub2api 官方模式现在会「先下载到文件、校验、改写端口，再以 root 执行文件」，
 # 而不是 `curl … | sudo bash`。因此 stub 必须支持 -o <file>。

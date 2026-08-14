@@ -23,8 +23,9 @@
   nltdeploy dev uv install
   nltdeploy tool github-net doctor
   nltdeploy ai codex update
-  nltdeploy upgrade                         # 自动选择本地、GitHub 或 Gitee
+  nltdeploy upgrade                         # 沿用安装来源
   nltdeploy upgrade --source github
+  nltdeploy upgrade --source gitee
   ```
 - 领域固定为 `service`、`dev`、`tool`、`ai`，后面依次是模块和动作。
 - 不再安装其它 `nlt-*` 兼容命令；旧版本升级时会自动清理这些历史入口。
@@ -65,9 +66,11 @@ chmod +x install.sh
 ```
 
 ```bash
-curl -LsSf https://raw.githubusercontent.com/farfarfun/nltdeploy/HEAD/install.sh | bash -s -- install
-curl -LsSf https://gitee.com/farfarfun/nltdeploy/raw/master/install.sh | bash -s -- install
+curl -LsSf https://raw.githubusercontent.com/farfarfun/nltdeploy/HEAD/install.sh | bash -s -- install --source github
+curl -LsSf https://gitee.com/farfarfun/nltdeploy/raw/master/install.sh | bash -s -- install --source gitee
 ```
+
+安装来源会保存到 `~/.local/nltdeploy/etc/nltdeploy/source`。Gitee 模式下，nltdeploy 自身的安装和升级只访问 Gitee，后续 `nltdeploy upgrade` 也继续使用 Gitee。
 
 如未自动生效，手动加入 PATH：
 

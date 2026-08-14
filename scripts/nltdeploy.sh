@@ -13,7 +13,7 @@
 #   github   从 GitHub 拉取 install.sh 并执行 update（默认公网源）
 #   gitee    从 Gitee 拉取 install.sh 并执行 update（国内镜像）
 #   local    使用本地仓库/克隆的 install.sh update（git pull --ff-only + 重新同步；无需公网 raw）
-#   不指定   优先 local（存在本地 install.sh 时），否则 github，再 gitee。
+#   不指定   优先 local 并沿用已记录来源，否则 github，再 gitee。
 #
 # 环境变量:
 #   NLTDEPLOY_ROOT            安装根目录（默认 ~/.local/nltdeploy）
@@ -159,12 +159,12 @@ upgrade_local() {
 
 upgrade_github() {
   echo "==> 从 GitHub 升级: ${NLTDEPLOY_GITHUB_RAW}" >&2
-  _curl GitHub "${NLTDEPLOY_GITHUB_RAW}" | bash -s -- update
+  _curl GitHub "${NLTDEPLOY_GITHUB_RAW}" | bash -s -- update --source github
 }
 
 upgrade_gitee() {
   echo "==> 从 Gitee 升级: ${NLTDEPLOY_GITEE_RAW}" >&2
-  _curl Gitee "${NLTDEPLOY_GITEE_RAW}" | bash -s -- update
+  _curl Gitee "${NLTDEPLOY_GITEE_RAW}" | bash -s -- update --source gitee
 }
 
 cmd_upgrade() {
@@ -190,7 +190,7 @@ cmd_upgrade() {
     github) upgrade_github ;;
     gitee)  upgrade_gitee ;;
     "")
-      # 自动：优先本地，其次 github，再 gitee。
+      # 自动：本地安装器会沿用已记录来源；没有本地安装器时才尝试公网源。
       if _resolve_local_install_sh >/dev/null 2>&1; then
         upgrade_local
       elif upgrade_github; then
