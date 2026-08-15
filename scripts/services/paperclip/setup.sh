@@ -5,7 +5,7 @@
 # 用法：
 #   ./setup.sh              # gum 菜单
 #   ./setup.sh install      # npm install -g paperclipai@latest
-#   ./setup.sh update       # 等价于 install
+#   ./setup.sh update       # 升级后自动迁移数据库，并保持原运行状态
 #   ./setup.sh onboard      # 首次配置（默认 NONINTERACTIVE=1 时自动加 --yes）
 #   ./setup.sh start        # 后台启动（paperclipai run）
 #   ./setup.sh run          # 前台启动（终端附着；不写 PID）
@@ -62,7 +62,7 @@ usage() {
 
 命令:
   install     npm 全局安装 ${PAPERCLIP_NPM_PACKAGE}
-  update      全局升级到 ${PAPERCLIP_NPM_PACKAGE}
+  update      全局升级后自动迁移数据库，并保持原运行状态
   onboard     首次配置；NONINTERACTIVE=1 时默认追加 --yes
   start       后台启动: http://${PAPERCLIP_HOST}:${PAPERCLIP_PORT}
   run         前台启动: 同 start 的运行环境，但终端附着、不写 PID
@@ -234,7 +234,25 @@ cmd_install() {
 }
 
 cmd_update() {
+  local pid was_running=0
+  pid="$(read_pid)"
+  [[ -n "${pid}" ]] && process_alive "${pid}" && was_running=1
   cmd_install
+
+  if (( was_running == 0 )) && [[ ! -f "${PAPERCLIP_HOME}/instances/default/config.json" && ! -f "${PAPERCLIP_HOME}/config.json" ]]; then
+    echo "尚未完成 onboard，跳过数据库迁移。"
+    return 0
+  fi
+
+  (( was_running == 0 )) || cmd_stop --yes || die "停止旧版 Paperclip 失败，已中止数据库迁移"
+  echo "==> 启动新版 Paperclip 并应用数据库迁移…" >&2
+  PAPERCLIP_MIGRATION_AUTO_APPLY=true PAPERCLIP_SKIP_START_HEALTH_CHECK=0 cmd_start
+  if (( was_running == 0 )); then
+    cmd_stop --yes || die "数据库迁移完成，但临时 Paperclip 进程停止失败"
+    echo "更新及数据库迁移完成，服务保持停止。"
+  else
+    echo "更新及数据库迁移完成，服务已恢复运行。"
+  fi
 }
 
 cmd_onboard() {

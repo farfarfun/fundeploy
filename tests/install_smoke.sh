@@ -144,6 +144,35 @@ paperclipai() { [[ "${1:-}" == "--version" ]]; }
 export -f node npm paperclipai
 bash "${NLTDEPLOY_ROOT}/libexec/nltdeploy/paperclip/setup.sh" install >/dev/null || exit 1
 unset -f node npm paperclipai
+PAPERCLIP_FAKE_BIN="${TMP}/paperclip-bin"
+PAPERCLIP_MIGRATION_MARKER="${TMP}/paperclip-migrated"
+mkdir -p "${PAPERCLIP_FAKE_BIN}" "${TMP}/paperclip-home/instances/default"
+printf '{}\n' >"${TMP}/paperclip-home/instances/default/config.json"
+{
+  printf '%s\n' '#!/usr/bin/env bash'
+  printf '%s\n' 'case "${1:-}" in'
+  printf '%s\n' '  --version) echo test ;;'
+  printf '%s\n' '  run) printf "%s\n" "${PAPERCLIP_MIGRATION_AUTO_APPLY:-}" >"${PAPERCLIP_MIGRATION_MARKER}"; trap "exit 0" TERM INT; while :; do sleep 1; done ;;'
+  printf '%s\n' '  *) exit 1 ;;'
+  printf '%s\n' 'esac'
+} >"${PAPERCLIP_FAKE_BIN}/paperclipai"
+chmod +x "${PAPERCLIP_FAKE_BIN}/paperclipai"
+node() { [[ "${1:-}" == "-p" ]] && echo 20; }
+npm() {
+  [[ "$*" == "config get registry" ]] && { echo "https://registry.npmjs.org/"; return; }
+  [[ "$*" == "install -g --registry https://registry.npmjs.org paperclipai@latest" ]]
+}
+curl() { [[ "$*" == *"/api/health"* ]] && printf 200; }
+export -f node npm curl
+PATH="${PAPERCLIP_FAKE_BIN}:${PATH}" \
+  PAPERCLIP_MIGRATION_MARKER="${PAPERCLIP_MIGRATION_MARKER}" \
+  PAPERCLIP_SERVICE_HOME="${TMP}/paperclip-service" \
+  PAPERCLIP_HOME="${TMP}/paperclip-home" \
+  PAPERCLIP_PORT=18884 \
+  bash "${NLTDEPLOY_ROOT}/libexec/nltdeploy/paperclip/setup.sh" update >/dev/null || exit 1
+[[ "$(<"${PAPERCLIP_MIGRATION_MARKER}")" == true ]] || exit 1
+[[ ! -e "${TMP}/paperclip-service/run/paperclip.pid" ]] || exit 1
+unset -f node npm curl
 bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/services/nlt-services.sh" || exit 1
 bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/port-kill/setup.sh" || exit 1
 bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/brew/setup.sh" || exit 1
