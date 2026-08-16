@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Paperclip（https://github.com/paperclipai/paperclip）本机服务：
-# 通过 npm 全局安装 paperclipai CLI，无源码克隆、无 pnpm。
+# 通过 pnpm 全局安装 paperclipai CLI，无源码克隆。
 #
 # 用法：
 #   ./setup.sh              # gum 菜单
-#   ./setup.sh install      # npm install -g paperclipai@latest
+#   ./setup.sh install      # pnpm add -g paperclipai@latest
 #   ./setup.sh update       # 升级后自动迁移数据库，并保持原运行状态
 #   ./setup.sh onboard      # 首次配置（默认 NONINTERACTIVE=1 时自动加 --yes）
 #   ./setup.sh start        # 后台启动（paperclipai run）
@@ -61,7 +61,7 @@ usage() {
   无参数：gum 菜单。
 
 命令:
-  install     npm 全局安装 ${PAPERCLIP_NPM_PACKAGE}
+  install     pnpm 全局安装 ${PAPERCLIP_NPM_PACKAGE}
   update      全局升级后自动迁移数据库，并保持原运行状态
   onboard     首次配置；NONINTERACTIVE=1 时默认追加 --yes
   start       后台启动: http://${PAPERCLIP_HOST}:${PAPERCLIP_PORT}
@@ -196,7 +196,7 @@ paperclip_select_npm_package() {
   PAPERCLIP_INSTALL_PACKAGE="${PAPERCLIP_NPM_PACKAGE}"
 
   local private_registry
-  private_registry="$(npm config get registry 2>/dev/null || true)"
+  private_registry="$(pnpm config get registry 2>/dev/null || true)"
   [[ -n "${private_registry}" && "${private_registry}" != "null" ]] || return 0
   [[ "${private_registry%/}" != "${PAPERCLIP_NPM_REGISTRY%/}" ]] || return 0
 
@@ -206,13 +206,13 @@ paperclip_select_npm_package() {
   fi
 
   local public_version private_version
-  public_version="$(npm view "${PAPERCLIP_NPM_PACKAGE}" version --registry "${PAPERCLIP_NPM_REGISTRY}" 2>/dev/null || true)"
-  private_version="$(npm view "${PAPERCLIP_NPM_PACKAGE}" version --registry "${private_registry}" 2>/dev/null || true)"
+  public_version="$(pnpm view "${PAPERCLIP_NPM_PACKAGE}" version --registry "${PAPERCLIP_NPM_REGISTRY}" 2>/dev/null || true)"
+  private_version="$(pnpm view "${PAPERCLIP_NPM_PACKAGE}" version --registry "${private_registry}" 2>/dev/null || true)"
   [[ -n "${public_version}" ]] || echo "[WARN] 公共 npm 源查询失败: ${PAPERCLIP_NPM_REGISTRY}" >&2
   [[ -n "${private_version}" ]] || echo "[WARN] .npmrc 私有源查询失败: ${private_registry}" >&2
   [[ -n "${public_version}${private_version}" ]] || die "公共源和私有源均无法查询 ${PAPERCLIP_NPM_PACKAGE}"
 
-  if [[ -n "${private_version}" ]] && { [[ -z "${public_version}" ]] || npm view "${package_name}@>${public_version} <=${private_version}" version --registry "${private_registry}" >/dev/null 2>&1; }; then
+  if [[ -n "${private_version}" ]] && { [[ -z "${public_version}" ]] || pnpm view "${package_name}@>${public_version} <=${private_version}" version --registry "${private_registry}" >/dev/null 2>&1; }; then
     PAPERCLIP_INSTALL_REGISTRY="${private_registry}"
     PAPERCLIP_INSTALL_PACKAGE="${package_name}@${private_version}"
   else
@@ -224,11 +224,24 @@ paperclip_select_npm_package() {
 
 cmd_install() {
   require_node
-  command -v npm >/dev/null 2>&1 || die "未找到 npm"
   ensure_dirs
+
+  local managed_entrypoint="${PAPERCLIP_HOME}/cli/current/node_modules/paperclipai/dist/index.js"
+  if [[ -f "${PAPERCLIP_HOME}/cli/.managed-install" ]]; then
+    [[ -f "${managed_entrypoint}" ]] || die "Paperclip managed install 已损坏，请重新执行官方 paperclipai install"
+    echo "==> 检测到 Paperclip managed install，更新并修复命令 shim…" >&2
+    command -v npm >/dev/null 2>&1 && npm uninstall -g paperclipai
+    paperclip_export_runtime_env
+    node "${managed_entrypoint}" install --yes
+    export PATH="${HOME}/.local/bin:${PATH}"
+    paperclip_cli --version
+    return 0
+  fi
+
+  command -v pnpm >/dev/null 2>&1 || die "未找到 pnpm"
   paperclip_select_npm_package
-  echo "==> npm 全局安装 Paperclip CLI（${PAPERCLIP_INSTALL_PACKAGE}）…" >&2
-  npm install -g --registry "${PAPERCLIP_INSTALL_REGISTRY}" "${PAPERCLIP_INSTALL_PACKAGE}"
+  echo "==> pnpm 全局安装 Paperclip CLI（${PAPERCLIP_INSTALL_PACKAGE}）…" >&2
+  pnpm add -g --registry "${PAPERCLIP_INSTALL_REGISTRY}" "${PAPERCLIP_INSTALL_PACKAGE}"
   paperclip_cli --version
   echo "安装完成。首次使用可执行: $0 onboard"
 }
@@ -417,10 +430,15 @@ cmd_uninstall() {
   # 先确认再动手：确认通过后 cmd_stop 用 --yes，避免二次追问把卸载拦腰截断。
   nlt_confirm_destructive "确认永久删除 ${PAPERCLIP_SERVICE_HOME}？" PAPERCLIP_UNINSTALL_YES || return 1
   cmd_stop --yes || nlt_ui_warn "停止失败，仍继续卸载。"
-  command -v npm >/dev/null 2>&1 || die "未找到 npm，无法卸载全局 paperclipai"
-  npm uninstall -g paperclipai
+  if [[ -f "${PAPERCLIP_HOME}/cli/.managed-install" ]]; then
+    paperclip_cli uninstall
+    command -v npm >/dev/null 2>&1 && npm uninstall -g paperclipai
+  else
+    command -v pnpm >/dev/null 2>&1 || die "未找到 pnpm，无法卸载全局 paperclipai"
+    pnpm remove -g paperclipai
+  fi
   nlt_safe_rm "${PAPERCLIP_SERVICE_HOME}" || return 1
-  echo "已卸载全局 paperclipai 并删除 ${PAPERCLIP_SERVICE_HOME}。若需彻底清理数据，请自行删除 ${PAPERCLIP_HOME}"
+  echo "已卸载 paperclipai CLI 并删除 ${PAPERCLIP_SERVICE_HOME}。若需彻底清理数据，请自行删除 ${PAPERCLIP_HOME}"
 }
 
 dispatch() {
@@ -448,9 +466,9 @@ dispatch() {
 interactive_main() {
   declare -F nlt_ui_apply_theme >/dev/null 2>&1 && nlt_ui_apply_theme
   if declare -F nlt_ui_banner >/dev/null 2>&1; then
-    nlt_ui_banner "Paperclip 本地服务（npm 全局安装）" "PAPERCLIP_HOME=${PAPERCLIP_HOME}" "PAPERCLIP_NPM_PACKAGE=${PAPERCLIP_NPM_PACKAGE}"
+    nlt_ui_banner "Paperclip 本地服务（pnpm 全局安装）" "PAPERCLIP_HOME=${PAPERCLIP_HOME}" "PAPERCLIP_NPM_PACKAGE=${PAPERCLIP_NPM_PACKAGE}"
   else
-    gum style --bold --foreground 212 "Paperclip 本地服务（npm 全局安装）"
+    gum style --bold --foreground 212 "Paperclip 本地服务（pnpm 全局安装）"
     gum style "PAPERCLIP_HOME=${PAPERCLIP_HOME}"
     gum style "PAPERCLIP_NPM_PACKAGE=${PAPERCLIP_NPM_PACKAGE}"
   fi
