@@ -146,7 +146,8 @@ bash "${NLTDEPLOY_ROOT}/libexec/nltdeploy/paperclip/setup.sh" install >/dev/null
 unset -f node pnpm paperclipai
 PAPERCLIP_MIGRATION_MARKER="${TMP}/paperclip-migrated"
 PAPERCLIP_MANAGED_ENTRYPOINT="${TMP}/paperclip-home/cli/current/node_modules/paperclipai/dist/index.js"
-mkdir -p "${TMP}/paperclip-home/instances/default" "$(dirname "${PAPERCLIP_MANAGED_ENTRYPOINT}")"
+PAPERCLIP_PNPM_BIN="${TMP}/paperclip-pnpm-bin"
+mkdir -p "${PAPERCLIP_PNPM_BIN}" "${TMP}/paperclip-home/instances/default" "$(dirname "${PAPERCLIP_MANAGED_ENTRYPOINT}")"
 printf '{}\n' >"${TMP}/paperclip-home/instances/default/config.json"
 printf '%s\n' 'paperclipai managed install store v1' >"${TMP}/paperclip-home/cli/.managed-install"
 mkdir -p "${HOME}/.local/bin"
@@ -154,13 +155,20 @@ ln -s "${PAPERCLIP_MANAGED_ENTRYPOINT}" "${HOME}/.local/bin/paperclipai"
 {
   printf '%s\n' '#!/usr/bin/env bash'
   printf '%s\n' 'case "${1:-}" in'
-  printf '%s\n' '  install) [[ ! -e "${HOME}/.local/bin/paperclipai" && ! -L "${HOME}/.local/bin/paperclipai" ]] || exit 1; ln -s "$0" "${HOME}/.local/bin/paperclipai" ;;'
-  printf '%s\n' '  --version) echo test ;;'
-  printf '%s\n' '  run) printf "%s\n" "${PAPERCLIP_MIGRATION_AUTO_APPLY:-}" >"${PAPERCLIP_MIGRATION_MARKER}"; trap "exit 0" TERM INT; while :; do sleep 1; done ;;'
+  printf '%s\n' '  uninstall) rm -rf "${PAPERCLIP_HOME}/cli" ;;'
   printf '%s\n' '  *) exit 1 ;;'
   printf '%s\n' 'esac'
 } >"${PAPERCLIP_MANAGED_ENTRYPOINT}"
 chmod +x "${PAPERCLIP_MANAGED_ENTRYPOINT}"
+{
+  printf '%s\n' '#!/usr/bin/env bash'
+  printf '%s\n' 'case "${1:-}" in'
+  printf '%s\n' '  --version) echo test ;;'
+  printf '%s\n' '  run) printf "%s\n" "${PAPERCLIP_MIGRATION_AUTO_APPLY:-}" >"${PAPERCLIP_MIGRATION_MARKER}"; trap "exit 0" TERM INT; while :; do sleep 1; done ;;'
+  printf '%s\n' '  *) exit 1 ;;'
+  printf '%s\n' 'esac'
+} >"${PAPERCLIP_PNPM_BIN}/paperclipai"
+chmod +x "${PAPERCLIP_PNPM_BIN}/paperclipai"
 node() {
   [[ "${1:-}" == "-p" ]] && { echo 20; return; }
   [[ "${1:-}" == "${PAPERCLIP_MANAGED_ENTRYPOINT}" ]] && { shift; bash "${PAPERCLIP_MANAGED_ENTRYPOINT}" "$@"; }
@@ -169,17 +177,22 @@ npm() {
   [[ "$*" == "uninstall -g paperclipai" ]] || return 1
   rm -f "${HOME}/.local/bin/paperclipai"
 }
-pnpm() { return 0; }
+pnpm() {
+  [[ "$*" == "config get registry" ]] && { echo "https://registry.npmjs.org/"; return; }
+  [[ "$*" == "add -g --registry https://registry.npmjs.org paperclipai@latest" ]]
+}
 curl() { [[ "$*" == *"/api/health"* ]] && printf 200; }
 export -f node npm pnpm curl
-PAPERCLIP_MANAGED_ENTRYPOINT="${PAPERCLIP_MANAGED_ENTRYPOINT}" \
+PATH="${PAPERCLIP_PNPM_BIN}:${PATH}" \
+  PAPERCLIP_MANAGED_ENTRYPOINT="${PAPERCLIP_MANAGED_ENTRYPOINT}" \
   PAPERCLIP_MIGRATION_MARKER="${PAPERCLIP_MIGRATION_MARKER}" \
   PAPERCLIP_SERVICE_HOME="${TMP}/paperclip-service" \
   PAPERCLIP_HOME="${TMP}/paperclip-home" \
   PAPERCLIP_PORT=18884 \
   bash "${NLTDEPLOY_ROOT}/libexec/nltdeploy/paperclip/setup.sh" update >/dev/null || exit 1
 [[ "$(<"${PAPERCLIP_MIGRATION_MARKER}")" == true ]] || exit 1
-[[ -L "${HOME}/.local/bin/paperclipai" ]] || exit 1
+[[ ! -e "${TMP}/paperclip-home/cli" ]] || exit 1
+[[ ! -e "${HOME}/.local/bin/paperclipai" ]] || exit 1
 [[ ! -e "${TMP}/paperclip-service/run/paperclip.pid" ]] || exit 1
 unset -f node npm pnpm curl
 bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/services/nlt-services.sh" || exit 1

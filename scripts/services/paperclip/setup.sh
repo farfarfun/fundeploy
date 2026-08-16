@@ -225,20 +225,17 @@ paperclip_select_npm_package() {
 cmd_install() {
   require_node
   ensure_dirs
+  command -v pnpm >/dev/null 2>&1 || die "未找到 pnpm"
 
   local managed_entrypoint="${PAPERCLIP_HOME}/cli/current/node_modules/paperclipai/dist/index.js"
   if [[ -f "${PAPERCLIP_HOME}/cli/.managed-install" ]]; then
     [[ -f "${managed_entrypoint}" ]] || die "Paperclip managed install 已损坏，请重新执行官方 paperclipai install"
-    echo "==> 检测到 Paperclip managed install，更新并修复命令 shim…" >&2
-    command -v npm >/dev/null 2>&1 && npm uninstall -g paperclipai
+    echo "==> 检测到 Paperclip managed install，迁移到 pnpm 全局安装…" >&2
     paperclip_export_runtime_env
-    node "${managed_entrypoint}" install --yes
-    export PATH="${HOME}/.local/bin:${PATH}"
-    paperclip_cli --version
-    return 0
+    node "${managed_entrypoint}" uninstall
+    command -v npm >/dev/null 2>&1 && npm uninstall -g paperclipai
   fi
 
-  command -v pnpm >/dev/null 2>&1 || die "未找到 pnpm"
   paperclip_select_npm_package
   echo "==> pnpm 全局安装 Paperclip CLI（${PAPERCLIP_INSTALL_PACKAGE}）…" >&2
   pnpm add -g --registry "${PAPERCLIP_INSTALL_REGISTRY}" "${PAPERCLIP_INSTALL_PACKAGE}"
