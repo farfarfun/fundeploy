@@ -56,6 +56,9 @@ PAPERCLIP_RUN_DIR="${PAPERCLIP_SERVICE_HOME}/run"
 PAPERCLIP_LOG_DIR="${PAPERCLIP_SERVICE_HOME}/log"
 PID_FILE="${PAPERCLIP_RUN_DIR}/paperclip.pid"
 LOG_FILE="${PAPERCLIP_LOG_DIR}/paperclip.run.log"
+HOST_VERSION_FIX_PID_FILE="${PAPERCLIP_RUN_DIR}/paperclip-host-version-fix.pid"
+HOST_VERSION_LOADER_FILE="${PAPERCLIP_SERVICE_HOME}/paperclip-host-version-loader.mjs"
+HOST_VERSION_REGISTER_FILE="${PAPERCLIP_SERVICE_HOME}/paperclip-host-version-register.mjs"
 
 usage() {
   cat <<USAGE
@@ -94,6 +97,28 @@ ensure_dirs() {
   mkdir -p "${PAPERCLIP_RUN_DIR}" "${PAPERCLIP_LOG_DIR}"
 }
 
+paperclip_prepare_host_version_fix() {
+  # ponytail: remove this loader after Paperclip passes serverVersion to createApp upstream.
+  cat >"${HOST_VERSION_LOADER_FILE}" <<'EOF'
+const needle = 'hostVersion: opts.hostVersion ?? "0.0.0"';
+const replacement = 'hostVersion: opts.hostVersion ?? process.env.PAPERCLIP_BUILD_VERSION ?? "0.0.0"';
+
+export async function load(url, context, nextLoad) {
+  const loaded = await nextLoad(url, context);
+  if (!url.endsWith('/@paperclipai/server/dist/app.js') || loaded.source == null) return loaded;
+  const source = typeof loaded.source === 'string'
+    ? loaded.source
+    : Buffer.from(loaded.source).toString('utf8');
+  return source.includes(needle) ? { ...loaded, source: source.replace(needle, replacement) } : loaded;
+}
+EOF
+  cat >"${HOST_VERSION_REGISTER_FILE}" <<'EOF'
+import { register } from 'node:module';
+register('./paperclip-host-version-loader.mjs', import.meta.url);
+EOF
+  PAPERCLIP_NODE_REGISTER_URL="$(node -e 'process.stdout.write(require("node:url").pathToFileURL(process.argv[1]).href)' "${HOST_VERSION_REGISTER_FILE}")"
+}
+
 process_alive() {
   local pid="$1"
   kill -0 "$pid" 2>/dev/null
@@ -121,11 +146,24 @@ require_node() {
 }
 
 paperclip_export_runtime_env() {
+  local version import_option
   export HOST="${PAPERCLIP_HOST}"
   export PORT="${PAPERCLIP_PORT}"
   export DATABASE_URL="${PAPERCLIP_DATABASE_URL}"
   export PAPERCLIP_AUTH_DISABLE_SIGN_UP="${PAPERCLIP_AUTH_DISABLE_SIGN_UP}"
   export PAPERCLIP_HOME
+  if [[ -n "${PAPERCLIP_NODE_REGISTER_URL:-}" ]]; then
+    if [[ -z "${PAPERCLIP_BUILD_VERSION:-}" ]]; then
+      version="$(paperclipai --version 2>/dev/null | head -1 || true)"
+      version="${version%% *}"
+      [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]] && export PAPERCLIP_BUILD_VERSION="$version"
+    fi
+    import_option="--import=${PAPERCLIP_NODE_REGISTER_URL}"
+    case " ${NODE_OPTIONS:-} " in
+      *" ${import_option} "*) ;;
+      *) export NODE_OPTIONS="${NODE_OPTIONS:+${NODE_OPTIONS} }${import_option}" ;;
+    esac
+  fi
 }
 
 paperclip_prompt_sign_up_policy() {
@@ -247,6 +285,7 @@ cmd_plugin_install() {
   require_node
   if [[ -n "$package" ]]; then
     shift
+    paperclip_ensure_running_host_version_fix
     paperclip_cli plugin install "$package" "$@"
     return
   fi
@@ -266,6 +305,7 @@ cmd_plugin_install() {
       package="$(paperclip_plugin_package_from_repo "${urls[$i]}")" || \
       die "${labels[$i]%% - *} 没有可安装的 Paperclip npm 包；请查看 ${urls[$i]}"
     echo "==> 安装 Paperclip 插件 ${package}（来源: ${urls[$i]}）" >&2
+    paperclip_ensure_running_host_version_fix
     paperclip_cli plugin install "$package"
     return
   done
@@ -285,6 +325,22 @@ cmd_plugin() {
 
 paperclip_server_pid() {
   port_listener_pid "${PAPERCLIP_PORT}"
+}
+
+paperclip_ensure_running_host_version_fix() {
+  local pid server_pid fix_pid=""
+  server_pid="$(paperclip_server_pid)"
+  [[ -n "$server_pid" ]] || return 0
+  [[ -f "$HOST_VERSION_FIX_PID_FILE" ]] && fix_pid="$(tr -d '[:space:]' <"$HOST_VERSION_FIX_PID_FILE" || true)"
+  [[ -n "$fix_pid" ]] && process_alive "$fix_pid" && return 0
+
+  pid="$(read_pid)"
+  if [[ -n "$pid" ]] && process_alive "$pid"; then
+    echo "==> 重启 Paperclip，修复插件主机版本识别…" >&2
+    cmd_restart
+    return
+  fi
+  die "当前 Paperclip 不是由 nltdeploy 后台管理，请先用 nltdeploy service paperclip restart 重启后再安装插件"
 }
 
 paperclip_curl_health_http_code() {
@@ -423,13 +479,15 @@ cmd_start() {
   echo "==> 启动 Paperclip（paperclipai run），日志: ${LOG_FILE}" >&2
   echo "    监听: http://${PAPERCLIP_HOST}:${PAPERCLIP_PORT}" >&2
   echo "    允许注册: $( [[ "${PAPERCLIP_AUTH_DISABLE_SIGN_UP}" == "true" ]] && printf '%s' '否' || printf '%s' '是' )" >&2
+  paperclip_prepare_host_version_fix
   paperclip_export_runtime_env
   nohup paperclipai run >>"${LOG_FILE}" 2>&1 &
   local cpid=$!
   echo "$cpid" >"$PID_FILE"
+  echo "$cpid" >"$HOST_VERSION_FIX_PID_FILE"
   sleep 1
   if ! process_alive "$cpid"; then
-    rm -f "$PID_FILE"
+    rm -f "$PID_FILE" "$HOST_VERSION_FIX_PID_FILE"
     paperclip_start_failure_hints
     die "进程已退出，启动失败。若是首次使用，请先执行: $0 onboard"
   fi
@@ -445,7 +503,7 @@ cmd_start() {
     return 0
   fi
   if [[ "$wr" -eq 2 ]]; then
-    rm -f "$PID_FILE"
+    rm -f "$PID_FILE" "$HOST_VERSION_FIX_PID_FILE"
     paperclip_start_failure_hints
     die "进程已退出，启动失败。若是首次使用，请先执行: $0 onboard"
   fi
@@ -466,7 +524,9 @@ cmd_run() {
   echo "==> 前台启动 Paperclip（paperclipai run），按 Ctrl+C 结束；不写 PID。" >&2
   echo "    监听: http://${PAPERCLIP_HOST}:${PAPERCLIP_PORT}" >&2
   echo "    允许注册: $( [[ "${PAPERCLIP_AUTH_DISABLE_SIGN_UP}" == "true" ]] && printf '%s' '否' || printf '%s' '是' )" >&2
+  paperclip_prepare_host_version_fix
   paperclip_export_runtime_env
+  echo "$$" >"$HOST_VERSION_FIX_PID_FILE"
   exec paperclipai run
 }
 
@@ -508,6 +568,7 @@ cmd_stop() {
   if [[ -n "$server_pid" ]] && { [[ -z "$pid" ]] || [[ "$server_pid" != "$pid" ]]; }; then
     kill "$server_pid" 2>/dev/null || true
   fi
+  rm -f "$HOST_VERSION_FIX_PID_FILE"
   echo "已停止。"
 }
 

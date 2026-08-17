@@ -201,6 +201,12 @@ chmod +x "${PAPERCLIP_MANAGED_ENTRYPOINT}"
 chmod +x "${PAPERCLIP_PNPM_BIN}/paperclipai"
 node() {
   [[ "${1:-}" == "-p" ]] && { echo 20; return; }
+  if [[ "${1:-}" == "-e" ]]; then
+    local last
+    for last in "$@"; do :; done
+    printf 'file://%s' "$last"
+    return
+  fi
   [[ "${1:-}" == "${PAPERCLIP_MANAGED_ENTRYPOINT}" ]] && { shift; bash "${PAPERCLIP_MANAGED_ENTRYPOINT}" "$@"; }
 }
 npm() {
@@ -225,6 +231,20 @@ PATH="${PAPERCLIP_PNPM_BIN}:${PATH}" \
 [[ ! -e "${HOME}/.local/bin/paperclipai" ]] || exit 1
 [[ ! -e "${TMP}/paperclip-service/run/paperclip.pid" ]] || exit 1
 unset -f node npm pnpm curl
+PAPERCLIP_LOADER_FIXTURE="${TMP}/paperclip-loader-fixture"
+mkdir -p "${PAPERCLIP_LOADER_FIXTURE}/node_modules/@paperclipai/server/dist"
+printf '%s\n' '{"type":"module"}' >"${PAPERCLIP_LOADER_FIXTURE}/node_modules/@paperclipai/server/package.json"
+printf '%s\n' \
+  'export function getHostVersion(opts = {}) {' \
+  '  return ({ hostVersion: opts.hostVersion ?? "0.0.0" }).hostVersion;' \
+  '}' >"${PAPERCLIP_LOADER_FIXTURE}/node_modules/@paperclipai/server/dist/app.js"
+printf '%s\n' \
+  'import { getHostVersion } from "./node_modules/@paperclipai/server/dist/app.js";' \
+  'if (getHostVersion() !== process.env.PAPERCLIP_BUILD_VERSION) process.exit(1);' \
+  >"${PAPERCLIP_LOADER_FIXTURE}/check.mjs"
+PAPERCLIP_BUILD_VERSION=2026.811.0-nightly.1 \
+  node --import="${TMP}/paperclip-service/paperclip-host-version-register.mjs" \
+  "${PAPERCLIP_LOADER_FIXTURE}/check.mjs" || exit 1
 bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/services/nlt-services.sh" || exit 1
 bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/port-kill/setup.sh" || exit 1
 bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/brew/setup.sh" || exit 1
