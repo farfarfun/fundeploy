@@ -41,6 +41,19 @@ _run_nogum() {
     bash "${_SCRIPT}" "$@" 2>&1
 }
 
+_run_nogum_tty() {
+  local answer="$1" home="$2"
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    printf '%s\n' "${answer}" | script -q /dev/null env \
+      PATH="${_NOGUM}:/usr/bin:/bin" HOME="${home}" \
+      CODE_SERVER_SERVICE_HOME="${home}/opt/code-server" bash "${_SCRIPT}" stop 2>&1
+  else
+    printf '%s\n' "${answer}" | script -q -e -c \
+      "env PATH='${_NOGUM}:/usr/bin:/bin' HOME='${home}' CODE_SERVER_SERVICE_HOME='${home}/opt/code-server' bash '${_SCRIPT}' stop" \
+      /dev/null 2>&1
+  fi
+}
+
 echo "== 缺 gum 时 stop 必须真正停止进程（非交互）=="
 _H="${_WORK}/h1"; mkdir -p "${_H}"
 _spawn_fake_service "${_H}"
@@ -55,9 +68,7 @@ echo "== 缺 gum + 有 TTY，回答 y 时 stop 必须真正停止 =="
 if (( _HAS_PTY )); then
   _H="${_WORK}/h2"; mkdir -p "${_H}"
   _spawn_fake_service "${_H}"
-  _out="$(printf 'y\n' | script -q -e -c \
-    "env PATH='${_NOGUM}:/usr/bin:/bin' HOME='${_H}' CODE_SERVER_SERVICE_HOME='${_H}/opt/code-server' bash '${_SCRIPT}' stop" \
-    /dev/null 2>&1)"
+  _out="$(_run_nogum_tty y "${_H}")"
   sleep 1
   assert_not_contains "不得出现 gum 未找到"       "${_out}" "command not found"
   assert_contains     "应降级为 read y/N 提问"    "${_out}" "[y/N]"
@@ -70,9 +81,7 @@ echo "== 缺 gum + 有 TTY，回答 n 时必须保留进程且不谎报 =="
 if (( _HAS_PTY )); then
   _H="${_WORK}/h3"; mkdir -p "${_H}"
   _spawn_fake_service "${_H}"
-  _out="$(printf 'n\n' | script -q -e -c \
-    "env PATH='${_NOGUM}:/usr/bin:/bin' HOME='${_H}' CODE_SERVER_SERVICE_HOME='${_H}/opt/code-server' bash '${_SCRIPT}' stop" \
-    /dev/null 2>&1)"
+  _out="$(_run_nogum_tty n "${_H}")"
   sleep 1
   assert_true         "回答 n 后进程应仍在运行" _alive "${_PID}"
   assert_not_contains "拒绝时不得谎称已停止"    "${_out}" "已停止"

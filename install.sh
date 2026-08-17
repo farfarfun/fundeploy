@@ -43,7 +43,7 @@ _guard_nltdeploy_root() {
   root="$(cd "${NLTDEPLOY_ROOT}" && pwd -P)"
   hp="$(cd "${HOME}" && pwd -P)"
   case "${root}" in
-    / | "${hp}" | /bin | /boot | /dev | /etc | /home | /lib* | /opt | /proc | /root | /run | /sbin | /srv | /sys | /tmp | /usr | /var | /Users | /Applications | /System | /Library)
+    / | "${hp}" | /bin | /boot | /dev | /etc | /home | /lib* | /opt | /proc | /root | /run | /sbin | /srv | /sys | /tmp | /usr | /var | /private | /private/etc | /private/tmp | /private/var | /Users | /Applications | /System | /Library)
       die "拒绝使用系统目录或 \$HOME 作为 NLTDEPLOY_ROOT: ${root}" ;;
   esac
 

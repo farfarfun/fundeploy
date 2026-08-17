@@ -42,7 +42,7 @@ NLTDEPLOY_SKIP_GIT_PULL=0 \
 [[ -f "${TMP}/preupdated-ok" ]] || { echo "pre-updated source install.sh did not take over" >&2; exit 1; }
 
 root_guard="$(sed -n '/^_guard_nltdeploy_root() {/,/^}/p' "${ROOT}/install.sh")"
-for unsafe_root in relative / /tmp "${HOME}"; do
+for unsafe_root in relative / /etc /tmp /var "${HOME}"; do
   if (die() { exit 1; }; eval "${root_guard}"; NLTDEPLOY_ROOT="${unsafe_root}"; _guard_nltdeploy_root) 2>/dev/null; then
     echo "unsafe NLTDEPLOY_ROOT accepted: ${unsafe_root}" >&2
     exit 1
