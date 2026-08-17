@@ -7,6 +7,7 @@
 #   ./setup.sh install      # pnpm add -g paperclipai@latest
 #   ./setup.sh update       # 升级后自动迁移数据库，并保持原运行状态
 #   ./setup.sh onboard      # 首次配置（默认 NONINTERACTIVE=1 时自动加 --yes）
+#   ./setup.sh plugin install # 从 awesome-paperclip 选择并安装插件
 #   ./setup.sh start        # 后台启动（paperclipai run）
 #   ./setup.sh run          # 前台启动（终端附着；不写 PID）
 #   ./setup.sh stop / restart / status / uninstall
@@ -20,6 +21,7 @@
 #   PAPERCLIP_AUTH_DISABLE_SIGN_UP  是否禁止注册（默认 true）
 #   PAPERCLIP_NPM_REGISTRY   用于版本对照的公共 npm registry（默认 https://registry.npmjs.org）
 #   PAPERCLIP_NPM_PACKAGE    npm 包规格（默认 paperclipai@latest）
+#   PAPERCLIP_PLUGIN_CATALOG_URL  插件清单（默认 awesome-paperclip README）
 #   PAPERCLIP_START_HEALTH_TIMEOUT_SEC  start 时等待 /api/health 健康检查最长秒数（默认 60）
 #   PAPERCLIP_SKIP_START_HEALTH_CHECK=1 跳过 HTTP 健康检查
 #   NONINTERACTIVE=1         跳过 gum 确认；onboard 默认加 --yes
@@ -48,6 +50,7 @@ PAPERCLIP_AUTH_DISABLE_SIGN_UP="${PAPERCLIP_AUTH_DISABLE_SIGN_UP:-true}"
 PAPERCLIP_NPM_REGISTRY="${PAPERCLIP_NPM_REGISTRY:-https://registry.npmjs.org}"
 # npm 的 paperclip 是另一个 UI 工具；Paperclip AI 官方包名是 paperclipai。
 PAPERCLIP_NPM_PACKAGE="${PAPERCLIP_NPM_PACKAGE:-paperclipai@latest}"
+PAPERCLIP_PLUGIN_CATALOG_URL="${PAPERCLIP_PLUGIN_CATALOG_URL:-https://raw.githubusercontent.com/gsxdsm/awesome-paperclip/main/README.md}"
 
 PAPERCLIP_RUN_DIR="${PAPERCLIP_SERVICE_HOME}/run"
 PAPERCLIP_LOG_DIR="${PAPERCLIP_SERVICE_HOME}/log"
@@ -64,6 +67,9 @@ usage() {
   install     pnpm 全局安装 ${PAPERCLIP_NPM_PACKAGE}
   update      全局升级后自动迁移数据库，并保持原运行状态
   onboard     首次配置；NONINTERACTIVE=1 时默认追加 --yes
+  plugin list                  列出 awesome-paperclip 收录的插件
+  plugin install [npm-package] 安装插件；不指定包名时从清单选择
+  plugin installed             列出当前已安装的插件
   start       后台启动: http://${PAPERCLIP_HOST}:${PAPERCLIP_PORT}
   run         前台启动: 同 start 的运行环境，但终端附着、不写 PID
   stop        停止后台进程
@@ -152,6 +158,129 @@ paperclip_cli() {
   require_paperclip_cli
   paperclip_export_runtime_env
   paperclipai "$@"
+}
+
+paperclip_plugin_catalog_records() {
+  local markdown line in_plugins=0 found=0 name rest url description
+  markdown="$(curl -fsSL "${PAPERCLIP_PLUGIN_CATALOG_URL}")" || {
+    echo "无法下载插件清单: ${PAPERCLIP_PLUGIN_CATALOG_URL}" >&2
+    return 1
+  }
+
+  while IFS= read -r line; do
+    line="${line%$'\r'}"
+    if [[ "$line" == "## Plugins" ]]; then
+      in_plugins=1
+      continue
+    fi
+    (( in_plugins == 1 )) || continue
+    [[ "$line" != "## "* ]] || break
+    [[ "$line" == "- ["* && "$line" == *"](https://github.com/"* ]] || continue
+
+    name="${line#- \[}"
+    name="${name%%\]*}"
+    rest="${line#*\](}"
+    url="${rest%%\)*}"
+    description="${line#*) - }"
+    [[ "$description" != "$line" ]] || description="${line#*) — }"
+    printf '%s\t%s\t%s\n' "$name" "$url" "$description"
+    found=$((found + 1))
+  done <<<"${markdown}"
+
+  (( found > 0 )) || {
+    echo "插件清单中未找到 Plugins 条目" >&2
+    return 1
+  }
+}
+
+paperclip_plugin_package_from_repo() {
+  local repo_url="$1" path owner repo tail branch subdir raw_url package_json
+  repo_url="${repo_url%%\?*}"
+  repo_url="${repo_url%%\#*}"
+  path="${repo_url#https://github.com/}"
+  [[ "$path" != "$repo_url" && "$path" == */* ]] || return 1
+
+  owner="${path%%/*}"
+  path="${path#*/}"
+  repo="${path%%/*}"
+  repo="${repo%.git}"
+  tail=""
+  [[ "$path" == */* ]] && tail="${path#*/}"
+
+  if [[ "$tail" == tree/*/* ]]; then
+    tail="${tail#tree/}"
+    branch="${tail%%/*}"
+    subdir="${tail#*/}"
+    raw_url="https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${subdir}/package.json"
+  else
+    raw_url="https://raw.githubusercontent.com/${owner}/${repo}/HEAD/package.json"
+  fi
+
+  package_json="$(curl -fsSL "$raw_url")" || return 1
+  printf '%s' "$package_json" | node -e '
+    const fs = require("node:fs");
+    const pkg = JSON.parse(fs.readFileSync(0, "utf8"));
+    if (typeof pkg.name !== "string" || !pkg.paperclipPlugin) process.exit(1);
+    process.stdout.write(pkg.name);
+  ' 2>/dev/null
+}
+
+paperclip_plugin_package_from_description() {
+  local description="$1" package
+  [[ "$description" == *"https://www.npmjs.com/package/"* ]] || return 1
+  package="${description#*https://www.npmjs.com/package/}"
+  package="${package%%\)*}"
+  [[ -n "$package" && "$package" != -* && "$package" != *[[:space:]]* ]] || return 1
+  printf '%s' "$package"
+}
+
+cmd_plugin_list() {
+  local catalog name url description
+  catalog="$(paperclip_plugin_catalog_records)" || die "读取 awesome-paperclip 插件清单失败"
+  while IFS=$'\t' read -r name url description; do
+    printf '%s\n  %s\n  %s\n' "$name" "$description" "$url"
+  done <<<"${catalog}"
+}
+
+cmd_plugin_install() {
+  local package="${1:-}" catalog pick name url description i
+  require_node
+  if [[ -n "$package" ]]; then
+    shift
+    paperclip_cli plugin install "$package" "$@"
+    return
+  fi
+
+  catalog="$(paperclip_plugin_catalog_records)" || die "读取 awesome-paperclip 插件清单失败"
+  local -a labels=() urls=() descriptions=()
+  while IFS=$'\t' read -r name url description; do
+    labels+=("${name} - ${description}")
+    urls+=("${url}")
+    descriptions+=("${description}")
+  done <<<"${catalog}"
+
+  pick="$(nlt_ui_choose "Paperclip / 从 awesome-paperclip 选择插件" "${labels[@]}")" || return 0
+  for i in "${!labels[@]}"; do
+    [[ "${labels[$i]}" == "$pick" ]] || continue
+    package="$(paperclip_plugin_package_from_description "${descriptions[$i]}")" || \
+      package="$(paperclip_plugin_package_from_repo "${urls[$i]}")" || \
+      die "${labels[$i]%% - *} 没有可安装的 Paperclip npm 包；请查看 ${urls[$i]}"
+    echo "==> 安装 Paperclip 插件 ${package}（来源: ${urls[$i]}）" >&2
+    paperclip_cli plugin install "$package"
+    return
+  done
+  die "无法识别所选插件"
+}
+
+cmd_plugin() {
+  local action="${1:-install}"
+  [[ $# -eq 0 ]] || shift
+  case "$action" in
+    list) cmd_plugin_list ;;
+    install) cmd_plugin_install "$@" ;;
+    installed) paperclip_cli plugin list "$@" ;;
+    *) die "未知插件命令: ${action}（支持 list / install / installed）" ;;
+  esac
 }
 
 paperclip_server_pid() {
@@ -445,6 +574,7 @@ dispatch() {
     install) cmd_install ;;
     update) cmd_update ;;
     onboard) cmd_onboard "$@" ;;
+    plugin) cmd_plugin "$@" ;;
     start) cmd_start ;;
     run) cmd_run ;;
     stop) cmd_stop ;;
@@ -474,7 +604,7 @@ interactive_main() {
   while true; do
     local pick
     pick="$(nlt_ui_choose "nltdeploy / service / paperclip / 选择动作" \
-      "install" "update" "onboard" "start" "run" "stop" "restart" "status" "uninstall" "help" "quit")" || break
+      "install" "update" "onboard" "plugin install" "start" "run" "stop" "restart" "status" "uninstall" "help" "quit")" || break
     [[ -z "$pick" ]] && break
     case "$pick" in
       quit) break ;;
@@ -483,7 +613,11 @@ interactive_main() {
         paperclip_prompt_sign_up_policy || continue
         ;;
     esac
-    ( dispatch "$pick" )
+    if [[ "$pick" == "plugin install" ]]; then
+      ( dispatch plugin install )
+    else
+      ( dispatch "$pick" )
+    fi
     echo ""
   done
   set -e
