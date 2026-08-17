@@ -130,32 +130,18 @@ export -f node pnpm paperclipai
 bash "${NLTDEPLOY_ROOT}/libexec/nltdeploy/paperclip/setup.sh" install >/dev/null || exit 1
 unset -f node pnpm paperclipai
 PAPERCLIP_PLUGIN_MARKER="${TMP}/paperclip-plugin-installed"
-curl() {
-  case "$*" in
-    *awesome-paperclip*)
-      printf '%s\n' \
-        '## Plugins' \
-        '' \
-        '- [paperclip-aperture](https://github.com/tomismeta/paperclip-aperture) - Alternative Focus view.' \
-        '' \
-        '## Tools & Utilities'
-      ;;
-    *tomismeta/paperclip-aperture/HEAD/package.json*)
-      printf '%s\n' '{"name":"@tomismeta/paperclip-aperture","paperclipPlugin":{"manifest":"./dist/manifest.js"}}'
-      ;;
-    *) return 1 ;;
-  esac
-}
+curl() { return 99; }
 gum() {
-  local line
+  local line pick=""
   while IFS= read -r line; do
-    [[ "$line" == paperclip-aperture\ -* ]] && printf '%s\n' "$line"
+    [[ "$line" == paperclip-aperture\ -* ]] && pick="$line"
   done
+  [[ -n "$pick" ]] && printf '%s\n' "$pick"
 }
 paperclipai() { printf '%s\n' "$*" >"${PAPERCLIP_PLUGIN_MARKER}"; }
 export PAPERCLIP_PLUGIN_MARKER
 export -f curl gum paperclipai
-bash "${NLTDEPLOY_ROOT}/libexec/nltdeploy/paperclip/setup.sh" plugin list | grep -q '^paperclip-aperture$' || exit 1
+bash "${NLTDEPLOY_ROOT}/libexec/nltdeploy/paperclip/setup.sh" plugin list | grep -q '^paperclip-aperture (@tomismeta/paperclip-aperture)$' || exit 1
 bash "${NLTDEPLOY_ROOT}/libexec/nltdeploy/paperclip/setup.sh" plugin install >/dev/null || exit 1
 [[ "$(<"${PAPERCLIP_PLUGIN_MARKER}")" == "plugin install @tomismeta/paperclip-aperture" ]] || exit 1
 unset -f curl gum paperclipai
