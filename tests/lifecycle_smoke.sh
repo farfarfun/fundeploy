@@ -25,7 +25,7 @@ command -v script >/dev/null 2>&1 && _HAS_PTY=1
 # 起一个占位进程并写好 PID 文件，模拟「服务正在运行」。
 _spawn_fake_service() {
   local home="$1"
-  sleep 300 &
+  sleep 30 >/dev/null 2>&1 &
   _PID=$!
   mkdir -p "${home}/opt/code-server/run"
   printf '%s\n' "${_PID}" >"${home}/opt/code-server/run/code-server.pid"
@@ -44,7 +44,7 @@ _run_nogum() {
 _run_nogum_tty() {
   local answer="$1" home="$2"
   if [[ "$(uname -s)" == "Darwin" ]]; then
-    printf '%s\n' "${answer}" | script -q /dev/null env \
+    { sleep 1; printf '%s\n' "${answer}"; } | script -q /dev/null env \
       PATH="${_NOGUM}:/usr/bin:/bin" HOME="${home}" \
       CODE_SERVER_SERVICE_HOME="${home}/opt/code-server" bash "${_SCRIPT}" stop 2>&1
   else

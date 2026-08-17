@@ -258,12 +258,19 @@ systemctl() {
   [[ "${1:-}" == "cat" ]] && return 0
   printf 'systemctl:%s\n' "$*"
 }
+brew() { printf 'brew:%s\n' "$*"; }
 curl() { return 1; }
 sudo() { "$@"; }
-export -f systemctl curl sudo
-CODE_SERVER_OFFICIAL_USER=tester "${NLTDEPLOY_ROOT}/bin/nltdeploy" service code-server official start | grep -q "systemctl:enable --now code-server@tester" || exit 1
-CODE_SERVER_OFFICIAL_USER=tester "${NLTDEPLOY_ROOT}/bin/nltdeploy" service code-server official restart | grep -q "systemctl:restart code-server@tester" || exit 1
-CODE_SERVER_OFFICIAL_USER=tester "${NLTDEPLOY_ROOT}/bin/nltdeploy" service code-server status | grep -q "systemctl:status code-server@tester --no-pager" || exit 1
+export -f systemctl brew curl sudo
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  "${NLTDEPLOY_ROOT}/bin/nltdeploy" service code-server official start | grep -q "brew:services start code-server" || exit 1
+  "${NLTDEPLOY_ROOT}/bin/nltdeploy" service code-server official restart | grep -q "brew:services restart code-server" || exit 1
+  "${NLTDEPLOY_ROOT}/bin/nltdeploy" service code-server status | grep -q "brew:services info code-server" || exit 1
+else
+  CODE_SERVER_OFFICIAL_USER=tester "${NLTDEPLOY_ROOT}/bin/nltdeploy" service code-server official start | grep -q "systemctl:enable --now code-server@tester" || exit 1
+  CODE_SERVER_OFFICIAL_USER=tester "${NLTDEPLOY_ROOT}/bin/nltdeploy" service code-server official restart | grep -q "systemctl:restart code-server@tester" || exit 1
+  CODE_SERVER_OFFICIAL_USER=tester "${NLTDEPLOY_ROOT}/bin/nltdeploy" service code-server status | grep -q "systemctl:status code-server@tester --no-pager" || exit 1
+fi
 out="$(HOME="${TMP}/manual-home" PATH=/usr/bin:/bin CODE_SERVER_SERVICE_HOME="${TMP}/manual-code-server" CODE_SERVER_BIND=127.0.0.1:59997 "${NLTDEPLOY_ROOT}/bin/nltdeploy" service code-server manual status)"
 grep -q "CODE_SERVER_SERVICE_HOME" <<<"${out}" || exit 1
 ! grep -q "systemctl:" <<<"${out}" || exit 1
@@ -272,7 +279,7 @@ grep -q "CODE_SERVER_SERVICE_HOME" <<<"${out}" || exit 1
 out="$(SUB2API_SERVICE_HOME="${TMP}/manual-sub2api" SUB2API_PORT=59998 "${NLTDEPLOY_ROOT}/bin/nltdeploy" service sub2api manual status)"
 grep -q "PID 文件" <<<"${out}" || exit 1
 ! grep -q "systemctl:" <<<"${out}" || exit 1
-unset -f systemctl curl sudo
+unset -f systemctl brew curl sudo
 out="$(NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" tool list)"
 grep -q "github-net" <<<"${out}" || exit 1
 grep -q "brew" <<<"${out}" || exit 1
