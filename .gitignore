@@ -29,5 +29,5 @@ logs/
 Thumbs.db
 
 # ── 外部工具留下的缓存 ───────────────────────────────────────────
-# .pytest_cache 并非本仓库测试产生（本仓库无 Python），而是外部 nltbuild 工具留下的。
+# .pytest_cache 并非本仓库测试产生（本仓库无 Python），而是外部 funbuild 工具留下的。
 .pytest_cache/
