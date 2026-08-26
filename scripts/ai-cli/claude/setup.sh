@@ -18,10 +18,10 @@ PACKAGE="@anthropic-ai/claude-code"
 
 usage() {
   cat <<'EOF'
-用法: nltdeploy ai claude [official|brew|npm|pnpm] <install|update|uninstall|status>
+用法: fundeploy ai claude [official|brew|npm|pnpm] <install|update|uninstall|status>
 
 省略安装方式时默认 official。官方安装器额外参数会原样传递，例如:
-  nltdeploy ai claude official install stable
+  fundeploy ai claude official install stable
 EOF
 }
 
@@ -38,7 +38,7 @@ official_uninstall() {
 }
 
 brew_action() {
-  ai_require brew "请先运行 nltdeploy tool brew install"
+  ai_require brew "请先运行 fundeploy tool brew install"
   local action="$1" cask="${CLAUDE_BREW_CASK:-claude-code}"
   case "${action}" in
     install) brew install --cask "${cask}" ;;

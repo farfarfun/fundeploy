@@ -38,9 +38,9 @@ _nlt_gh_dl_parse_https() {
 _nlt_github_download_resolve_url() {
   local url="$1"
   local mode hub_pre raw_base
-  mode="${NLTDEPLOY_GITHUB_DOWNLOAD_MODE:-off}"
-  hub_pre="${NLTDEPLOY_GITHUB_HUB_PROXY_PREFIX:-}"
-  raw_base="${NLTDEPLOY_GITHUB_RAW_MIRROR_BASE:-}"
+  mode="${FUNDEPLOY_GITHUB_DOWNLOAD_MODE:-off}"
+  hub_pre="${FUNDEPLOY_GITHUB_HUB_PROXY_PREFIX:-}"
+  raw_base="${FUNDEPLOY_GITHUB_RAW_MIRROR_BASE:-}"
 
   if [[ -z "$url" ]]; then
     printf '%s\n' "$url"
@@ -70,11 +70,11 @@ _nlt_github_download_resolve_url() {
   # 而 README 又主动建议用户设置它们 —— "粘贴这行 ghproxy 就能提速" 正是最容易
   # 被从随手搜到的博客里抄走的配置。至少不能允许降级到明文 http://。
   if [[ -n "$hub_pre" && "$hub_pre" != https://* ]]; then
-    printf '%s\n' "[nltdeploy download] 拒绝非 https:// 的 NLTDEPLOY_GITHUB_HUB_PROXY_PREFIX（${hub_pre}），本次不改写。" >&2
+    printf '%s\n' "[fundeploy download] 拒绝非 https:// 的 FUNDEPLOY_GITHUB_HUB_PROXY_PREFIX（${hub_pre}），本次不改写。" >&2
     hub_pre=""
   fi
   if [[ -n "$raw_base" && "$raw_base" != https://* ]]; then
-    printf '%s\n' "[nltdeploy download] 拒绝非 https:// 的 NLTDEPLOY_GITHUB_RAW_MIRROR_BASE（${raw_base}），本次不改写。" >&2
+    printf '%s\n' "[fundeploy download] 拒绝非 https:// 的 FUNDEPLOY_GITHUB_RAW_MIRROR_BASE（${raw_base}），本次不改写。" >&2
     raw_base=""
   fi
 
@@ -85,7 +85,7 @@ _nlt_github_download_resolve_url() {
       return 0
     fi
     local out="${hub_pre}${url}"
-    printf '%s\n' "[nltdeploy download] URL rewrite (hub proxy): ${url} -> ${out}" >&2
+    printf '%s\n' "[fundeploy download] URL rewrite (hub proxy): ${url} -> ${out}" >&2
     printf '%s\n' "$out"
     return 0
   fi
@@ -97,21 +97,21 @@ _nlt_github_download_resolve_url() {
     fi
     local new_url="${raw_base%/}${path}"
     if [[ "$new_url" != "$url" ]]; then
-      printf '%s\n' "[nltdeploy download] URL rewrite (mirror_raw): ${url} -> ${new_url}" >&2
+      printf '%s\n' "[fundeploy download] URL rewrite (mirror_raw): ${url} -> ${new_url}" >&2
     fi
     printf '%s\n' "$new_url"
     return 0
   fi
 
   if [[ "$mode" == "hub_proxy" ]] && [[ -z "$hub_pre" ]]; then
-    printf '%s\n' "[nltdeploy download] NLTDEPLOY_GITHUB_DOWNLOAD_MODE=hub_proxy 但未设置 NLTDEPLOY_GITHUB_HUB_PROXY_PREFIX，跳过改写。" >&2
+    printf '%s\n' "[fundeploy download] FUNDEPLOY_GITHUB_DOWNLOAD_MODE=hub_proxy 但未设置 FUNDEPLOY_GITHUB_HUB_PROXY_PREFIX，跳过改写。" >&2
   fi
 
   printf '%s\n' "$url"
   return 0
 }
 
-# 与 nltdeploy tool download curl 子命令相同：扫描参数中的 HTTPS URL 并改写后调用 curl。
+# 与 fundeploy tool download curl 子命令相同：扫描参数中的 HTTPS URL 并改写后调用 curl。
 _nlt_github_download_curl() {
   command -v curl >/dev/null 2>&1 || {
     echo "错误: 需要 curl。" >&2
@@ -133,10 +133,10 @@ _nlt_github_download_curl() {
   curl --proto '=https' --proto-redir '=https' --tlsv1.2 "${args[@]}"
 }
 
-# 未启用任何镜像/前缀策略时，向 stderr 打一行说明（NLTDEPLOY_GITHUB_DOWNLOAD_HINT=0 可关）。
+# 未启用任何镜像/前缀策略时，向 stderr 打一行说明（FUNDEPLOY_GITHUB_DOWNLOAD_HINT=0 可关）。
 _nlt_github_download_print_accel_hint() {
-  [[ "${NLTDEPLOY_GITHUB_DOWNLOAD_HINT:-1}" == "0" ]] && return 0
-  if [[ -n "${NLTDEPLOY_GITHUB_HUB_PROXY_PREFIX:-}" ]]; then return 0; fi
-  if [[ "${NLTDEPLOY_GITHUB_DOWNLOAD_MODE:-off}" != "off" ]]; then return 0; fi
-  printf '%s\n' "提示: 当前为 GitHub 直连下载。受限网络可设置 NLTDEPLOY_GITHUB_HUB_PROXY_PREFIX，或 NLTDEPLOY_GITHUB_DOWNLOAD_MODE=mirror_raw 与 NLTDEPLOY_GITHUB_RAW_MIRROR_BASE（见 scripts/tools/download/README.md）。NLTDEPLOY_GITHUB_DOWNLOAD_HINT=0 可隐藏本行。" >&2
+  [[ "${FUNDEPLOY_GITHUB_DOWNLOAD_HINT:-1}" == "0" ]] && return 0
+  if [[ -n "${FUNDEPLOY_GITHUB_HUB_PROXY_PREFIX:-}" ]]; then return 0; fi
+  if [[ "${FUNDEPLOY_GITHUB_DOWNLOAD_MODE:-off}" != "off" ]]; then return 0; fi
+  printf '%s\n' "提示: 当前为 GitHub 直连下载。受限网络可设置 FUNDEPLOY_GITHUB_HUB_PROXY_PREFIX，或 FUNDEPLOY_GITHUB_DOWNLOAD_MODE=mirror_raw 与 FUNDEPLOY_GITHUB_RAW_MIRROR_BASE（见 scripts/tools/download/README.md）。FUNDEPLOY_GITHUB_DOWNLOAD_HINT=0 可隐藏本行。" >&2
 }

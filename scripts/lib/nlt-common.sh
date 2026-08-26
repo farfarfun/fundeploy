@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# nltdeploy 公共片段：由各域 setup 脚本 source（路径：与脚本同树上一级 lib/）。
-# 规范见 docs/superpowers/specs/2026-04-11-nltdeploy-tool-service-conventions.md
+# fundeploy 公共片段：由各域 setup 脚本 source（路径：与脚本同树上一级 lib/）。
+# 规范见 docs/superpowers/specs/2026-04-11-fundeploy-tool-service-conventions.md
 [[ -n "${_NLT_COMMON_LOADED:-}" ]] && return 0
 _NLT_COMMON_LOADED=1
 
@@ -16,12 +16,12 @@ source "${_NLT_COMMON_LIB_DIR}/nlt-ui.sh" || {
   return 1
 }
 
-_nltdeploy_raw_base() {
-  printf '%s\n' "${NLTDEPLOY_RAW_BASE:-${nltdeploy_RAW_BASE:-https://raw.githubusercontent.com/farfarfun/nltdeploy/HEAD}}"
+_fundeploy_raw_base() {
+  printf '%s\n' "${FUNDEPLOY_RAW_BASE:-${fundeploy_RAW_BASE:-https://raw.githubusercontent.com/farfarfun/fundeploy/HEAD}}"
 }
 
 _nlt_gum_utils_setup_url() {
-  printf '%s\n' "$(_nltdeploy_raw_base)/scripts/tools/utils/setup.sh"
+  printf '%s\n' "$(_fundeploy_raw_base)/scripts/tools/utils/setup.sh"
 }
 
 # 返回监听指定 TCP 端口的首个 PID；未找到时输出空串。
@@ -68,21 +68,21 @@ _nlt_ensure_gum() {
   # 规范路径：委派给内部工具路由脚本（幂等）。
   local _nlt_tools_bin
   if _nlt_tools_bin="$(_nlt_resolve_nlt_tools 2>/dev/null)"; then
-    echo "未检测到 gum，执行: nltdeploy tool gum install" >&2
+    echo "未检测到 gum，执行: fundeploy tool gum install" >&2
     if [[ -x "${_nlt_tools_bin}" ]]; then
       "${_nlt_tools_bin}" gum install || {
-        echo "错误: nltdeploy tool gum install 失败。" >&2
+        echo "错误: fundeploy tool gum install 失败。" >&2
         return 1
       }
     else
       bash "${_nlt_tools_bin}" gum install || {
-        echo "错误: nltdeploy tool gum install 失败。" >&2
+        echo "错误: fundeploy tool gum install 失败。" >&2
         return 1
       }
     fi
     export PATH="${HOME}/opt/gum/bin:${PATH}"
     command -v gum >/dev/null 2>&1 && return 0
-    echo "错误: gum 仍未可用（nltdeploy tool gum install 后）。" >&2
+    echo "错误: gum 仍未可用（fundeploy tool gum install 后）。" >&2
     return 1
   fi
 
@@ -96,7 +96,7 @@ _nlt_ensure_gum() {
   _url="$(_nlt_gum_utils_setup_url)"
   echo "未检测到 gum，执行: curl -LsSf ${_url} | bash -s -- gum" >&2
   _nlt_github_download_curl -LsSf "${_url}" | bash -s -- gum || {
-    echo "错误: gum 安装失败（网络或 NLTDEPLOY_RAW_BASE / nltdeploy_RAW_BASE）。" >&2
+    echo "错误: gum 安装失败（网络或 FUNDEPLOY_RAW_BASE / fundeploy_RAW_BASE）。" >&2
     return 1
   }
 

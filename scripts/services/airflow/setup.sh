@@ -767,7 +767,7 @@ interactive_main() {
   set +e
   while true; do
     local pick
-    pick="$(nlt_ui_choose "nltdeploy / service / airflow / 选择动作" \
+    pick="$(nlt_ui_choose "fundeploy / service / airflow / 选择动作" \
       "install" "update" "start" "run" "stop" "restart" "status" \
       "dag-scaffold" "dags-list" "trigger" "task-test" \
       "users-create" "users-list" "users-reset-password" "http-trigger" \

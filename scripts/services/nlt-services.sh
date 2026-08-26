@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# nltdeploy service：服务总览、路由与安装入口聚合。
+# fundeploy service：服务总览、路由与安装入口聚合。
 #
 # 用法:
-#   nltdeploy service                    # gum：status / install / help / quit
-#   nltdeploy service status [--no-http]
-#   nltdeploy service <服务> [动作...]   # 透传给对应服务
-#   nltdeploy service install            # gum：先选「安装 / 卸载」，再选模块
-#   nltdeploy service install add <名>    # 安装类（install 与 add 同义）
-#   nltdeploy service install remove <名> # 卸载类（uninstall 与 remove 同义）
-#   nltdeploy service help
+#   fundeploy service                    # gum：status / install / help / quit
+#   fundeploy service status [--no-http]
+#   fundeploy service <服务> [动作...]   # 透传给对应服务
+#   fundeploy service install            # gum：先选「安装 / 卸载」，再选模块
+#   fundeploy service install add <名>    # 安装类（install 与 add 同义）
+#   fundeploy service install remove <名> # 卸载类（uninstall 与 remove 同义）
+#   fundeploy service help
 #
 # 模块名: airflow, celery, paperclip, code-server, new-api, sub2api, open-pencil,
 #         pip-sources, python-env, utils, github-net, cockpit-tools
@@ -26,9 +26,9 @@ die() { echo "错误: $*" >&2; exit 1; }
 
 usage() {
   cat <<'EOF'
-用法: nltdeploy service <服务> [动作...]
-      nltdeploy service status [--no-http]
-      nltdeploy service list
+用法: fundeploy service <服务> [动作...]
+      fundeploy service status [--no-http]
+      fundeploy service list
 
   无参数：打开可搜索的服务菜单。
 
@@ -42,11 +42,11 @@ usage() {
 服务: airflow celery paperclip code-server new-api sub2api open-pencil
 
 示例:
-  nltdeploy service code-server official install
-  nltdeploy service code-server official start
-  nltdeploy service sub2api official install
-  nltdeploy service sub2api official restart
-  nltdeploy service status
+  fundeploy service code-server official install
+  fundeploy service code-server official start
+  fundeploy service sub2api official install
+  fundeploy service sub2api official restart
+  fundeploy service status
 EOF
 }
 
@@ -88,7 +88,7 @@ _open_service_menu() {
 
 usage_status() {
   cat <<'EOF'
-用法: nltdeploy service status [--no-http]
+用法: fundeploy service status [--no-http]
 
   --no-http   跳过 curl 探测。
 EOF
@@ -201,7 +201,7 @@ cmd_status() {
         ;;
       --no-http) DO_HTTP=0 ;;
       *)
-        echo "未知参数: $a（nltdeploy service status --help）" >&2
+        echo "未知参数: $a（fundeploy service status --help）" >&2
         exit 2
         ;;
     esac
@@ -258,7 +258,7 @@ cmd_status() {
   cel_pids="${pid_cel_w:--}/${pid_cel_b:--}/${pid_cel_f:--}"
   cel_flower_listener_pid="$(listener_pid_for_port "${FLOWER_PORT}")"
 
-  echo "nltdeploy 服务概览  ${ts}"
+  echo "fundeploy 服务概览  ${ts}"
   echo ""
 
   PATH="${HOME}/opt/gum/bin:${PATH}"
@@ -305,9 +305,9 @@ cmd_status() {
   echo "说明:"
   echo "  • celery 状态列 wbf 为 worker / beat / flower：√ 运行中，× 未运行；与 Airflow 同机时请区分 FLOWER_PORT。"
   echo "  • 安装路径: airflow ${AIRFLOW_HOME} | celery ${CELERY_HOME} | paperclip ${PAPERCLIP_SERVICE_HOME} | code-server ${CODE_SERVER_SERVICE_HOME} | new-api ${NEW_API_SERVICE_HOME} | sub2api ${SUB2API_SERVICE_HOME}"
-  echo "  • 详情: nltdeploy service <服务> status"
+  echo "  • 详情: fundeploy service <服务> status"
   echo ""
-  echo "工具（无统一守护进程）: nltdeploy dev / nltdeploy tool"
+  echo "工具（无统一守护进程）: fundeploy dev / fundeploy tool"
   echo ""
 }
 
@@ -335,7 +335,7 @@ _dispatch_install_or_remove() {
     airflow | celery | paperclip | code-server | new-api | sub2api | open-pencil | cockpit-tools)
       exec bash "$target" install
       ;;
-    *) die "未知模块: ${name}（见 nltdeploy service help）" ;;
+    *) die "未知模块: ${name}（见 fundeploy service help）" ;;
   esac
 }
 
@@ -344,7 +344,7 @@ cmd_install() {
 
   if [[ $# -eq 0 ]]; then
     if [[ "${NONINTERACTIVE:-}" == "1" ]]; then
-      die "NONINTERACTIVE=1 时请使用: nltdeploy service install add|remove <模块>"
+      die "NONINTERACTIVE=1 时请使用: fundeploy service install add|remove <模块>"
     fi
     _nlt_ensure_gum || exit 1
     action="$(gum choose --header "要对模块做什么？" \
@@ -377,7 +377,7 @@ cmd_install() {
       shift
       name="${1:-}"
       if [[ -z "$name" ]]; then
-        [[ "${NONINTERACTIVE:-}" == "1" ]] && die "请指定模块: nltdeploy service install add <模块>"
+        [[ "${NONINTERACTIVE:-}" == "1" ]] && die "请指定模块: fundeploy service install add <模块>"
         _nlt_ensure_gum || exit 1
         name="$(gum choose --header "选择要安装 / 初始化的模块" \
           "airflow" "celery" "paperclip" "code-server" "new-api" "sub2api" "open-pencil" \
@@ -390,7 +390,7 @@ cmd_install() {
       shift
       name="${1:-}"
       if [[ -z "$name" ]]; then
-        [[ "${NONINTERACTIVE:-}" == "1" ]] && die "请指定模块: nltdeploy service install remove <模块>"
+        [[ "${NONINTERACTIVE:-}" == "1" ]] && die "请指定模块: fundeploy service install remove <模块>"
         _nlt_ensure_gum || exit 1
         name="$(gum choose --header "选择要卸载的模块" \
           "airflow" "paperclip" "code-server" "new-api" "sub2api" "open-pencil" \
@@ -400,7 +400,7 @@ cmd_install() {
       _dispatch_install_or_remove "remove" "$name"
       ;;
     *)
-      die "未知子命令: ${1}（使用: nltdeploy service install add|remove <模块>）"
+      die "未知子命令: ${1}（使用: fundeploy service install add|remove <模块>）"
       ;;
   esac
 }
@@ -409,12 +409,12 @@ interactive_main() {
   _nlt_ensure_gum || exit 1
   declare -F nlt_ui_apply_theme >/dev/null 2>&1 && nlt_ui_apply_theme
   if declare -F nlt_ui_banner >/dev/null 2>&1; then
-    nlt_ui_banner "nltdeploy / service" "安装、运行与查看本机服务" >&2
+    nlt_ui_banner "fundeploy / service" "安装、运行与查看本机服务" >&2
   fi
   set +e
   while true; do
     local pick name
-    pick="$(nlt_ui_choose "nltdeploy / service / 选择服务" \
+    pick="$(nlt_ui_choose "fundeploy / service / 选择服务" \
       "status       全部服务状态" \
       "airflow      工作流调度" \
       "celery       异步任务队列" \

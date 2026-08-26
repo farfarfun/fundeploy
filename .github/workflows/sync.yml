@@ -34,4 +34,4 @@ jobs:
           dst_token: ${{ secrets.GITEE_TOKEN }}
           force_update: true
           account_type: org
-          static_list: 'nltdeploy'
+          static_list: 'fundeploy'

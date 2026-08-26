@@ -12,7 +12,7 @@ AI_METHOD_OPTIONS=("official   Cursor 官方安装器")
 
 usage() {
   cat <<'EOF'
-用法: nltdeploy ai cursor [official] <install|update|uninstall|status>
+用法: fundeploy ai cursor [official] <install|update|uninstall|status>
 
 Cursor 当前只公布官方安装器，省略安装方式时默认 official。
 EOF

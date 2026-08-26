@@ -230,7 +230,7 @@ show_help() {
   NONINTERACTIVE=1 $0     # 非交互（gum 菜单仍可能拉取安装 gum）
 
 通过 curl 执行:
-  curl -LsSf https://raw.githubusercontent.com/farfarfun/nltdeploy/HEAD/scripts/tools/pip-sources/setup.sh | bash
+  curl -LsSf https://raw.githubusercontent.com/farfarfun/fundeploy/HEAD/scripts/tools/pip-sources/setup.sh | bash
 EOF
 }
 
@@ -1316,7 +1316,7 @@ nlt_cli_main() {
     if [ $# -eq 0 ]; then
         _nlt_ensure_gum || exit 1
         local pick
-        pick=$(gum choose --header "pip 源配置（nltdeploy 工具）" \
+        pick=$(gum choose --header "pip 源配置（fundeploy 工具）" \
             "install" "update" "reinstall" "uninstall" "help") || exit 0
         [ -z "$pick" ] && exit 0
         set -- "$pick"

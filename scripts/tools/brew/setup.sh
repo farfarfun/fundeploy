@@ -42,7 +42,7 @@ run_official_script() {
   echo "==> 下载: ${url}" >&2
   # 走 _nlt_github_download_curl（若可用）：URL 指向 raw.githubusercontent.com，
   # 正是 nlt-github-download.sh 负责改写的主机 —— 原来的裸 curl 让
-  # NLTDEPLOY_GITHUB_HUB_PROXY_PREFIX 对 brew 安装完全失效。同时获得统一的
+  # FUNDEPLOY_GITHUB_HUB_PROXY_PREFIX 对 brew 安装完全失效。同时获得统一的
   # --proto '=https' TLS 下限。
   if declare -F _nlt_github_download_curl >/dev/null 2>&1; then
     _nlt_github_download_curl -fsSL "${url}" -o "${script}" || die "下载安装脚本失败: ${url}"
@@ -53,7 +53,7 @@ run_official_script() {
   [[ -s "${script}" ]] || die "下载到的安装脚本为空: ${url}"
   # 落盘后执行文件，而不是把内容插值进 `bash -c "<脚本正文>"`：
   # 后者既脆弱（引号/长度），也让「先读一眼再执行」无从谈起。
-  /bin/bash "${script}" nltdeploy "$@"
+  /bin/bash "${script}" fundeploy "$@"
 }
 
 do_install() {

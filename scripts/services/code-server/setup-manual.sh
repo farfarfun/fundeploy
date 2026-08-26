@@ -339,7 +339,7 @@ interactive_main() {
   _nlt_ensure_gum || exit 1
   declare -F nlt_ui_apply_theme >/dev/null 2>&1 && nlt_ui_apply_theme
   if declare -F nlt_ui_banner >/dev/null 2>&1; then
-    nlt_ui_banner "nltdeploy / service / code-server / manual" "本地安装 · ${CODE_SERVER_SERVICE_HOME} · ${CODE_SERVER_BIND}"
+    nlt_ui_banner "fundeploy / service / code-server / manual" "本地安装 · ${CODE_SERVER_SERVICE_HOME} · ${CODE_SERVER_BIND}"
   else
     gum style --bold --foreground 212 "code-server 本地服务（coder/code-server）"
     gum style "安装目录: ${CODE_SERVER_SERVICE_HOME}"
@@ -349,7 +349,7 @@ interactive_main() {
   set +e
   while true; do
     local pick
-    pick="$(nlt_ui_choose "nltdeploy / service / code-server / manual / 选择动作" \
+    pick="$(nlt_ui_choose "fundeploy / service / code-server / manual / 选择动作" \
       "install" "update" "start" "run" "stop" "restart" "status" "uninstall" "help" "quit")" || break
     [[ -z "$pick" ]] && break
     case "$pick" in

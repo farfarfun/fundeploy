@@ -70,13 +70,13 @@ NONINTERACTIVE=1 ./setup.sh
 
 ```bash
 # 正常执行（支持交互）
-curl -LsSf https://raw.githubusercontent.com/farfarfun/nltdeploy/HEAD/scripts/tools/pip-sources/setup.sh | bash
+curl -LsSf https://raw.githubusercontent.com/farfarfun/fundeploy/HEAD/scripts/tools/pip-sources/setup.sh | bash
 # 国内（Gitee，与 GitHub 同步）
-curl -LsSf https://gitee.com/farfarfun/nltdeploy/raw/master/scripts/tools/pip-sources/setup.sh | bash
+curl -LsSf https://gitee.com/farfarfun/fundeploy/raw/master/scripts/tools/pip-sources/setup.sh | bash
 
 # 非交互模式
-NONINTERACTIVE=1 curl -LsSf https://raw.githubusercontent.com/farfarfun/nltdeploy/HEAD/scripts/tools/pip-sources/setup.sh | bash
-NONINTERACTIVE=1 curl -LsSf https://gitee.com/farfarfun/nltdeploy/raw/master/scripts/tools/pip-sources/setup.sh | bash
+NONINTERACTIVE=1 curl -LsSf https://raw.githubusercontent.com/farfarfun/fundeploy/HEAD/scripts/tools/pip-sources/setup.sh | bash
+NONINTERACTIVE=1 curl -LsSf https://gitee.com/farfarfun/fundeploy/raw/master/scripts/tools/pip-sources/setup.sh | bash
 ```
 
 ## 工作流程

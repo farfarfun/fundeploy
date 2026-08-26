@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# nltdeploy 安装辅助库（WAR-410）：多安装方式 + 包管理器探测 + gum 交互 UI。
+# fundeploy 安装辅助库（WAR-410）：多安装方式 + 包管理器探测 + gum 交互 UI。
 # 由各 dev 工具 setup.sh 以「尽力而为」方式 source（找不到时脚本仍可独立运行）。
 #
 # 提供能力：

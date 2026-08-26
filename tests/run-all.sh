@@ -6,7 +6,7 @@
 # 现在三处都只调用本脚本。
 #
 # 环境变量:
-#   NLTDEPLOY_REQUIRE_PACKAGE_TESTS=1  缺打包工具时不再跳过，而是判失败（CI 用）
+#   FUNDEPLOY_REQUIRE_PACKAGE_TESTS=1  缺打包工具时不再跳过，而是判失败（CI 用）
 #   TEST_FILTER=<子串>                 只运行名字匹配该子串的测试
 set -uo pipefail
 
@@ -17,7 +17,7 @@ cd "${REPO_ROOT}"
 pass=0 fail=0 skipped=0
 failed_names=()
 
-echo "=== nltdeploy 测试套件 ==="
+echo "=== fundeploy 测试套件 ==="
 echo "仓库: ${REPO_ROOT}"
 echo ""
 

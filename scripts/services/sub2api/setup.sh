@@ -20,7 +20,7 @@ MANUAL_SCRIPT="${SCRIPT_DIR}/setup-manual.sh"
 
 usage() {
   cat <<'EOF'
-用法: nltdeploy service sub2api <模式> [动作]
+用法: fundeploy service sub2api <模式> [动作]
 
 模式:
   official  上游官方脚本 + systemd，默认安装到 /opt/sub2api
@@ -30,10 +30,10 @@ usage() {
 官方模式额外支持 logs，默认端口均为 8802。
 
 示例:
-  nltdeploy service sub2api official install
-  nltdeploy service sub2api official restart
-  nltdeploy service sub2api manual install
-  nltdeploy service sub2api manual start
+  fundeploy service sub2api official install
+  fundeploy service sub2api official restart
+  fundeploy service sub2api manual install
+  fundeploy service sub2api manual start
 
 默认: 不写模式时使用 official；run 和版本查询仅由 manual 支持。
 兼容: install-official 等价于 official install。
@@ -42,11 +42,11 @@ EOF
 
 interactive_main() {
   _nlt_ensure_gum || exit 1
-  nlt_ui_banner "nltdeploy / service / sub2api" "选择互相独立的安装与服务管理模式" >&2
+  nlt_ui_banner "fundeploy / service / sub2api" "选择互相独立的安装与服务管理模式" >&2
   set +e
   while true; do
     local pick
-    pick="$(nlt_ui_choose "nltdeploy / service / sub2api / 选择模式" \
+    pick="$(nlt_ui_choose "fundeploy / service / sub2api / 选择模式" \
       "official   官方模式 · 上游脚本 + systemd" \
       "manual     手动模式 · 本地二进制 + PID" \
       "help       命令帮助" \

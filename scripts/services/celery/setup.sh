@@ -413,7 +413,7 @@ cmd_start_flower() {
     flower_args+=(--basic-auth="${FLOWER_BASIC_AUTH}")
   elif [[ "${FLOWER_ADDRESS}" != "127.0.0.1" && "${FLOWER_ADDRESS}" != "localhost" ]]; then
     nlt_ui_warn "Flower 监听 ${FLOWER_ADDRESS} 且未设置 FLOWER_BASIC_AUTH：任务参数与 revoke/terminate 将对该网络完全开放。"
-    nlt_ui_warn "建议: FLOWER_BASIC_AUTH=user:pass nltdeploy service celery start-flower"
+    nlt_ui_warn "建议: FLOWER_BASIC_AUTH=user:pass fundeploy service celery start-flower"
   fi
 
   if [[ "${CELERY_APP}" == "celery_app:app" ]] && [[ -f "${CELERY_ETC_DIR}/celery_app.py" ]]; then
@@ -660,7 +660,7 @@ interactive_main() {
   set +e
   while true; do
     local pick
-    pick="$(nlt_ui_choose "nltdeploy / service / celery / 选择动作" \
+    pick="$(nlt_ui_choose "fundeploy / service / celery / 选择动作" \
       "install" "update" "start" "run" "stop" "restart" "status" \
       "start-worker" "start-beat" "start-flower" \
       "run-worker" "run-beat" "run-flower" \

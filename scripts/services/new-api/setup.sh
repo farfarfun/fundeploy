@@ -28,7 +28,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# 仓库内为 scripts/.../<域>/；install 同步后为 libexec/nltdeploy/<域>/（与 lib/ 同级）→ 先试 ../lib 再 ../../lib
+# 仓库内为 scripts/.../<域>/；install 同步后为 libexec/fundeploy/<域>/（与 lib/ 同级）→ 先试 ../lib 再 ../../lib
 if [[ -f "${SCRIPT_DIR}/../lib/nlt-common.sh" ]]; then
   # shellcheck source=../lib/nlt-common.sh
   source "${SCRIPT_DIR}/../lib/nlt-common.sh"
@@ -445,7 +445,7 @@ interactive_main() {
   set +e
   while true; do
     local pick
-    pick="$(nlt_ui_choose "nltdeploy / service / new-api / 选择动作" \
+    pick="$(nlt_ui_choose "fundeploy / service / new-api / 选择动作" \
       "install" "update" "start" "run" "stop" "restart" "status" "uninstall" "help" "quit")" || break
     [[ -z "$pick" ]] && break
     case "$pick" in

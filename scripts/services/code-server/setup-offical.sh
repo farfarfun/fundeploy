@@ -38,10 +38,10 @@ usage() {
 默认用户: ${CODE_SERVER_OFFICIAL_USER}
 
 示例:
-  nltdeploy service code-server official install
-  nltdeploy service code-server official start
-  nltdeploy service code-server official update
-  nltdeploy service code-server official uninstall -y
+  fundeploy service code-server official install
+  fundeploy service code-server official start
+  fundeploy service code-server official update
+  fundeploy service code-server official uninstall -y
 EOF
 }
 
@@ -156,11 +156,11 @@ cmd_uninstall() {
 
 interactive_main() {
   _nlt_ensure_gum || exit 1
-  nlt_ui_banner "nltdeploy / service / code-server / official" "官方脚本 · 系统包管理器 · ${SERVICE_UNIT}" >&2
+  nlt_ui_banner "fundeploy / service / code-server / official" "官方脚本 · 系统包管理器 · ${SERVICE_UNIT}" >&2
   set +e
   while true; do
     local pick
-    pick="$(nlt_ui_choose "nltdeploy / service / code-server / official / 选择动作" \
+    pick="$(nlt_ui_choose "fundeploy / service / code-server / official / 选择动作" \
       "install           安装" \
       "update            更新" \
       "start             启动并设为开机启动" \

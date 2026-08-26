@@ -36,7 +36,7 @@ jobs:
 
       - name: Test
         env:
-          NLTDEPLOY_REQUIRE_PACKAGE_TESTS: "1"
+          FUNDEPLOY_REQUIRE_PACKAGE_TESTS: "1"
         run: bash tests/run-all.sh
 
       - name: Build release assets
@@ -52,10 +52,10 @@ jobs:
           mkdir -p dist
           bash packaging/build-deb.sh "$version" dist
           curl -fsSL "https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz" \
-            -o "dist/nltdeploy-${version}.tar.gz"
-          sha256="$(sha256sum "dist/nltdeploy-${version}.tar.gz" | awk '{print $1}')"
-          NLTDEPLOY_GITHUB_REPOSITORY="${GITHUB_REPOSITORY}" \
-            bash packaging/render-homebrew-formula.sh "$version" "$sha256" dist/nltdeploy.rb
+            -o "dist/fundeploy-${version}.tar.gz"
+          sha256="$(sha256sum "dist/fundeploy-${version}.tar.gz" | awk '{print $1}')"
+          FUNDEPLOY_GITHUB_REPOSITORY="${GITHUB_REPOSITORY}" \
+            bash packaging/render-homebrew-formula.sh "$version" "$sha256" dist/fundeploy.rb
 
       - name: Publish GitHub Release
         env:
@@ -180,13 +180,13 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p Formula
-          cp ../dist/nltdeploy.rb Formula/nltdeploy.rb
-          git add Formula/nltdeploy.rb
+          cp ../dist/fundeploy.rb Formula/fundeploy.rb
+          git add Formula/fundeploy.rb
           if git diff --cached --quiet; then
             echo "Formula is already current."
             exit 0
           fi
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git commit -m "Update nltdeploy to ${GITHUB_REF_NAME}"
+          git commit -m "Update fundeploy to ${GITHUB_REF_NAME}"
           git push

@@ -19,7 +19,7 @@ die() { echo "错误: $*" >&2; exit 1; }
 
 usage() {
   cat <<'EOF'
-用法: nltdeploy dev [子命令] [参数…]
+用法: fundeploy dev [子命令] [参数…]
 
   推荐主入口（替代在文档中单独强调 nlt-pip-sources / nlt-python-env）:
     pip | pip-sources     pip 镜像与源配置（委派到 pip-sources）
@@ -36,7 +36,7 @@ usage() {
 EOF
 }
 
-# 已安装布局: libexec/nltdeploy/{dev,pip-sources,...}
+# 已安装布局: libexec/fundeploy/{dev,pip-sources,...}
 # 仓库布局: scripts/dev 与 scripts/tools/{pip-sources,python-env}
 _resolve_tool_setup() {
   local name="$1"
@@ -66,10 +66,10 @@ _pick_menu() {
     return 1
   fi
   if declare -F nlt_ui_banner >/dev/null 2>&1; then
-    nlt_ui_banner "nltdeploy / dev" "语言、运行时与包管理器" >&2
+    nlt_ui_banner "fundeploy / dev" "语言、运行时与包管理器" >&2
   fi
   if declare -F nlt_ui_choose >/dev/null 2>&1; then
-    nlt_ui_choose "nltdeploy / dev / 选择工具" \
+    nlt_ui_choose "fundeploy / dev / 选择工具" \
       "pip（pip 源 / 镜像）" \
       "uv（Astral 安装器）" \
       "python（uv / 虚拟环境）" \
@@ -80,7 +80,7 @@ _pick_menu() {
       "取消"
     return $?
   fi
-  gum choose --header "nltdeploy / dev / 选择工具" \
+  gum choose --header "fundeploy / dev / 选择工具" \
     "pip（pip 源 / 镜像）" \
     "uv（Astral 安装器）" \
     "python（uv / 虚拟环境）" \
@@ -94,9 +94,9 @@ _pick_menu() {
 main() {
   local cmd="${1:-}"
   if [[ -z "$cmd" ]]; then
-    # 与 nltdeploy.sh / nlt-tools.sh 保持一致：非交互（NONINTERACTIVE=1 或
+    # 与 fundeploy.sh / nlt-tools.sh 保持一致：非交互（NONINTERACTIVE=1 或
     # stdin 非 TTY）时打印帮助后退出，而不是弹出 gum 菜单。此前本入口漏了
-    # 这道判断，CI 上一旦装了 gum，`NONINTERACTIVE=1 nltdeploy dev` 会直接
+    # 这道判断，CI 上一旦装了 gum，`NONINTERACTIVE=1 fundeploy dev` 会直接
     # 进入阻塞式 TUI。
     if [[ "${NONINTERACTIVE:-0}" == "1" || ! -t 0 ]]; then
       usage
@@ -143,9 +143,9 @@ main() {
       usage
       ;;
     *)
-      # 退出码 2 = 用法错误，与 nltdeploy.sh / nlt-tools.sh / nlt-services.sh
+      # 退出码 2 = 用法错误，与 fundeploy.sh / nlt-tools.sh / nlt-services.sh
       # 对齐（此前本入口用 1，调用方无法靠 $?==2 区分「用法错」与「执行失败」）。
-      echo "错误: 未知子命令: ${cmd}（见 nltdeploy dev --help）" >&2
+      echo "错误: 未知子命令: ${cmd}（见 fundeploy dev --help）" >&2
       usage >&2
       exit 2
       ;;

@@ -92,7 +92,7 @@ _resolve_npm() {
     echo "${OPEN_PENCIL_NPM_BIN}"
     return
   fi
-  command -v npm >/dev/null 2>&1 || die "未找到 npm（可先运行 nltdeploy dev nodejs install）"
+  command -v npm >/dev/null 2>&1 || die "未找到 npm（可先运行 fundeploy dev nodejs install）"
   command -v npm
 }
 
@@ -381,7 +381,7 @@ interactive_main() {
   set +e
   while true; do
     local pick
-    pick="$(nlt_ui_choose "nltdeploy / service / open-pencil / 选择动作" \
+    pick="$(nlt_ui_choose "fundeploy / service / open-pencil / 选择动作" \
       "install" "update" "install-desktop" "mcp-config" "status" "uninstall" "help" "quit")" || break
     [[ -z "$pick" ]] && break
     case "$pick" in

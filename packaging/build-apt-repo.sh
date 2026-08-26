@@ -19,7 +19,7 @@ if [[ -d "$OUTPUT_DIR" ]] && find "$OUTPUT_DIR" -mindepth 1 -print -quit | grep 
 fi
 mkdir -p "$OUTPUT_DIR"
 OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
-POOL="${OUTPUT_DIR}/pool/main/n/nltdeploy"
+POOL="${OUTPUT_DIR}/pool/main/n/fundeploy"
 DIST="${OUTPUT_DIR}/dists/stable"
 mkdir -p "$POOL" "${DIST}/main/binary-amd64" "${DIST}/main/binary-arm64"
 cp -f "$DEB" "$POOL/"
@@ -33,13 +33,13 @@ gzip -9 -c "${DIST}/main/binary-amd64/Packages" >"${DIST}/main/binary-amd64/Pack
 gzip -9 -c "${DIST}/main/binary-arm64/Packages" >"${DIST}/main/binary-arm64/Packages.gz"
 
 apt-ftparchive \
-  -o APT::FTPArchive::Release::Origin=nltdeploy \
-  -o APT::FTPArchive::Release::Label=nltdeploy \
+  -o APT::FTPArchive::Release::Origin=fundeploy \
+  -o APT::FTPArchive::Release::Label=fundeploy \
   -o APT::FTPArchive::Release::Suite=stable \
   -o APT::FTPArchive::Release::Codename=stable \
   -o 'APT::FTPArchive::Release::Architectures=amd64 arm64' \
   -o APT::FTPArchive::Release::Components=main \
-  -o 'APT::FTPArchive::Release::Description=nltdeploy packages' \
+  -o 'APT::FTPArchive::Release::Description=fundeploy packages' \
   release "$DIST" >"${DIST}/Release"
 
 GPG_ARGS=(--batch --yes --local-user "$GPG_KEY_ID")
@@ -48,7 +48,7 @@ if [[ -n "${APT_GPG_PASSPHRASE:-}" ]]; then
 fi
 gpg "${GPG_ARGS[@]}" --armor --detach-sign --output "${DIST}/Release.gpg" "${DIST}/Release"
 gpg "${GPG_ARGS[@]}" --clearsign --output "${DIST}/InRelease" "${DIST}/Release"
-gpg --batch --export "$GPG_KEY_ID" >"${OUTPUT_DIR}/nltdeploy.gpg"
-gpg --batch --armor --export "$GPG_KEY_ID" >"${OUTPUT_DIR}/nltdeploy.asc"
+gpg --batch --export "$GPG_KEY_ID" >"${OUTPUT_DIR}/fundeploy.gpg"
+gpg --batch --armor --export "$GPG_KEY_ID" >"${OUTPUT_DIR}/fundeploy.asc"
 
 echo "$OUTPUT_DIR"

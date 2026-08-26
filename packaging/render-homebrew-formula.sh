@@ -3,8 +3,8 @@ set -euo pipefail
 
 VERSION="${1:-}"
 SHA256="${2:-}"
-OUTPUT="${3:-nltdeploy.rb}"
-REPOSITORY="${NLTDEPLOY_GITHUB_REPOSITORY:-farfarfun/nltdeploy}"
+OUTPUT="${3:-fundeploy.rb}"
+REPOSITORY="${FUNDEPLOY_GITHUB_REPOSITORY:-farfarfun/fundeploy}"
 
 die() { echo "错误: $*" >&2; exit 1; }
 
@@ -14,7 +14,7 @@ VERSION="${VERSION#v}"
 mkdir -p "$(dirname "$OUTPUT")"
 
 cat >"$OUTPUT" <<EOF
-class Nltdeploy < Formula
+class Fundeploy < Formula
   desc "Bash tools for local development and service management"
   homepage "https://github.com/${REPOSITORY}"
   url "https://github.com/${REPOSITORY}/archive/refs/tags/v${VERSION}.tar.gz"
@@ -23,17 +23,17 @@ class Nltdeploy < Formula
 
   def install
     system "env",
-           "NLTDEPLOY_ROOT=#{prefix}",
-           "NLTDEPLOY_WRAPPER_ROOT=#{opt_prefix}",
-           "NLTDEPLOY_PACKAGE_MANAGER=brew",
-           "NLTDEPLOY_SKIP_GIT_PULL=1",
-           "NLTDEPLOY_SKIP_PROFILE_HINT=1",
+           "FUNDEPLOY_ROOT=#{prefix}",
+           "FUNDEPLOY_WRAPPER_ROOT=#{opt_prefix}",
+           "FUNDEPLOY_PACKAGE_MANAGER=brew",
+           "FUNDEPLOY_SKIP_GIT_PULL=1",
+           "FUNDEPLOY_SKIP_PROFILE_HINT=1",
            "/bin/bash", "install.sh", "install"
   end
 
   test do
-    assert_match "service", shell_output("#{bin}/nltdeploy list")
-    assert_match "brew upgrade nltdeploy", shell_output("#{bin}/nltdeploy upgrade")
+    assert_match "service", shell_output("#{bin}/fundeploy list")
+    assert_match "brew upgrade fundeploy", shell_output("#{bin}/fundeploy upgrade")
   end
 end
 EOF

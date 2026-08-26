@@ -31,7 +31,7 @@ fi
 
 SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
 SSH_CONFIG_PATH="${HOME}/.ssh/config"
-SSH_CONFIG_BACKUP="${HOME}/.ssh/config.bak.nltdeploy.$(date +%Y%m%d%H%M%S)"
+SSH_CONFIG_BACKUP="${HOME}/.ssh/config.bak.fundeploy.$(date +%Y%m%d%H%M%S)"
 KNOWN_HOSTS_PATH="${HOME}/.ssh/known_hosts"
 
 say() { printf '%s\n' "$*"; }
@@ -188,8 +188,8 @@ fix_ssh443() {
     say "已备份: ${SSH_CONFIG_BACKUP}"
   fi
 
-  local marker_begin="# >>> nltdeploy github ssh443 >>>"
-  local marker_end="# <<< nltdeploy github ssh443 <<<"
+  local marker_begin="# >>> fundeploy github ssh443 >>>"
+  local marker_end="# <<< fundeploy github ssh443 <<<"
 
   # 移除旧块，避免重复写入。
   if [[ -f "${SSH_CONFIG_PATH}" ]] && has_cmd awk; then
@@ -353,7 +353,7 @@ usage_github() {
   install    自动诊断并应用推荐修复（默认与非交互管线）
   update     仅运行诊断并给出建议
   reinstall  再次执行自动修复（TTY 下 gum 确认）
-  uninstall  打印如何手动撤销 SSH/Git 配置中的 nltdeploy 片段
+  uninstall  打印如何手动撤销 SSH/Git 配置中的 fundeploy 片段
   help       本说明
 
 环境: NONINTERACTIVE=1 时 install/reinstall 不弹出确认。
@@ -383,9 +383,9 @@ dispatch_github() {
       ;;
     uninstall)
       say_warn "卸载请手动："
-      say "  1) 编辑 ~/.ssh/config，删除标记为 # >>> nltdeploy github ssh443 >>> … # <<< nltdeploy github ssh443 <<< 的区块"
+      say "  1) 编辑 ~/.ssh/config，删除标记为 # >>> fundeploy github ssh443 >>> … # <<< fundeploy github ssh443 <<< 的区块"
       say "  2) 运行 git config --global --list 检查 url.*.insteadOf，按需 git config --global --unset-all …"
-      say "  3) SSH 配置备份可能在 ~/.ssh/config.bak.nltdeploy.*"
+      say "  3) SSH 配置备份可能在 ~/.ssh/config.bak.fundeploy.*"
       ;;
     help | -h | --help)
       usage_github

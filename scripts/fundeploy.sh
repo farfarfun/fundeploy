@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# nltdeploy：整个项目的顶层入口。
+# fundeploy：整个项目的顶层入口。
 #
 # 用法:
-#   nltdeploy service <服务> [动作]                   服务管理
-#   nltdeploy dev <工具> [动作]                       开发环境
-#   nltdeploy tool <工具> [动作]                      常用工具
-#   nltdeploy ai <工具> [动作]                        AI CLI
-#   nltdeploy upgrade | uninstall | list | help
-#   nltdeploy                                          可搜索的交互菜单
+#   fundeploy service <服务> [动作]                   服务管理
+#   fundeploy dev <工具> [动作]                       开发环境
+#   fundeploy tool <工具> [动作]                      常用工具
+#   fundeploy ai <工具> [动作]                        AI CLI
+#   fundeploy upgrade | uninstall | list | help
+#   fundeploy                                          可搜索的交互菜单
 #
 # upgrade 源:
 #   github   从 GitHub 拉取 install.sh 并执行 update（默认公网源）
@@ -16,18 +16,18 @@
 #   不指定   优先 local 并沿用已记录来源，否则 github，再 gitee。
 #
 # 环境变量:
-#   NLTDEPLOY_ROOT            安装根目录（默认 ~/.local/nltdeploy）
-#   NLTDEPLOY_SRC_DIR         本地克隆仓库（默认 ${NLTDEPLOY_ROOT}/src/nltdeploy）
-#   NLTDEPLOY_PACKAGE_MANAGER 包管理器安装标记：apt 或 brew
-#   NLTDEPLOY_UNINSTALL_YES=1 非 TTY 下允许卸载
+#   FUNDEPLOY_ROOT            安装根目录（默认 ~/.local/fundeploy）
+#   FUNDEPLOY_SRC_DIR         本地克隆仓库（默认 ${FUNDEPLOY_ROOT}/src/fundeploy）
+#   FUNDEPLOY_PACKAGE_MANAGER 包管理器安装标记：apt 或 brew
+#   FUNDEPLOY_UNINSTALL_YES=1 非 TTY 下允许卸载
 #   NONINTERACTIVE=1          无参数时打印 help 退出，不进入菜单
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-NLTDEPLOY_ROOT="${NLTDEPLOY_ROOT:-${HOME}/.local/nltdeploy}"
-NLTDEPLOY_SRC_DIR="${NLTDEPLOY_SRC_DIR:-${NLTDEPLOY_ROOT}/src/nltdeploy}"
-NLTDEPLOY_GITHUB_RAW="${NLTDEPLOY_GITHUB_RAW:-https://raw.githubusercontent.com/farfarfun/nltdeploy/HEAD/install.sh}"
-NLTDEPLOY_GITEE_RAW="${NLTDEPLOY_GITEE_RAW:-https://gitee.com/farfarfun/nltdeploy/raw/master/install.sh}"
+FUNDEPLOY_ROOT="${FUNDEPLOY_ROOT:-${HOME}/.local/fundeploy}"
+FUNDEPLOY_SRC_DIR="${FUNDEPLOY_SRC_DIR:-${FUNDEPLOY_ROOT}/src/fundeploy}"
+FUNDEPLOY_GITHUB_RAW="${FUNDEPLOY_GITHUB_RAW:-https://raw.githubusercontent.com/farfarfun/fundeploy/HEAD/install.sh}"
+FUNDEPLOY_GITEE_RAW="${FUNDEPLOY_GITEE_RAW:-https://gitee.com/farfarfun/fundeploy/raw/master/install.sh}"
 
 # 可选加载统一交互主题（banner / 主题化菜单）；缺失不致命，菜单会降级为朴素 gum/文本。
 for _cand in \
@@ -44,29 +44,29 @@ die() { echo "错误: $*" >&2; exit 1; }
 
 usage() {
   cat <<'EOF'
-用法: nltdeploy <领域> [模块] [动作]
+用法: fundeploy <领域> [模块] [动作]
 
 命令:
   service <服务> [动作]                    服务状态、安装和生命周期管理
   dev <工具> [动作]                        Python、Go、Rust、Node.js 等开发环境
   tool <工具> [动作]                       brew、gum、网络诊断、下载等工具
   ai <工具> [动作]                         Claude Code、Codex、Cursor
-  upgrade [--source github|gitee|local]    升级 nltdeploy
-  uninstall                                卸载 nltdeploy
+  upgrade [--source github|gitee|local]    升级 fundeploy
+  uninstall                                卸载 fundeploy
   list                                     显示领域入口
   help / -h / --help                       本说明
 
-无参数时打开可搜索菜单。nltdeploy 是唯一命令入口。
+无参数时打开可搜索菜单。fundeploy 是唯一命令入口。
 
 示例:
-  nltdeploy service status
-  nltdeploy service code-server official install
-  nltdeploy service sub2api official install
-  nltdeploy service sub2api official restart
-  nltdeploy dev nodejs install
-  nltdeploy tool github-net doctor
-  nltdeploy ai codex update
-  nltdeploy upgrade
+  fundeploy service status
+  fundeploy service code-server official install
+  fundeploy service sub2api official install
+  fundeploy service sub2api official restart
+  fundeploy dev nodejs install
+  fundeploy tool github-net doctor
+  fundeploy ai codex update
+  fundeploy upgrade
 EOF
 }
 
@@ -97,10 +97,10 @@ _entry_rel() {
 cmd_list() {
   cat <<'EOF'
 可用领域:
-  service   服务管理（nltdeploy service list）
-  dev       开发环境（nltdeploy dev --help）
-  tool      常用工具（nltdeploy tool list）
-  ai        AI CLI（nltdeploy ai list）
+  service   服务管理（fundeploy service list）
+  dev       开发环境（fundeploy dev --help）
+  tool      常用工具（fundeploy tool list）
+  ai        AI CLI（fundeploy ai list）
 
 项目操作: upgrade / uninstall
 EOF
@@ -110,10 +110,10 @@ EOF
 _resolve_local_install_sh() {
   local c
   for c in \
-    "${NLTDEPLOY_SRC_DIR}/install.sh" \
+    "${FUNDEPLOY_SRC_DIR}/install.sh" \
     "${SCRIPT_DIR}/../install.sh" \
     "${SCRIPT_DIR}/install.sh" \
-    "${NLTDEPLOY_ROOT}/libexec/nltdeploy/nltdeploy-install.sh"; do
+    "${FUNDEPLOY_ROOT}/libexec/fundeploy/fundeploy-install.sh"; do
     [[ -f "$c" ]] && { printf '%s\n' "$c"; return 0; }
   done
   return 1
@@ -127,24 +127,24 @@ _curl() {
 }
 
 _managed_install_action() {
-  local action="$1" manager="${NLTDEPLOY_PACKAGE_MANAGER:-}"
+  local action="$1" manager="${FUNDEPLOY_PACKAGE_MANAGER:-}"
   [[ -n "$manager" ]] || return 1
   case "${manager}:${action}" in
     apt:upgrade)
-      echo "nltdeploy 由 APT 管理，请运行:"
-      echo "  sudo apt update && sudo apt install --only-upgrade nltdeploy"
+      echo "fundeploy 由 APT 管理，请运行:"
+      echo "  sudo apt update && sudo apt install --only-upgrade fundeploy"
       ;;
     apt:uninstall)
-      echo "nltdeploy 由 APT 管理，请运行:"
-      echo "  sudo apt remove nltdeploy"
+      echo "fundeploy 由 APT 管理，请运行:"
+      echo "  sudo apt remove fundeploy"
       ;;
     brew:upgrade)
-      echo "nltdeploy 由 Homebrew 管理，请运行:"
-      echo "  brew upgrade nltdeploy"
+      echo "fundeploy 由 Homebrew 管理，请运行:"
+      echo "  brew upgrade fundeploy"
       ;;
     brew:uninstall)
-      echo "nltdeploy 由 Homebrew 管理，请运行:"
-      echo "  brew uninstall nltdeploy"
+      echo "fundeploy 由 Homebrew 管理，请运行:"
+      echo "  brew uninstall fundeploy"
       ;;
     *) die "未知包管理器标记: ${manager}" ;;
   esac
@@ -158,13 +158,13 @@ upgrade_local() {
 }
 
 upgrade_github() {
-  echo "==> 从 GitHub 升级: ${NLTDEPLOY_GITHUB_RAW}" >&2
-  _curl GitHub "${NLTDEPLOY_GITHUB_RAW}" | bash -s -- update --source github
+  echo "==> 从 GitHub 升级: ${FUNDEPLOY_GITHUB_RAW}" >&2
+  _curl GitHub "${FUNDEPLOY_GITHUB_RAW}" | bash -s -- update --source github
 }
 
 upgrade_gitee() {
-  echo "==> 从 Gitee 升级: ${NLTDEPLOY_GITEE_RAW}" >&2
-  _curl Gitee "${NLTDEPLOY_GITEE_RAW}" | bash -s -- update --source gitee
+  echo "==> 从 Gitee 升级: ${FUNDEPLOY_GITEE_RAW}" >&2
+  _curl Gitee "${FUNDEPLOY_GITEE_RAW}" | bash -s -- update --source gitee
 }
 
 cmd_upgrade() {
@@ -181,7 +181,7 @@ cmd_upgrade() {
       --source=*) source="${1#*=}"; shift ;;
       github|gitee|local) source="$1"; shift ;;
       -h|--help|help) usage; exit 0 ;;
-      *) die "未知参数: $1（nltdeploy upgrade --source github|gitee|local）" ;;
+      *) die "未知参数: $1（fundeploy upgrade --source github|gitee|local）" ;;
     esac
   done
 
@@ -207,18 +207,18 @@ cmd_upgrade() {
 cmd_uninstall() {
   local sh
   _managed_install_action uninstall && return 0
-  sh="$(_resolve_local_install_sh)" || die "未找到 install.sh 以执行卸载（预期 ${NLTDEPLOY_SRC_DIR}/install.sh 或 libexec bundle）"
+  sh="$(_resolve_local_install_sh)" || die "未找到 install.sh 以执行卸载（预期 ${FUNDEPLOY_SRC_DIR}/install.sh 或 libexec bundle）"
   echo "==> 卸载: bash ${sh} uninstall" >&2
   exec bash "${sh}" uninstall "$@"
 }
 
 _resolve_entry() {
   local name="$1" rel c
-  rel="$(_entry_rel "${name}")" || die "未知入口: ${name}（nltdeploy list 查看）"
+  rel="$(_entry_rel "${name}")" || die "未知入口: ${name}（fundeploy list 查看）"
   for c in \
     "${SCRIPT_DIR}/${rel}" \
     "${SCRIPT_DIR}/../${rel}" \
-    "${NLTDEPLOY_ROOT}/libexec/nltdeploy/${rel}"; do
+    "${FUNDEPLOY_ROOT}/libexec/fundeploy/${rel}"; do
     [[ -f "$c" ]] && { printf '%s\n' "$c"; return 0; }
   done
   die "未找到入口脚本: ${rel}（请先安装：install.sh install）"
@@ -243,7 +243,7 @@ interactive_main() {
   fi
 
   if declare -F nlt_ui_banner >/dev/null 2>&1; then
-    nlt_ui_banner "nltdeploy" "开发环境、工具与服务管理"
+    nlt_ui_banner "fundeploy" "开发环境、工具与服务管理"
   fi
 
   command -v gum >/dev/null 2>&1 || { usage; return 0; }
@@ -253,8 +253,8 @@ interactive_main() {
     "dev        语言与开发环境"
     "tool       本机工具与网络诊断"
     "ai         AI 编程 CLI"
-    "upgrade    升级 nltdeploy"
-    "uninstall  卸载 nltdeploy"
+    "upgrade    升级 fundeploy"
+    "uninstall  卸载 fundeploy"
     "help       命令帮助"
     "quit       退出"
   )
@@ -262,9 +262,9 @@ interactive_main() {
   local pick key
   while true; do
     if declare -F nlt_ui_choose >/dev/null 2>&1; then
-      pick="$(nlt_ui_choose "nltdeploy / 选择领域" "${labels[@]}")" || return 0
+      pick="$(nlt_ui_choose "fundeploy / 选择领域" "${labels[@]}")" || return 0
     else
-      pick="$(printf '%s\n' "${labels[@]}" | gum filter --header "nltdeploy / 选择领域" --limit 1)" || return 0
+      pick="$(printf '%s\n' "${labels[@]}" | gum filter --header "fundeploy / 选择领域" --limit 1)" || return 0
     fi
     [[ -n "${pick}" ]] || return 0
     key="${pick%% *}"

@@ -75,11 +75,11 @@ _ensure_gum_for_interactive_menu() {
     return 1
   }
   local _ubase _uurl
-  _ubase="${NLTDEPLOY_RAW_BASE:-${nltdeploy_RAW_BASE:-https://raw.githubusercontent.com/farfarfun/nltdeploy/HEAD}}"
+  _ubase="${FUNDEPLOY_RAW_BASE:-${fundeploy_RAW_BASE:-https://raw.githubusercontent.com/farfarfun/fundeploy/HEAD}}"
   _uurl="${_ubase}/scripts/tools/utils/setup.sh"
   echo "未检测到 gum，执行: curl -LsSf ${_uurl} | NONINTERACTIVE=1 bash -s -- gum" >&2
   NONINTERACTIVE=1 _nlt_github_download_curl -LsSf "${_uurl}" | NONINTERACTIVE=1 bash -s -- gum || {
-    echo "错误: gum 安装失败（网络或 NLTDEPLOY_RAW_BASE / nltdeploy_RAW_BASE）。" >&2
+    echo "错误: gum 安装失败（网络或 FUNDEPLOY_RAW_BASE / fundeploy_RAW_BASE）。" >&2
     return 1
   }
   export PATH="${HOME}/opt/gum/bin:${PATH}"
@@ -169,11 +169,11 @@ _print_post_install_summary() {
 }
 
 # ---------- 通用：向 shell profile 追加带标记的块（已有标记则跳过）----------
-_GUM_PATH_MARKER_BEGIN='# >>> nltdeploy utils-setup: gum PATH >>>'
-_GUM_PATH_MARKER_END='# <<< nltdeploy utils-setup: gum PATH <<<'
+_GUM_PATH_MARKER_BEGIN='# >>> fundeploy utils-setup: gum PATH >>>'
+_GUM_PATH_MARKER_END='# <<< fundeploy utils-setup: gum PATH <<<'
 
-_LS_ALIAS_MARKER_BEGIN='# >>> nltdeploy utils-setup: ls aliases >>>'
-_LS_ALIAS_MARKER_END='# <<< nltdeploy utils-setup: ls aliases <<<'
+_LS_ALIAS_MARKER_BEGIN='# >>> fundeploy utils-setup: ls aliases >>>'
+_LS_ALIAS_MARKER_END='# <<< fundeploy utils-setup: ls aliases <<<'
 
 _append_marked_block_to_profiles() {
   local marker_begin="$1"

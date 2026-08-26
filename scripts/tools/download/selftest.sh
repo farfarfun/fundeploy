@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# nltdeploy tool download 轻量自测（resolve-url 固定用例）
+# fundeploy tool download 轻量自测（resolve-url 固定用例）
 set -euo pipefail
 
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -31,12 +31,12 @@ _expect() {
 _resolve_under_env() {
   local url="$1"
   (
-    unset NLTDEPLOY_GITHUB_HUB_PROXY_PREFIX NLTDEPLOY_GITHUB_DOWNLOAD_MODE NLTDEPLOY_GITHUB_RAW_MIRROR_BASE 2>/dev/null || true
+    unset FUNDEPLOY_GITHUB_HUB_PROXY_PREFIX FUNDEPLOY_GITHUB_DOWNLOAD_MODE FUNDEPLOY_GITHUB_RAW_MIRROR_BASE 2>/dev/null || true
     export PATH="${PATH}"
     export HOME="${HOME:-/tmp}"
-    [[ -n "${2+x}" ]] && export NLTDEPLOY_GITHUB_HUB_PROXY_PREFIX="$2"
-    [[ -n "${3+x}" ]] && export NLTDEPLOY_GITHUB_DOWNLOAD_MODE="$3"
-    [[ -n "${4+x}" ]] && export NLTDEPLOY_GITHUB_RAW_MIRROR_BASE="$4"
+    [[ -n "${2+x}" ]] && export FUNDEPLOY_GITHUB_HUB_PROXY_PREFIX="$2"
+    [[ -n "${3+x}" ]] && export FUNDEPLOY_GITHUB_DOWNLOAD_MODE="$3"
+    [[ -n "${4+x}" ]] && export FUNDEPLOY_GITHUB_RAW_MIRROR_BASE="$4"
     # shellcheck source=../../lib/nlt-github-download.sh
     source "${_NLT_LIB}/nlt-github-download.sh"
     _nlt_github_download_resolve_url "$url"

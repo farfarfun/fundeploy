@@ -290,9 +290,9 @@ cmd_kill() {
 
 cmd_install() {
   _pk_uninstall_wrapper
-  _pk_info "port-kill 已由 nltdeploy 提供，无需单独安装。"
-  _pk_say "  用法: nltdeploy tool port-kill kill <port> [port…]"
-  _pk_say "  用法: nltdeploy tool port-kill list [port]"
+  _pk_info "port-kill 已由 fundeploy 提供，无需单独安装。"
+  _pk_say "  用法: fundeploy tool port-kill kill <port> [port…]"
+  _pk_say "  用法: fundeploy tool port-kill list [port]"
 }
 
 cmd_update() {

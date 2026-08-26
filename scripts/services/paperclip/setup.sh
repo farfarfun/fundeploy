@@ -197,7 +197,7 @@ paperclip_cli() {
 }
 
 paperclip_plugin_catalog_records() {
-  # awesome-paperclip Plugins 清单快照；随 nltdeploy 版本更新，不在用户运行时联网解析。
+  # awesome-paperclip Plugins 清单快照；随 fundeploy 版本更新，不在用户运行时联网解析。
   cat <<'CATALOG'
 Agent Pixels|@agent-pixels/paperclip-plugin|https://github.com/gcampton/Agent-Pixels|Pixel Agents for Paperclip with custom behaviors, models, rooms, and security cam access.
 obsidian-paperclip||https://github.com/istib/obsidian-paperclip|Obsidian integration for browsing, commenting on, and assigning Paperclip issues.
@@ -282,7 +282,7 @@ paperclip_ensure_running_host_version_fix() {
     cmd_restart
     return
   fi
-  die "当前 Paperclip 不是由 nltdeploy 后台管理，请先用 nltdeploy service paperclip restart 重启后再安装插件"
+  die "当前 Paperclip 不是由 fundeploy 后台管理，请先用 fundeploy service paperclip restart 重启后再安装插件"
 }
 
 paperclip_curl_health_http_code() {
@@ -606,7 +606,7 @@ interactive_main() {
   set +e
   while true; do
     local pick
-    pick="$(nlt_ui_choose "nltdeploy / service / paperclip / 选择动作" \
+    pick="$(nlt_ui_choose "fundeploy / service / paperclip / 选择动作" \
       "install" "update" "onboard" "plugin install" "start" "run" "stop" "restart" "status" "uninstall" "help" "quit")" || break
     [[ -z "$pick" ]] && break
     case "$pick" in

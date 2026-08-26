@@ -5,9 +5,9 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "${TMP}"' EXIT
 export HOME="${TMP}/home"
 mkdir -p "$HOME"
-export NLTDEPLOY_ROOT="${TMP}/nd"
-export NLTDEPLOY_SKIP_PROFILE_HINT=1
-export NLTDEPLOY_SKIP_GIT_PULL=1
+export FUNDEPLOY_ROOT="${TMP}/nd"
+export FUNDEPLOY_SKIP_PROFILE_HINT=1
+export FUNDEPLOY_SKIP_GIT_PULL=1
 
 # 拉取更新后必须由新版 install.sh 接管，避免旧复制清单漏装新文件。
 UPSTREAM="${TMP}/self-update-upstream"
@@ -21,35 +21,35 @@ git -C "${UPSTREAM}" -c user.name=test -c user.email=test@example.com commit -qm
 git clone -q "${UPSTREAM}" "${RUNNER}"
 cat >"${UPSTREAM}/install.sh" <<'EOF'
 #!/usr/bin/env bash
-touch "${NLTDEPLOY_SELF_UPDATE_MARKER:?}"
+touch "${FUNDEPLOY_SELF_UPDATE_MARKER:?}"
 EOF
 git -C "${UPSTREAM}" add install.sh
 git -C "${UPSTREAM}" -c user.name=test -c user.email=test@example.com commit -qm update
-NLTDEPLOY_ROOT="${TMP}/self-update-root" \
-NLTDEPLOY_SELF_UPDATE_MARKER="${TMP}/self-update-ok" \
-NLTDEPLOY_SKIP_GIT_PULL=0 \
+FUNDEPLOY_ROOT="${TMP}/self-update-root" \
+FUNDEPLOY_SELF_UPDATE_MARKER="${TMP}/self-update-ok" \
+FUNDEPLOY_SKIP_GIT_PULL=0 \
   bash "${RUNNER}/install.sh" update
 [[ -f "${TMP}/self-update-ok" ]] || { echo "updated install.sh did not take over" >&2; exit 1; }
 
 # 即使源码仓库已提前更新、git pull 没有产生新提交，也必须由仓库内安装器接管。
 mkdir -p "${TMP}/stale-runner"
 cp "${ROOT}/install.sh" "${TMP}/stale-runner/install.sh"
-NLTDEPLOY_ROOT="${TMP}/preupdated-root" \
-NLTDEPLOY_SRC_DIR="${RUNNER}" \
-NLTDEPLOY_SELF_UPDATE_MARKER="${TMP}/preupdated-ok" \
-NLTDEPLOY_SKIP_GIT_PULL=0 \
+FUNDEPLOY_ROOT="${TMP}/preupdated-root" \
+FUNDEPLOY_SRC_DIR="${RUNNER}" \
+FUNDEPLOY_SELF_UPDATE_MARKER="${TMP}/preupdated-ok" \
+FUNDEPLOY_SKIP_GIT_PULL=0 \
   bash "${TMP}/stale-runner/install.sh" update
 [[ -f "${TMP}/preupdated-ok" ]] || { echo "pre-updated source install.sh did not take over" >&2; exit 1; }
 
-root_guard="$(sed -n '/^_guard_nltdeploy_root() {/,/^}/p' "${ROOT}/install.sh")"
+root_guard="$(sed -n '/^_guard_fundeploy_root() {/,/^}/p' "${ROOT}/install.sh")"
 for unsafe_root in relative / /etc /tmp /var "${HOME}"; do
-  if (die() { exit 1; }; eval "${root_guard}"; NLTDEPLOY_ROOT="${unsafe_root}"; _guard_nltdeploy_root) 2>/dev/null; then
-    echo "unsafe NLTDEPLOY_ROOT accepted: ${unsafe_root}" >&2
+  if (die() { exit 1; }; eval "${root_guard}"; FUNDEPLOY_ROOT="${unsafe_root}"; _guard_fundeploy_root) 2>/dev/null; then
+    echo "unsafe FUNDEPLOY_ROOT accepted: ${unsafe_root}" >&2
     exit 1
   fi
 done
 mkdir -p "${TMP}/safe-root"
-(die() { exit 1; }; eval "${root_guard}"; NLTDEPLOY_ROOT="${TMP}/safe-root"; _guard_nltdeploy_root) || exit 1
+(die() { exit 1; }; eval "${root_guard}"; FUNDEPLOY_ROOT="${TMP}/safe-root"; _guard_fundeploy_root) || exit 1
 
 bash "${ROOT}/install.sh" install
 legacy_bins=(
@@ -58,39 +58,39 @@ legacy_bins=(
   nlt-airflow-install nlt-celery-install nlt-celery-update nlt-paperclip-install nlt-code-server-install nlt-new-api-install nlt-sub2api-install
 )
 for f in "${legacy_bins[@]}"; do
-  printf '#!/usr/bin/env bash\nexit 0\n' >"${NLTDEPLOY_ROOT}/bin/${f}"
-  chmod +x "${NLTDEPLOY_ROOT}/bin/${f}"
+  printf '#!/usr/bin/env bash\nexit 0\n' >"${FUNDEPLOY_ROOT}/bin/${f}"
+  chmod +x "${FUNDEPLOY_ROOT}/bin/${f}"
 done
 bash "${ROOT}/install.sh" update
-[[ -x "${NLTDEPLOY_ROOT}/bin/nltdeploy" ]] || { echo "missing: bin/nltdeploy" >&2; exit 1; }
-bash -n "${NLTDEPLOY_ROOT}/bin/nltdeploy" || exit 1
-[[ -x "${NLTDEPLOY_ROOT}/libexec/nltdeploy/skills-sync/setup.sh" ]] || { echo "missing: skills-sync/setup.sh" >&2; exit 1; }
-NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" tool skills-sync --help >/dev/null || exit 1
-for f in "${NLTDEPLOY_ROOT}/bin/"*; do
-  [[ "$(basename "$f")" == "nltdeploy" ]] || { echo "unexpected command entry: bin/$(basename "$f")" >&2; exit 1; }
+[[ -x "${FUNDEPLOY_ROOT}/bin/fundeploy" ]] || { echo "missing: bin/fundeploy" >&2; exit 1; }
+bash -n "${FUNDEPLOY_ROOT}/bin/fundeploy" || exit 1
+[[ -x "${FUNDEPLOY_ROOT}/libexec/fundeploy/skills-sync/setup.sh" ]] || { echo "missing: skills-sync/setup.sh" >&2; exit 1; }
+NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" tool skills-sync --help >/dev/null || exit 1
+for f in "${FUNDEPLOY_ROOT}/bin/"*; do
+  [[ "$(basename "$f")" == "fundeploy" ]] || { echo "unexpected command entry: bin/$(basename "$f")" >&2; exit 1; }
 done
-bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/airflow/setup.sh" || exit 1
-bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/code-server/setup.sh" || exit 1
-bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/code-server/setup-manual.sh" || exit 1
-bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/code-server/setup-offical.sh" || exit 1
-bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/new-api/setup.sh" || exit 1
-bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/open-pencil/setup.sh" || exit 1
-bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/paperclip/setup.sh" || exit 1
-bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/sub2api/setup.sh" || exit 1
-bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/sub2api/setup-manual.sh" || exit 1
-bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/sub2api/setup-offical.sh" || exit 1
+bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/airflow/setup.sh" || exit 1
+bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/code-server/setup.sh" || exit 1
+bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/code-server/setup-manual.sh" || exit 1
+bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/code-server/setup-offical.sh" || exit 1
+bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/new-api/setup.sh" || exit 1
+bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/open-pencil/setup.sh" || exit 1
+bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/paperclip/setup.sh" || exit 1
+bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/sub2api/setup.sh" || exit 1
+bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/sub2api/setup-manual.sh" || exit 1
+bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/sub2api/setup-offical.sh" || exit 1
 curl() {
   [[ "$*" == "--proto =https --proto-redir =https --tlsv1.2 -LsSf https://example.invalid/install.sh" ]] || return 64
   printf '%s\n' '[[ "$*" == "update --source github" ]]'
 }
 export -f curl
-NLTDEPLOY_GITHUB_RAW="https://example.invalid/install.sh" "${NLTDEPLOY_ROOT}/bin/nltdeploy" upgrade github >/dev/null
+FUNDEPLOY_GITHUB_RAW="https://example.invalid/install.sh" "${FUNDEPLOY_ROOT}/bin/fundeploy" upgrade github >/dev/null
 curl() {
   [[ "$*" == "--proto =https --proto-redir =https --tlsv1.2 -LsSf https://gitee.example.invalid/install.sh" ]] || return 64
   printf '%s\n' '[[ "$*" == "update --source gitee" ]]'
 }
 export -f curl
-NLTDEPLOY_GITEE_RAW="https://gitee.example.invalid/install.sh" "${NLTDEPLOY_ROOT}/bin/nltdeploy" upgrade gitee >/dev/null
+FUNDEPLOY_GITEE_RAW="https://gitee.example.invalid/install.sh" "${FUNDEPLOY_ROOT}/bin/fundeploy" upgrade gitee >/dev/null
 unset -f curl
 # sub2api 官方模式现在会「先下载到文件、校验、改写端口，再以 root 执行文件」，
 # 而不是 `curl … | sudo bash`。因此 stub 必须支持 -o <file>。
@@ -109,16 +109,16 @@ export -f curl sudo
 # stub 内容与仓库记录的 pinned 校验和自然不同，这里显式关闭校验。
 # 真实场景下的校验行为由 tests/supplychain_smoke.sh 覆盖。
 export SUB2API_INSTALLER_SHA256=""
-"${NLTDEPLOY_ROOT}/bin/nltdeploy" service sub2api official install | grep -q "official-sub2api-installer-ran:install:8802" || exit 1
-"${NLTDEPLOY_ROOT}/bin/nltdeploy" service sub2api install | grep -q "official-sub2api-installer-ran:install:8802" || exit 1
-"${NLTDEPLOY_ROOT}/bin/nltdeploy" service sub2api official update | grep -q "official-sub2api-installer-ran:upgrade:8802" || exit 1
-"${NLTDEPLOY_ROOT}/bin/nltdeploy" service sub2api official uninstall -y | grep -q "official-sub2api-installer-ran:uninstall:8802" || exit 1
+"${FUNDEPLOY_ROOT}/bin/fundeploy" service sub2api official install | grep -q "official-sub2api-installer-ran:install:8802" || exit 1
+"${FUNDEPLOY_ROOT}/bin/fundeploy" service sub2api install | grep -q "official-sub2api-installer-ran:install:8802" || exit 1
+"${FUNDEPLOY_ROOT}/bin/fundeploy" service sub2api official update | grep -q "official-sub2api-installer-ran:upgrade:8802" || exit 1
+"${FUNDEPLOY_ROOT}/bin/fundeploy" service sub2api official uninstall -y | grep -q "official-sub2api-installer-ran:uninstall:8802" || exit 1
 unset -f curl sudo
 curl() { printf '%s\n' 'echo "official-code-server-installer-ran:$*"'; }
 export -f curl
-"${NLTDEPLOY_ROOT}/bin/nltdeploy" service code-server official install --version 4.112.0 | grep -q "official-code-server-installer-ran:--version 4.112.0" || exit 1
-"${NLTDEPLOY_ROOT}/bin/nltdeploy" service code-server install --version 4.112.0 | grep -q "official-code-server-installer-ran:--version 4.112.0" || exit 1
-"${NLTDEPLOY_ROOT}/bin/nltdeploy" service install add code-server | grep -q "official-code-server-installer-ran:" || exit 1
+"${FUNDEPLOY_ROOT}/bin/fundeploy" service code-server official install --version 4.112.0 | grep -q "official-code-server-installer-ran:--version 4.112.0" || exit 1
+"${FUNDEPLOY_ROOT}/bin/fundeploy" service code-server install --version 4.112.0 | grep -q "official-code-server-installer-ran:--version 4.112.0" || exit 1
+"${FUNDEPLOY_ROOT}/bin/fundeploy" service install add code-server | grep -q "official-code-server-installer-ran:" || exit 1
 unset -f curl
 node() { [[ "${1:-}" == "-p" ]] && echo 20; }
 pnpm() {
@@ -127,7 +127,7 @@ pnpm() {
 }
 paperclipai() { [[ "${1:-}" == "--version" ]]; }
 export -f node pnpm paperclipai
-bash "${NLTDEPLOY_ROOT}/libexec/nltdeploy/paperclip/setup.sh" install >/dev/null || exit 1
+bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/paperclip/setup.sh" install >/dev/null || exit 1
 unset -f node pnpm paperclipai
 PAPERCLIP_PLUGIN_MARKER="${TMP}/paperclip-plugin-installed"
 curl() { return 99; }
@@ -141,8 +141,8 @@ gum() {
 paperclipai() { printf '%s\n' "$*" >"${PAPERCLIP_PLUGIN_MARKER}"; }
 export PAPERCLIP_PLUGIN_MARKER
 export -f curl gum paperclipai
-bash "${NLTDEPLOY_ROOT}/libexec/nltdeploy/paperclip/setup.sh" plugin list | grep -q '^paperclip-aperture (@tomismeta/paperclip-aperture)$' || exit 1
-bash "${NLTDEPLOY_ROOT}/libexec/nltdeploy/paperclip/setup.sh" plugin install >/dev/null || exit 1
+bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/paperclip/setup.sh" plugin list | grep -q '^paperclip-aperture (@tomismeta/paperclip-aperture)$' || exit 1
+bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/paperclip/setup.sh" plugin install >/dev/null || exit 1
 [[ "$(<"${PAPERCLIP_PLUGIN_MARKER}")" == "plugin install @tomismeta/paperclip-aperture" ]] || exit 1
 unset -f curl gum paperclipai
 node() { [[ "${1:-}" == "-p" ]] && echo 20; }
@@ -158,7 +158,7 @@ pnpm() {
 }
 paperclipai() { [[ "${1:-}" == "--version" ]]; }
 export -f node pnpm paperclipai
-bash "${NLTDEPLOY_ROOT}/libexec/nltdeploy/paperclip/setup.sh" install >/dev/null || exit 1
+bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/paperclip/setup.sh" install >/dev/null || exit 1
 unset -f node pnpm paperclipai
 PAPERCLIP_MIGRATION_MARKER="${TMP}/paperclip-migrated"
 PAPERCLIP_MANAGED_ENTRYPOINT="${TMP}/paperclip-home/cli/current/node_modules/paperclipai/dist/index.js"
@@ -211,7 +211,7 @@ PATH="${PAPERCLIP_PNPM_BIN}:${PATH}" \
   PAPERCLIP_SERVICE_HOME="${TMP}/paperclip-service" \
   PAPERCLIP_HOME="${TMP}/paperclip-home" \
   PAPERCLIP_PORT=18884 \
-  bash "${NLTDEPLOY_ROOT}/libexec/nltdeploy/paperclip/setup.sh" update >/dev/null || exit 1
+  bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/paperclip/setup.sh" update >/dev/null || exit 1
 [[ "$(<"${PAPERCLIP_MIGRATION_MARKER}")" == true ]] || exit 1
 [[ ! -e "${TMP}/paperclip-home/cli" ]] || exit 1
 [[ ! -e "${HOME}/.local/bin/paperclipai" ]] || exit 1
@@ -231,20 +231,20 @@ printf '%s\n' \
 PAPERCLIP_BUILD_VERSION=2026.811.0-nightly.1 \
   node --import="${TMP}/paperclip-service/paperclip-host-version-register.mjs" \
   "${PAPERCLIP_LOADER_FIXTURE}/check.mjs" || exit 1
-bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/services/nlt-services.sh" || exit 1
-bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/port-kill/setup.sh" || exit 1
-bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/brew/setup.sh" || exit 1
-bash "${NLTDEPLOY_ROOT}/libexec/nltdeploy/brew/setup.sh" --help >/dev/null || exit 1
+bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/nlt-services.sh" || exit 1
+bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/port-kill/setup.sh" || exit 1
+bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/brew/setup.sh" || exit 1
+bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/brew/setup.sh" --help >/dev/null || exit 1
 brew() { [[ "${1:-}" == "--version" || "${1:-}" == "update" ]]; }
 export -f brew
-bash "${NLTDEPLOY_ROOT}/libexec/nltdeploy/brew/setup.sh" install >/dev/null || exit 1
-bash "${NLTDEPLOY_ROOT}/libexec/nltdeploy/brew/setup.sh" update || exit 1
+bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/brew/setup.sh" install >/dev/null || exit 1
+bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/brew/setup.sh" update || exit 1
 unset -f brew
-bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/download/setup.sh" || exit 1
-bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/dev/setup.sh" || exit 1
-bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/ai-cli/setup.sh" || exit 1
+bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/download/setup.sh" || exit 1
+bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/dev/setup.sh" || exit 1
+bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/ai-cli/setup.sh" || exit 1
 for tool in claude codex cursor; do
-  bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/ai-cli/${tool}/setup.sh" || exit 1
+  bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/ai-cli/${tool}/setup.sh" || exit 1
 done
 curl() {
   case "$*" in
@@ -257,39 +257,39 @@ npm() { printf 'npm:%s\n' "$*"; }
 pnpm() { printf 'pnpm:%s\n' "$*"; }
 brew() { printf 'brew:%s\n' "$*"; }
 export -f curl npm pnpm brew
-"${NLTDEPLOY_ROOT}/bin/nltdeploy" ai claude official install | grep -q 'ai-official:claude' || exit 1
-"${NLTDEPLOY_ROOT}/bin/nltdeploy" ai claude pnpm install | grep -q 'pnpm:add -g @anthropic-ai/claude-code@latest' || exit 1
-"${NLTDEPLOY_ROOT}/bin/nltdeploy" ai codex install | grep -q 'ai-official:codex' || exit 1
-"${NLTDEPLOY_ROOT}/bin/nltdeploy" ai codex npm install | grep -q 'npm:install -g @openai/codex@latest' || exit 1
-"${NLTDEPLOY_ROOT}/bin/nltdeploy" ai codex brew update | grep -q 'brew:upgrade --cask codex' || exit 1
-"${NLTDEPLOY_ROOT}/bin/nltdeploy" ai cursor official install | grep -q 'ai-official:cursor' || exit 1
+"${FUNDEPLOY_ROOT}/bin/fundeploy" ai claude official install | grep -q 'ai-official:claude' || exit 1
+"${FUNDEPLOY_ROOT}/bin/fundeploy" ai claude pnpm install | grep -q 'pnpm:add -g @anthropic-ai/claude-code@latest' || exit 1
+"${FUNDEPLOY_ROOT}/bin/fundeploy" ai codex install | grep -q 'ai-official:codex' || exit 1
+"${FUNDEPLOY_ROOT}/bin/fundeploy" ai codex npm install | grep -q 'npm:install -g @openai/codex@latest' || exit 1
+"${FUNDEPLOY_ROOT}/bin/fundeploy" ai codex brew update | grep -q 'brew:upgrade --cask codex' || exit 1
+"${FUNDEPLOY_ROOT}/bin/fundeploy" ai cursor official install | grep -q 'ai-official:cursor' || exit 1
 unset -f curl npm pnpm brew
 mkdir -p "${TMP}/ai-home/.local/bin" "${TMP}/ai-home/.codex/packages/standalone"
 touch "${TMP}/ai-home/.local/bin/codex"
-HOME="${TMP}/ai-home" NLT_ASSUME_YES=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" ai codex official uninstall
+HOME="${TMP}/ai-home" NLT_ASSUME_YES=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" ai codex official uninstall
 [[ ! -e "${TMP}/ai-home/.local/bin/codex" && ! -e "${TMP}/ai-home/.codex/packages/standalone" ]] || exit 1
-bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/dev/go/setup.sh" || exit 1
-bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/dev/rust/setup.sh" || exit 1
-bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/dev/nodejs/setup.sh" || exit 1
-bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/dev/pnpm/setup.sh" || exit 1
-bash -n "${NLTDEPLOY_ROOT}/libexec/nltdeploy/dev/uv/setup.sh" || exit 1
-out="$(NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" list)"
+bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/dev/go/setup.sh" || exit 1
+bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/dev/rust/setup.sh" || exit 1
+bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/dev/nodejs/setup.sh" || exit 1
+bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/dev/pnpm/setup.sh" || exit 1
+bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/dev/uv/setup.sh" || exit 1
+out="$(NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" list)"
 grep -q "service" <<<"${out}" || exit 1
-out="$(NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" service list)"
+out="$(NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" service list)"
 grep -q "sub2api" <<<"${out}" || exit 1
-NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" dev --help >/dev/null || exit 1
-out="$(NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" tool list)"
+NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" dev --help >/dev/null || exit 1
+out="$(NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" tool list)"
 grep -q "brew" <<<"${out}" || exit 1
-out="$(NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" ai list)"
+out="$(NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" ai list)"
 grep -q "codex" <<<"${out}" || exit 1
-out="$(NLTDEPLOY_PACKAGE_MANAGER=apt NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" upgrade --source github)"
-grep -q "apt install --only-upgrade nltdeploy" <<<"${out}" || exit 1
-out="$(NLTDEPLOY_PACKAGE_MANAGER=apt NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" uninstall)"
-grep -q "apt remove nltdeploy" <<<"${out}" || exit 1
-out="$(NLTDEPLOY_PACKAGE_MANAGER=brew NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" upgrade)"
-grep -q "brew upgrade nltdeploy" <<<"${out}" || exit 1
-out="$(NLTDEPLOY_PACKAGE_MANAGER=brew NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" uninstall)"
-grep -q "brew uninstall nltdeploy" <<<"${out}" || exit 1
+out="$(FUNDEPLOY_PACKAGE_MANAGER=apt NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" upgrade --source github)"
+grep -q "apt install --only-upgrade fundeploy" <<<"${out}" || exit 1
+out="$(FUNDEPLOY_PACKAGE_MANAGER=apt NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" uninstall)"
+grep -q "apt remove fundeploy" <<<"${out}" || exit 1
+out="$(FUNDEPLOY_PACKAGE_MANAGER=brew NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" upgrade)"
+grep -q "brew upgrade fundeploy" <<<"${out}" || exit 1
+out="$(FUNDEPLOY_PACKAGE_MANAGER=brew NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" uninstall)"
+grep -q "brew uninstall fundeploy" <<<"${out}" || exit 1
 systemctl() {
   [[ "${1:-}" == "cat" ]] && return 0
   printf 'systemctl:%s\n' "$*"
@@ -299,38 +299,38 @@ curl() { return 1; }
 sudo() { "$@"; }
 export -f systemctl brew curl sudo
 if [[ "$(uname -s)" == "Darwin" ]]; then
-  "${NLTDEPLOY_ROOT}/bin/nltdeploy" service code-server official start | grep -q "brew:services start code-server" || exit 1
-  "${NLTDEPLOY_ROOT}/bin/nltdeploy" service code-server official restart | grep -q "brew:services restart code-server" || exit 1
-  "${NLTDEPLOY_ROOT}/bin/nltdeploy" service code-server status | grep -q "brew:services info code-server" || exit 1
+  "${FUNDEPLOY_ROOT}/bin/fundeploy" service code-server official start | grep -q "brew:services start code-server" || exit 1
+  "${FUNDEPLOY_ROOT}/bin/fundeploy" service code-server official restart | grep -q "brew:services restart code-server" || exit 1
+  "${FUNDEPLOY_ROOT}/bin/fundeploy" service code-server status | grep -q "brew:services info code-server" || exit 1
 else
-  CODE_SERVER_OFFICIAL_USER=tester "${NLTDEPLOY_ROOT}/bin/nltdeploy" service code-server official start | grep -q "systemctl:enable --now code-server@tester" || exit 1
-  CODE_SERVER_OFFICIAL_USER=tester "${NLTDEPLOY_ROOT}/bin/nltdeploy" service code-server official restart | grep -q "systemctl:restart code-server@tester" || exit 1
-  CODE_SERVER_OFFICIAL_USER=tester "${NLTDEPLOY_ROOT}/bin/nltdeploy" service code-server status | grep -q "systemctl:status code-server@tester --no-pager" || exit 1
+  CODE_SERVER_OFFICIAL_USER=tester "${FUNDEPLOY_ROOT}/bin/fundeploy" service code-server official start | grep -q "systemctl:enable --now code-server@tester" || exit 1
+  CODE_SERVER_OFFICIAL_USER=tester "${FUNDEPLOY_ROOT}/bin/fundeploy" service code-server official restart | grep -q "systemctl:restart code-server@tester" || exit 1
+  CODE_SERVER_OFFICIAL_USER=tester "${FUNDEPLOY_ROOT}/bin/fundeploy" service code-server status | grep -q "systemctl:status code-server@tester --no-pager" || exit 1
 fi
-out="$(HOME="${TMP}/manual-home" PATH=/usr/bin:/bin CODE_SERVER_SERVICE_HOME="${TMP}/manual-code-server" CODE_SERVER_BIND=127.0.0.1:59997 "${NLTDEPLOY_ROOT}/bin/nltdeploy" service code-server manual status)"
+out="$(HOME="${TMP}/manual-home" PATH=/usr/bin:/bin CODE_SERVER_SERVICE_HOME="${TMP}/manual-code-server" CODE_SERVER_BIND=127.0.0.1:59997 "${FUNDEPLOY_ROOT}/bin/fundeploy" service code-server manual status)"
 grep -q "CODE_SERVER_SERVICE_HOME" <<<"${out}" || exit 1
 ! grep -q "systemctl:" <<<"${out}" || exit 1
-"${NLTDEPLOY_ROOT}/bin/nltdeploy" service sub2api official restart | grep -q "systemctl:restart sub2api" || exit 1
-"${NLTDEPLOY_ROOT}/bin/nltdeploy" service sub2api status | grep -q "systemctl:status sub2api --no-pager" || exit 1
-out="$(SUB2API_SERVICE_HOME="${TMP}/manual-sub2api" SUB2API_PORT=59998 "${NLTDEPLOY_ROOT}/bin/nltdeploy" service sub2api manual status)"
+"${FUNDEPLOY_ROOT}/bin/fundeploy" service sub2api official restart | grep -q "systemctl:restart sub2api" || exit 1
+"${FUNDEPLOY_ROOT}/bin/fundeploy" service sub2api status | grep -q "systemctl:status sub2api --no-pager" || exit 1
+out="$(SUB2API_SERVICE_HOME="${TMP}/manual-sub2api" SUB2API_PORT=59998 "${FUNDEPLOY_ROOT}/bin/fundeploy" service sub2api manual status)"
 grep -q "PID 文件" <<<"${out}" || exit 1
 ! grep -q "systemctl:" <<<"${out}" || exit 1
 unset -f systemctl brew curl sudo
-out="$(NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" tool list)"
+out="$(NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" tool list)"
 grep -q "github-net" <<<"${out}" || exit 1
 grep -q "brew" <<<"${out}" || exit 1
-NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" dev --help >/dev/null || exit 1
-out="$(HOME="${TMP}/status-home" PATH=/usr/bin:/bin NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" service status --no-http)"
+NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" dev --help >/dev/null || exit 1
+out="$(HOME="${TMP}/status-home" PATH=/usr/bin:/bin NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" service status --no-http)"
 grep -q '^服务,状态,PID,端口/访问,HTTP$' <<<"${out}" || exit 1
-NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" dev --help >/dev/null || exit 1
-NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" dev uv --help >/dev/null || exit 1
-NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" ai --help >/dev/null || exit 1
-NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" ai list | grep -q "claude" || exit 1
-NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" tool download resolve-url "https://github.com/foo/bar" | grep -q "https://github.com/foo/bar" || exit 1
-NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" tool port-kill list 59999 >/dev/null || exit 1
+NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" dev --help >/dev/null || exit 1
+NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" dev uv --help >/dev/null || exit 1
+NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" ai --help >/dev/null || exit 1
+NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" ai list | grep -q "claude" || exit 1
+NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" tool download resolve-url "https://github.com/foo/bar" | grep -q "https://github.com/foo/bar" || exit 1
+NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" tool port-kill list 59999 >/dev/null || exit 1
 mkdir -p "${TMP}/legacy-bin"
 touch "${TMP}/legacy-bin/nlt-port-kill"
-NLT_BIN_DIR="${TMP}/legacy-bin" NONINTERACTIVE=1 "${NLTDEPLOY_ROOT}/bin/nltdeploy" tool port-kill install >/dev/null || exit 1
+NLT_BIN_DIR="${TMP}/legacy-bin" NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" tool port-kill install >/dev/null || exit 1
 [[ ! -e "${TMP}/legacy-bin/nlt-port-kill" ]] || exit 1
-"${NLTDEPLOY_ROOT}/bin/nltdeploy" service status --no-http >/dev/null || exit 1
+"${FUNDEPLOY_ROOT}/bin/fundeploy" service status --no-http >/dev/null || exit 1
 echo "install_smoke OK"

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # nlt-ui：可复用的终端交互主题（gum 封装）。由各入口/服务脚本 source。
 #
-# 目标：让 nltdeploy 各领域的 gum 菜单看起来是「同一套系统」——
+# 目标：让 fundeploy 各领域的 gum 菜单看起来是「同一套系统」——
 #   统一配色、统一 banner、统一光标与选中样式、统一确认/输入风格。
 #
 # 设计约定:
@@ -52,7 +52,7 @@ nlt_ui_apply_theme() {
 # 有 gum 且启用样式：圆角边框盒 + 主色标题 + 灰色副标题行。
 # 否则：朴素两行文本（带一条 ASCII 分隔线），保证在任何终端/管道下都可读。
 nlt_ui_banner() {
-  local title="${1:-nltdeploy}"; shift || true
+  local title="${1:-fundeploy}"; shift || true
   if nlt_ui_has_gum && _nlt_ui_styled; then
     local body
     body="$(gum style --bold --foreground "${NLT_UI_C_PRIMARY}" "${title}")"

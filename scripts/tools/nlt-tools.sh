@@ -1,24 +1,24 @@
 #!/usr/bin/env bash
-# nltdeploy tool：工具类内部路由。
+# fundeploy tool：工具类内部路由。
 #
 # 用法:
-#   nltdeploy tool <tool> install      # 检测是否已安装，未安装则安装
-#   nltdeploy tool <tool> upgrade      # 升级到最新
-#   nltdeploy tool <tool> uninstall    # 卸载
-#   nltdeploy tool <tool> <其它子命令> # 原样透传给工具脚本
-#   nltdeploy tool list                # 列出可用工具
-#   nltdeploy tool help                # 显示本说明
-#   nltdeploy tool                     # 交互菜单
+#   fundeploy tool <tool> install      # 检测是否已安装，未安装则安装
+#   fundeploy tool <tool> upgrade      # 升级到最新
+#   fundeploy tool <tool> uninstall    # 卸载
+#   fundeploy tool <tool> <其它子命令> # 原样透传给工具脚本
+#   fundeploy tool list                # 列出可用工具
+#   fundeploy tool help                # 显示本说明
+#   fundeploy tool                     # 交互菜单
 #
 # 供服务脚本调用（服务内部依赖工具时，不自行检测，直接）:
-#   nltdeploy tool gum install
-#   nltdeploy tool python-env install
+#   fundeploy tool gum install
+#   fundeploy tool python-env install
 #
 # 设计约定:
 #   - install = 幂等「检测→未装则装」，由各工具 setup.sh 的 install 子命令负责。
 #   - upgrade 为规范动词；各工具历史上用 update，这里做归一化映射。
 #   - 支持 linux 与 mac（macOS/Darwin），具体平台分支在各工具内实现。
-#   - 仓库内（scripts/tools/）与安装后（libexec/nltdeploy/tools/）两种布局自适应。
+#   - 仓库内（scripts/tools/）与安装后（libexec/fundeploy/tools/）两种布局自适应。
 #
 # 环境变量:
 #   NONINTERACTIVE=1   无参数时不进入 gum 菜单，直接打印 help 退出。
@@ -98,9 +98,9 @@ _nlt_tools_resolve() {
 
 usage() {
   cat <<'EOF'
-用法: nltdeploy tool <工具> <install|upgrade|uninstall> [args...]
-      nltdeploy tool list
-      nltdeploy tool help
+用法: fundeploy tool <工具> <install|upgrade|uninstall> [args...]
+      fundeploy tool list
+      fundeploy tool help
 
 动作:
   install     检测是否已安装，未安装则安装（幂等）。服务依赖工具时统一走此入口。
@@ -112,11 +112,11 @@ usage() {
   brew gum download github-net skills-sync port-kill cockpit-tools
 
 示例:
-  nltdeploy tool brew install
-  nltdeploy tool gum install
-  nltdeploy tool gum upgrade
-  nltdeploy tool github-net doctor
-  nltdeploy tool cockpit-tools uninstall
+  fundeploy tool brew install
+  fundeploy tool gum install
+  fundeploy tool gum upgrade
+  fundeploy tool github-net doctor
+  fundeploy tool cockpit-tools uninstall
 
 无参数（交互 TTY）: 进入 gum 菜单选择工具与动作；NONINTERACTIVE=1 或非 TTY 时打印本说明。
 支持 linux 与 macOS。
@@ -125,7 +125,7 @@ EOF
 
 cmd_list() {
   local n tail resolved
-  echo "可用工具（nltdeploy tool <工具> <install|upgrade|uninstall>）:"
+  echo "可用工具（fundeploy tool <工具> <install|upgrade|uninstall>）:"
   for n in "${_NLT_TOOLS_NAMES[@]}"; do
     tail="$(_nlt_tools_tail "$n" || true)"
     if resolved="$(_nlt_tools_resolve "$n" 2>/dev/null)"; then
@@ -165,7 +165,7 @@ dispatch() {
   local setup expected
   expected="$(_nlt_tools_tail "${tool}")"
   setup="$(_nlt_tools_resolve "${tool}" 2>/dev/null)" \
-    || die "安装不完整：缺少 ${expected}。请运行 nltdeploy upgrade 后重试"
+    || die "安装不完整：缺少 ${expected}。请运行 fundeploy upgrade 后重试"
 
   # gum 一等工具：映射到 utils setup.sh 的 gum 子命令。
   if [[ "${tool}" == "gum" ]]; then
@@ -239,7 +239,7 @@ interactive_main() {
   fi
 
   if declare -F nlt_ui_banner >/dev/null 2>&1; then
-    nlt_ui_banner "nltdeploy / tool" "本机工具安装、升级与卸载"
+    nlt_ui_banner "fundeploy / tool" "本机工具安装、升级与卸载"
   fi
 
   # 组装带描述的工具项：key 为首个 token，label 为 "key — 描述"。
@@ -253,9 +253,9 @@ interactive_main() {
 
   local pick tool action
   if declare -F nlt_ui_choose >/dev/null 2>&1; then
-    pick="$(nlt_ui_choose "nltdeploy / tool / 选择工具" "${labels[@]}")" || return 0
+    pick="$(nlt_ui_choose "fundeploy / tool / 选择工具" "${labels[@]}")" || return 0
   else
-    pick="$(printf '%s\n' "${labels[@]}" | gum choose --header "nltdeploy / tool / 选择工具")" || return 0
+    pick="$(printf '%s\n' "${labels[@]}" | gum choose --header "fundeploy / tool / 选择工具")" || return 0
   fi
   [[ -n "${pick}" ]] || return 0
   tool="${pick%% *}"

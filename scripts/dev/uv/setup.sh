@@ -63,7 +63,7 @@ do_update_source() {
 }
 
 do_version() {
-  command -v uv >/dev/null 2>&1 || die "未找到 uv（可先运行 nltdeploy dev uv install）"
+  command -v uv >/dev/null 2>&1 || die "未找到 uv（可先运行 fundeploy dev uv install）"
   uv --version
 }
 
@@ -147,7 +147,7 @@ case "$cmd" in
 
 与 python-env 的关系:
   python-env 在创建虚拟环境前也会按需自动安装 uv；若希望**先单独装好/升级 uv**，
-  请使用 nltdeploy dev uv。
+  请使用 fundeploy dev uv。
 EOF
     ;;
   *) die "未知子命令: $cmd（见 uv/setup.sh --help）" ;;

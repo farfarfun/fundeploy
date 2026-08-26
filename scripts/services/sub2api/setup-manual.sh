@@ -565,12 +565,12 @@ interactive_main() {
   _nlt_ensure_gum || exit 1
   declare -F nlt_ui_apply_theme >/dev/null 2>&1 && nlt_ui_apply_theme
   if declare -F nlt_ui_banner >/dev/null 2>&1; then
-    nlt_ui_banner "nltdeploy / service / sub2api / manual" "本地安装 · ${SUB2API_SERVICE_HOME} · 端口 ${SUB2API_PORT}" >&2
+    nlt_ui_banner "fundeploy / service / sub2api / manual" "本地安装 · ${SUB2API_SERVICE_HOME} · 端口 ${SUB2API_PORT}" >&2
   fi
   set +e
   while true; do
     local pick
-    pick="$(nlt_ui_choose "nltdeploy / service / sub2api / manual / 选择动作" \
+    pick="$(nlt_ui_choose "fundeploy / service / sub2api / manual / 选择动作" \
       "install           安装" \
       "update            更新" \
       "start             启动" \

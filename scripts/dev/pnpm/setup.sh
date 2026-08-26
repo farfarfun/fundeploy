@@ -46,7 +46,7 @@ do_install_pkg() {
 
 do_install_source() {
   _nlt_prepend_node_path
-  command -v node >/dev/null 2>&1 || die "需要 node（可先运行 nltdeploy dev nodejs install，或自行安装 Node 16.17+）"
+  command -v node >/dev/null 2>&1 || die "需要 node（可先运行 fundeploy dev nodejs install，或自行安装 Node 16.17+）"
   if [[ "${PNPM_USE_NPM_GLOBAL:-}" == "1" ]]; then
     mkdir -p "${NPM_GLOBAL_ROOT}/bin"
     export npm_config_prefix="${NPM_GLOBAL_ROOT}"
@@ -129,7 +129,7 @@ case "$cmd" in
   PNPM_USE_NPM_GLOBAL=1   使用 npm install -g pnpm，前缀 NPM_GLOBAL_ROOT（默认 ~/opt/npm）
   INSTALL_METHOD=source    使用 corepack/npm 路径
 
-安装 Node 见: nltdeploy dev nodejs install（默认 ~/opt/node）
+安装 Node 见: fundeploy dev nodejs install（默认 ~/opt/node）
 EOF
     ;;
   *) die "未知子命令: $cmd" ;;

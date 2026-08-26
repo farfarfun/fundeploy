@@ -65,7 +65,7 @@ jobs:
       - name: 运行测试套件
         env:
           # 在 Linux 上禁止 package_smoke 因缺工具而静默跳过。
-          NLTDEPLOY_REQUIRE_PACKAGE_TESTS: ${{ runner.os == 'Linux' && '1' || '' }}
+          FUNDEPLOY_REQUIRE_PACKAGE_TESTS: ${{ runner.os == 'Linux' && '1' || '' }}
         run: bash tests/run-all.sh
 
   entrypoints:
@@ -79,7 +79,7 @@ jobs:
         run: |
           set -uo pipefail
           rc=0
-          for s in scripts/nltdeploy.sh scripts/services/nlt-services.sh \
+          for s in scripts/fundeploy.sh scripts/services/nlt-services.sh \
                    scripts/tools/nlt-tools.sh scripts/dev/setup.sh scripts/ai-cli/setup.sh; do
             if ! NONINTERACTIVE=1 bash "$s" help >/dev/null 2>&1; then
               echo "FAIL: $s help 返回非 0"; rc=1
@@ -95,7 +95,7 @@ jobs:
         run: |
           set -uo pipefail
           rc=0
-          for s in scripts/nltdeploy.sh scripts/dev/setup.sh scripts/tools/nlt-tools.sh \
+          for s in scripts/fundeploy.sh scripts/dev/setup.sh scripts/tools/nlt-tools.sh \
                    scripts/services/nlt-services.sh scripts/ai-cli/setup.sh; do
             if timeout 20 env NONINTERACTIVE=1 bash "$s" </dev/null >/dev/null 2>&1; then
               code=0

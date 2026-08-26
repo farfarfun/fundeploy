@@ -14,7 +14,7 @@ die() { printf '错误: %s\n' "$*" >&2; exit 1; }
 
 usage() {
   cat <<EOF
-用法: nltdeploy tool skills-sync [命令] [仓库名]
+用法: fundeploy tool skills-sync [命令] [仓库名]
 
 命令:
   list                         查询远端并显示本地状态

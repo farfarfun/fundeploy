@@ -10,9 +10,9 @@ TOOLS=(claude codex cursor)
 
 usage() {
   cat <<'EOF'
-用法: nltdeploy ai <工具|all> [安装方式] <动作> [args...]
-      nltdeploy ai                    # 交互选择工具、安装方式和动作
-      nltdeploy ai list
+用法: fundeploy ai <工具|all> [安装方式] <动作> [args...]
+      fundeploy ai                    # 交互选择工具、安装方式和动作
+      fundeploy ai list
 
 工具与安装方式（官方方式优先且为默认）:
   claude   official | brew | npm | pnpm
@@ -28,10 +28,10 @@ usage() {
   NLT_ASSUME_YES=1   允许非交互删除官方安装产物
 
 示例:
-  nltdeploy ai claude install
-  nltdeploy ai claude pnpm install
-  nltdeploy ai codex brew update
-  nltdeploy ai cursor official install
+  fundeploy ai claude install
+  fundeploy ai claude pnpm install
+  fundeploy ai codex brew update
+  fundeploy ai cursor official install
 EOF
 }
 

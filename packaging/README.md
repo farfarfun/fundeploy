@@ -1,4 +1,4 @@
-# 发布 nltdeploy
+# 发布 fundeploy
 
 发布流程由 [release.yml](../.github/workflows/release.yml) 驱动。推送 `v*` tag 后，GitHub Release 和 `.deb` 始终生成；APT 仓库与 Homebrew Tap 在配置对应 Secret 后自动发布。
 
@@ -25,9 +25,9 @@ gh secret set APT_GPG_PASSPHRASE
 Homebrew Tap 使用仅限该仓库的可写 Deploy Key：
 
 ```bash
-ssh-keygen -t ed25519 -N '' -C 'nltdeploy release workflow' -f homebrew_tap_deploy
+ssh-keygen -t ed25519 -N '' -C 'fundeploy release workflow' -f homebrew_tap_deploy
 gh api --method POST repos/farfarfun/homebrew-tap/keys \
-  -f title='nltdeploy release workflow' \
+  -f title='fundeploy release workflow' \
   -f key="$(cat homebrew_tap_deploy.pub)" \
   -F read_only=false
 gh secret set HOMEBREW_TAP_DEPLOY_KEY < homebrew_tap_deploy
@@ -43,7 +43,7 @@ git tag -a "v${version}" -m "v${version}"
 git push origin "v${version}"
 ```
 
-工作流会校验 tag 与 `VERSION` 一致，然后执行全部冒烟测试、创建 `nltdeploy_<version>_all.deb`、生成 Formula、发布 GitHub Release、部署签名 APT Pages，并更新 `farfarfun/homebrew-tap`。
+工作流会校验 tag 与 `VERSION` 一致，然后执行全部冒烟测试、创建 `fundeploy_<version>_all.deb`、生成 Formula、发布 GitHub Release、部署签名 APT Pages，并更新 `farfarfun/homebrew-tap`。
 
 ## 本地验证
 

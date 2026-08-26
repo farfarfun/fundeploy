@@ -18,7 +18,7 @@ fi
 # 上游安装脚本以 root 执行，因此必须锁定到不可变的 commit SHA，而不是可变的
 # main 分支。raw.githubusercontent.com/<repo>/<sha>/<path> 是内容寻址的：给定
 # SHA 就唯一确定内容。用 main 意味着上游仓库（或其账号）一旦被攻破，所有执行过
-# `nltdeploy service sub2api official install` 的机器都会被拿到 root。
+# `fundeploy service sub2api official install` 的机器都会被拿到 root。
 #
 # 升级步骤（人工复核后再改）：
 #   1. 到 https://github.com/Wei-Shaw/sub2api/commits/main/deploy/install.sh 选定新提交
@@ -45,10 +45,10 @@ usage() {
   uninstall [上游选项]    使用官方脚本卸载；支持 -y、--purge
 
 示例:
-  nltdeploy service sub2api official install
-  nltdeploy service sub2api official restart
-  nltdeploy service sub2api official logs -n 100
-  nltdeploy service sub2api official uninstall -y
+  fundeploy service sub2api official install
+  fundeploy service sub2api official restart
+  fundeploy service sub2api official logs -n 100
+  fundeploy service sub2api official uninstall -y
 EOF
 }
 
@@ -107,7 +107,7 @@ run_official() {
 
   # 端口改写必须验证是否真的生效。原实现直接 sed 后管道执行，一旦上游改了
   # 引号/缩进/默认值，sed 静默无操作 —— sub2api 装在 8080，而
-  # `nltdeploy service status` 一直探测 8802，永远显示「未运行」。
+  # `fundeploy service status` 一直探测 8802，永远显示「未运行」。
   if grep -qE '^SERVER_PORT="8080"$' "${script}"; then
     sed -i.bak "s/^SERVER_PORT=\"8080\"$/SERVER_PORT=\"${SUB2API_OFFICIAL_PORT}\"/" "${script}" \
       && rm -f "${script}.bak"
@@ -139,11 +139,11 @@ cmd_uninstall() {
 
 interactive_main() {
   _nlt_ensure_gum || exit 1
-  nlt_ui_banner "nltdeploy / service / sub2api / official" "官方脚本 · /opt/sub2api · systemd · 端口 8802" >&2
+  nlt_ui_banner "fundeploy / service / sub2api / official" "官方脚本 · /opt/sub2api · systemd · 端口 8802" >&2
   set +e
   while true; do
     local pick
-    pick="$(nlt_ui_choose "nltdeploy / service / sub2api / official / 选择动作" \
+    pick="$(nlt_ui_choose "fundeploy / service / sub2api / official / 选择动作" \
       "install           安装" \
       "update            更新" \
       "start             启动" \

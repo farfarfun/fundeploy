@@ -18,7 +18,7 @@ PACKAGE="@openai/codex"
 
 usage() {
   cat <<'EOF'
-用法: nltdeploy ai codex [official|brew|npm|pnpm] <install|update|uninstall|status>
+用法: fundeploy ai codex [official|brew|npm|pnpm] <install|update|uninstall|status>
 
 省略安装方式时默认 official。官方安装器支持 CODEX_INSTALL_DIR、CODEX_HOME 等变量。
 EOF
@@ -40,7 +40,7 @@ official_uninstall() {
 }
 
 brew_action() {
-  ai_require brew "请先运行 nltdeploy tool brew install"
+  ai_require brew "请先运行 fundeploy tool brew install"
   case "$1" in
     install) brew install --cask codex ;;
     update) brew upgrade --cask codex ;;

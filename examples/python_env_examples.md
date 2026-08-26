@@ -6,20 +6,20 @@
 
 ```bash
 # 创建 Python 3.12 环境
-nltdeploy create py312
+fundeploy create py312
 
 # 创建 Python 3.11 环境
-nltdeploy create py311
+fundeploy create py311
 
 # 创建 Python 3.10 环境
-nltdeploy create py310
+fundeploy create py310
 ```
 
 ### 自定义安装路径
 
 ```bash
 # 安装到自定义路径
-nltdeploy create py312 --path /custom/path
+fundeploy create py312 --path /custom/path
 ```
 
 ### 激活环境
@@ -48,7 +48,7 @@ source ~/opt/py312/bin/activate
 
 ```bash
 # 1. 创建 Python 3.12 环境
-nltdeploy create py312
+fundeploy create py312
 
 # 2. 激活环境
 source ~/opt/py312/bin/activate
@@ -67,9 +67,9 @@ deactivate
 
 ```bash
 # 创建多个版本
-nltdeploy create py312
-nltdeploy create py311
-nltdeploy create py310
+fundeploy create py312
+fundeploy create py311
+fundeploy create py310
 
 # 添加别名到 ~/.bashrc 或 ~/.zshrc
 alias py312='source ~/opt/py312/bin/activate'

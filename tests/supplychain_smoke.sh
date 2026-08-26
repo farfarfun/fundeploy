@@ -2,7 +2,7 @@
 # 供应链加固的回归测试（全部离线，不触网、不以 root 执行任何东西）。
 #
 # 覆盖的历史问题：
-#   1. NLTDEPLOY_GITHUB_HUB_PROXY_PREFIX / RAW_MIRROR_BASE 不校验 scheme，
+#   1. FUNDEPLOY_GITHUB_HUB_PROXY_PREFIX / RAW_MIRROR_BASE 不校验 scheme，
 #      可把所有 GitHub 族下载重定向到明文 http:// 主机。
 #   2. pip-sources 会把 http:// 镜像写成 index-url，并为所有源（含 HTTPS）
 #      生成 trusted-host —— 对 HTTPS 主机而言这等于关掉证书校验。
@@ -20,17 +20,17 @@ echo "== GitHub 下载改写：必须拒绝非 https 前缀 =="
 source "${_REPO_ROOT}/scripts/lib/nlt-github-download.sh"
 _U="https://raw.githubusercontent.com/o/r/v/f.txt"
 
-_out="$(NLTDEPLOY_GITHUB_HUB_PROXY_PREFIX='https://ok.example/' _nlt_github_download_resolve_url "$_U" 2>/dev/null)"
+_out="$(FUNDEPLOY_GITHUB_HUB_PROXY_PREFIX='https://ok.example/' _nlt_github_download_resolve_url "$_U" 2>/dev/null)"
 assert_eq "https 前缀应生效" "https://ok.example/${_U}" "${_out}"
 
-_out="$(NLTDEPLOY_GITHUB_HUB_PROXY_PREFIX='http://evil.example/' _nlt_github_download_resolve_url "$_U" 2>/dev/null)"
+_out="$(FUNDEPLOY_GITHUB_HUB_PROXY_PREFIX='http://evil.example/' _nlt_github_download_resolve_url "$_U" 2>/dev/null)"
 assert_eq "http 前缀应被拒绝并原样返回" "${_U}" "${_out}"
 
-_out="$(NLTDEPLOY_GITHUB_DOWNLOAD_MODE=mirror_raw NLTDEPLOY_GITHUB_RAW_MIRROR_BASE='http://evil.example/raw' \
+_out="$(FUNDEPLOY_GITHUB_DOWNLOAD_MODE=mirror_raw FUNDEPLOY_GITHUB_RAW_MIRROR_BASE='http://evil.example/raw' \
   _nlt_github_download_resolve_url "$_U" 2>/dev/null)"
 assert_eq "http 镜像基址应被拒绝" "${_U}" "${_out}"
 
-_out="$(NLTDEPLOY_GITHUB_DOWNLOAD_MODE=mirror_raw NLTDEPLOY_GITHUB_RAW_MIRROR_BASE='https://ok.example/raw' \
+_out="$(FUNDEPLOY_GITHUB_DOWNLOAD_MODE=mirror_raw FUNDEPLOY_GITHUB_RAW_MIRROR_BASE='https://ok.example/raw' \
   _nlt_github_download_resolve_url "$_U" 2>/dev/null)"
 assert_eq "https 镜像基址应生效" "https://ok.example/raw/o/r/v/f.txt" "${_out}"
 

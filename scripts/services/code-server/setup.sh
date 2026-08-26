@@ -20,7 +20,7 @@ MANUAL_SCRIPT="${SCRIPT_DIR}/setup-manual.sh"
 
 usage() {
   cat <<'EOF'
-用法: nltdeploy service code-server <模式> [动作]
+用法: fundeploy service code-server <模式> [动作]
 
 模式:
   official  官方 install.sh + 系统包管理器和系统服务
@@ -30,10 +30,10 @@ usage() {
 官方模式额外支持 logs。
 
 示例:
-  nltdeploy service code-server official install
-  nltdeploy service code-server official start
-  nltdeploy service code-server manual install
-  nltdeploy service code-server manual start
+  fundeploy service code-server official install
+  fundeploy service code-server official start
+  fundeploy service code-server manual install
+  fundeploy service code-server manual start
 
 默认: 不写模式时使用 official；run 仅由 manual 支持。
 兼容: install-official 等价于 official install。
@@ -42,11 +42,11 @@ EOF
 
 interactive_main() {
   _nlt_ensure_gum || exit 1
-  nlt_ui_banner "nltdeploy / service / code-server" "选择互相独立的安装与服务管理模式" >&2
+  nlt_ui_banner "fundeploy / service / code-server" "选择互相独立的安装与服务管理模式" >&2
   set +e
   while true; do
     local pick
-    pick="$(nlt_ui_choose "nltdeploy / service / code-server / 选择模式" \
+    pick="$(nlt_ui_choose "fundeploy / service / code-server / 选择模式" \
       "official   官方模式 · install.sh + 系统服务" \
       "manual     手动模式 · Release 包 + 本地 PID" \
       "help       命令帮助" \
