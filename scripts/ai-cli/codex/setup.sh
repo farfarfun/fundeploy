@@ -27,7 +27,7 @@ EOF
 official_install() {
   ai_require curl "请先安装 curl"
   local url="${CODEX_INSTALL_URL:-https://chatgpt.com/codex/install.sh}"
-  _nlt_say_title "使用 OpenAI Codex 官方安装器"
+  _fundeploy_say_title "使用 OpenAI Codex 官方安装器"
   curl -fsSL "${url}" | sh -s -- "$@"
 }
 

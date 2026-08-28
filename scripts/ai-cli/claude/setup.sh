@@ -28,7 +28,7 @@ EOF
 official_install() {
   ai_require curl "请先安装 curl"
   local url="${CLAUDE_INSTALL_URL:-https://claude.ai/install.sh}"
-  _nlt_say_title "使用 Claude Code 官方安装器"
+  _fundeploy_say_title "使用 Claude Code 官方安装器"
   curl -fsSL "${url}" | bash -s -- "$@"
 }
 

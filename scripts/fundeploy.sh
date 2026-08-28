@@ -31,8 +31,8 @@ FUNDEPLOY_GITEE_RAW="${FUNDEPLOY_GITEE_RAW:-https://gitee.com/farfarfun/fundeplo
 
 # 可选加载统一交互主题（banner / 主题化菜单）；缺失不致命，菜单会降级为朴素 gum/文本。
 for _cand in \
-  "${SCRIPT_DIR}/lib/nlt-ui.sh" \
-  "${SCRIPT_DIR}/../lib/nlt-ui.sh"; do
+  "${SCRIPT_DIR}/lib/fundeploy-ui.sh" \
+  "${SCRIPT_DIR}/../lib/fundeploy-ui.sh"; do
   if [[ -f "${_cand}" ]]; then
     # shellcheck source=/dev/null
     source "${_cand}"
@@ -72,7 +72,7 @@ EOF
 
 _entry_rel() {
   case "$1" in
-    tools)          echo "tools/nlt-tools.sh" ;;
+    tools)          echo "tools/fundeploy-tools.sh" ;;
     dev)            echo "dev/setup.sh" ;;
     ai-cli)         echo "ai-cli/setup.sh" ;;
     pip-sources)    echo "pip-sources/setup.sh" ;;
@@ -82,7 +82,7 @@ _entry_rel() {
     port-kill)      echo "port-kill/setup.sh" ;;
     download)       echo "download/setup.sh" ;;
     cockpit-tools)  echo "cockpit-tools/setup.sh" ;;
-    services)       echo "services/nlt-services.sh" ;;
+    services)       echo "services/fundeploy-services.sh" ;;
     airflow)        echo "airflow/setup.sh" ;;
     celery)         echo "celery/setup.sh" ;;
     paperclip)      echo "paperclip/setup.sh" ;;
@@ -242,8 +242,8 @@ interactive_main() {
     export PATH="${HOME}/opt/gum/bin:${PATH}"
   fi
 
-  if declare -F nlt_ui_banner >/dev/null 2>&1; then
-    nlt_ui_banner "fundeploy" "开发环境、工具与服务管理"
+  if declare -F fundeploy_ui_banner >/dev/null 2>&1; then
+    fundeploy_ui_banner "fundeploy" "开发环境、工具与服务管理"
   fi
 
   command -v gum >/dev/null 2>&1 || { usage; return 0; }
@@ -261,8 +261,8 @@ interactive_main() {
 
   local pick key
   while true; do
-    if declare -F nlt_ui_choose >/dev/null 2>&1; then
-      pick="$(nlt_ui_choose "fundeploy / 选择领域" "${labels[@]}")" || return 0
+    if declare -F fundeploy_ui_choose >/dev/null 2>&1; then
+      pick="$(fundeploy_ui_choose "fundeploy / 选择领域" "${labels[@]}")" || return 0
     else
       pick="$(printf '%s\n' "${labels[@]}" | gum filter --header "fundeploy / 选择领域" --limit 1)" || return 0
     fi

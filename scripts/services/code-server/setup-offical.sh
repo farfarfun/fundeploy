@@ -4,14 +4,14 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -f "${SCRIPT_DIR}/../lib/nlt-common.sh" ]]; then
-  # shellcheck source=../lib/nlt-common.sh
-  source "${SCRIPT_DIR}/../lib/nlt-common.sh"
-elif [[ -f "${SCRIPT_DIR}/../../lib/nlt-common.sh" ]]; then
-  # shellcheck source=../../lib/nlt-common.sh
-  source "${SCRIPT_DIR}/../../lib/nlt-common.sh"
+if [[ -f "${SCRIPT_DIR}/../lib/fundeploy-common.sh" ]]; then
+  # shellcheck source=../lib/fundeploy-common.sh
+  source "${SCRIPT_DIR}/../lib/fundeploy-common.sh"
+elif [[ -f "${SCRIPT_DIR}/../../lib/fundeploy-common.sh" ]]; then
+  # shellcheck source=../../lib/fundeploy-common.sh
+  source "${SCRIPT_DIR}/../../lib/fundeploy-common.sh"
 else
-  echo "错误: 找不到 lib/nlt-common.sh" >&2
+  echo "错误: 找不到 lib/fundeploy-common.sh" >&2
   exit 1
 fi
 
@@ -116,7 +116,7 @@ cmd_uninstall() {
   [[ "${CODE_SERVER_OFFICIAL_UNINSTALL_YES:-0}" != "1" ]] || yes=1
   if [[ "$yes" == "0" ]]; then
     [[ -t 0 ]] || die "非交互卸载请加 -y"
-    nlt_ui_confirm "确认卸载官方模式的 code-server？" || return 0
+    fundeploy_ui_confirm "确认卸载官方模式的 code-server？" || return 0
   fi
 
   disable_service
@@ -155,12 +155,12 @@ cmd_uninstall() {
 }
 
 interactive_main() {
-  _nlt_ensure_gum || exit 1
-  nlt_ui_banner "fundeploy / service / code-server / official" "官方脚本 · 系统包管理器 · ${SERVICE_UNIT}" >&2
+  _fundeploy_ensure_gum || exit 1
+  fundeploy_ui_banner "fundeploy / service / code-server / official" "官方脚本 · 系统包管理器 · ${SERVICE_UNIT}" >&2
   set +e
   while true; do
     local pick
-    pick="$(nlt_ui_choose "fundeploy / service / code-server / official / 选择动作" \
+    pick="$(fundeploy_ui_choose "fundeploy / service / code-server / official / 选择动作" \
       "install           安装" \
       "update            更新" \
       "start             启动并设为开机启动" \

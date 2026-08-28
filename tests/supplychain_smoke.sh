@@ -16,26 +16,26 @@ source "${_TEST_DIR}/lib/assert.sh"
 _ASSERT_NAME="supplychain_smoke"
 
 echo "== GitHub 下载改写：必须拒绝非 https 前缀 =="
-# shellcheck source=../scripts/lib/nlt-github-download.sh
-source "${_REPO_ROOT}/scripts/lib/nlt-github-download.sh"
+# shellcheck source=../scripts/lib/fundeploy-github-download.sh
+source "${_REPO_ROOT}/scripts/lib/fundeploy-github-download.sh"
 _U="https://raw.githubusercontent.com/o/r/v/f.txt"
 
-_out="$(FUNDEPLOY_GITHUB_HUB_PROXY_PREFIX='https://ok.example/' _nlt_github_download_resolve_url "$_U" 2>/dev/null)"
+_out="$(FUNDEPLOY_GITHUB_HUB_PROXY_PREFIX='https://ok.example/' _fundeploy_github_download_resolve_url "$_U" 2>/dev/null)"
 assert_eq "https 前缀应生效" "https://ok.example/${_U}" "${_out}"
 
-_out="$(FUNDEPLOY_GITHUB_HUB_PROXY_PREFIX='http://evil.example/' _nlt_github_download_resolve_url "$_U" 2>/dev/null)"
+_out="$(FUNDEPLOY_GITHUB_HUB_PROXY_PREFIX='http://evil.example/' _fundeploy_github_download_resolve_url "$_U" 2>/dev/null)"
 assert_eq "http 前缀应被拒绝并原样返回" "${_U}" "${_out}"
 
 _out="$(FUNDEPLOY_GITHUB_DOWNLOAD_MODE=mirror_raw FUNDEPLOY_GITHUB_RAW_MIRROR_BASE='http://evil.example/raw' \
-  _nlt_github_download_resolve_url "$_U" 2>/dev/null)"
+  _fundeploy_github_download_resolve_url "$_U" 2>/dev/null)"
 assert_eq "http 镜像基址应被拒绝" "${_U}" "${_out}"
 
 _out="$(FUNDEPLOY_GITHUB_DOWNLOAD_MODE=mirror_raw FUNDEPLOY_GITHUB_RAW_MIRROR_BASE='https://ok.example/raw' \
-  _nlt_github_download_resolve_url "$_U" 2>/dev/null)"
+  _fundeploy_github_download_resolve_url "$_U" 2>/dev/null)"
 assert_eq "https 镜像基址应生效" "https://ok.example/raw/o/r/v/f.txt" "${_out}"
 
 echo "== 共享 curl 封装必须设置 TLS 下限 =="
-_src="$(cat "${_REPO_ROOT}/scripts/lib/nlt-github-download.sh")"
+_src="$(cat "${_REPO_ROOT}/scripts/lib/fundeploy-github-download.sh")"
 assert_contains "含 --proto '=https'"       "${_src}" "--proto '=https'"
 assert_contains "含 --proto-redir '=https'" "${_src}" "--proto-redir '=https'"
 

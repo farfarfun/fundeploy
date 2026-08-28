@@ -22,23 +22,23 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -f "${SCRIPT_DIR}/../lib/nlt-common.sh" ]]; then
-  # shellcheck source=../lib/nlt-common.sh
-  source "${SCRIPT_DIR}/../lib/nlt-common.sh"
-elif [[ -f "${SCRIPT_DIR}/../../lib/nlt-common.sh" ]]; then
-  # shellcheck source=../../lib/nlt-common.sh
-  source "${SCRIPT_DIR}/../../lib/nlt-common.sh"
+if [[ -f "${SCRIPT_DIR}/../lib/fundeploy-common.sh" ]]; then
+  # shellcheck source=../lib/fundeploy-common.sh
+  source "${SCRIPT_DIR}/../lib/fundeploy-common.sh"
+elif [[ -f "${SCRIPT_DIR}/../../lib/fundeploy-common.sh" ]]; then
+  # shellcheck source=../../lib/fundeploy-common.sh
+  source "${SCRIPT_DIR}/../../lib/fundeploy-common.sh"
 else
-  echo "错误: 找不到 lib/nlt-common.sh（已检查 ${SCRIPT_DIR}/../lib 与 ${SCRIPT_DIR}/../../lib）" >&2
+  echo "错误: 找不到 lib/fundeploy-common.sh（已检查 ${SCRIPT_DIR}/../lib 与 ${SCRIPT_DIR}/../../lib）" >&2
   exit 1
 fi
 
-if [[ -f "${SCRIPT_DIR}/../lib/nlt-progress.sh" ]]; then
-  # shellcheck source=../lib/nlt-progress.sh
-  source "${SCRIPT_DIR}/../lib/nlt-progress.sh"
-elif [[ -f "${SCRIPT_DIR}/../../lib/nlt-progress.sh" ]]; then
-  # shellcheck source=../../lib/nlt-progress.sh
-  source "${SCRIPT_DIR}/../../lib/nlt-progress.sh"
+if [[ -f "${SCRIPT_DIR}/../lib/fundeploy-progress.sh" ]]; then
+  # shellcheck source=../lib/fundeploy-progress.sh
+  source "${SCRIPT_DIR}/../lib/fundeploy-progress.sh"
+elif [[ -f "${SCRIPT_DIR}/../../lib/fundeploy-progress.sh" ]]; then
+  # shellcheck source=../../lib/fundeploy-progress.sh
+  source "${SCRIPT_DIR}/../../lib/fundeploy-progress.sh"
 fi
 
 CODE_SERVER_SERVICE_HOME="${CODE_SERVER_SERVICE_HOME:-${HOME}/opt/code-server}"
@@ -80,7 +80,7 @@ process_alive() {
 }
 
 listener_pid_for_port() {
-  _nlt_listener_pid_for_port "$1"
+  _fundeploy_listener_pid_for_port "$1"
 }
 
 read_pid() {
@@ -114,7 +114,7 @@ _detect_platform() {
 _fetch_latest_version() {
   require_curl
   local out ver
-  out="$(_nlt_github_download_curl -fsSL "https://api.github.com/repos/coder/code-server/releases/latest")" || return 1
+  out="$(_fundeploy_github_download_curl -fsSL "https://api.github.com/repos/coder/code-server/releases/latest")" || return 1
   ver="$(printf '%s' "$out" | sed -n 's/.*"tag_name": *"v\([0-9][0-9.]*\)".*/\1/p' | head -1)"
   if [[ -n "$ver" ]]; then
     echo "$ver"
@@ -148,11 +148,11 @@ _download_install() {
   echo "    ${url}" >&2
   tmpdir="$(mktemp -d)"
   trap '[[ -n "${tmpdir-}" ]] && rm -rf "${tmpdir}"' RETURN
-  _nlt_github_download_print_accel_hint
-  if declare -F nlt_pb_curl_to_file >/dev/null 2>&1; then
-    NLT_PB_LABEL="code-server v${ver}" nlt_pb_curl_to_file "$url" "${tmpdir}/code-server.tgz" || die "下载失败: ${url}"
+  _fundeploy_github_download_print_accel_hint
+  if declare -F fundeploy_pb_curl_to_file >/dev/null 2>&1; then
+    FUNDEPLOY_PB_LABEL="code-server v${ver}" fundeploy_pb_curl_to_file "$url" "${tmpdir}/code-server.tgz" || die "下载失败: ${url}"
   else
-    _nlt_github_download_curl -fsSL "$url" -o "${tmpdir}/code-server.tgz"
+    _fundeploy_github_download_curl -fsSL "$url" -o "${tmpdir}/code-server.tgz"
   fi
   rm -rf "${CODE_SERVER_SERVICE_HOME}/lib" "${CODE_SERVER_SERVICE_HOME}/bin" 2>/dev/null || true
   mkdir -p "${CODE_SERVER_SERVICE_HOME}"
@@ -250,10 +250,10 @@ cmd_stop() {
   elif ! process_alive "$pid"; then
     rm -f "$PID_FILE"
   fi
-  if [[ -z "$assume_yes" ]] && [[ -n "$pid" || -n "$listener_pid" ]] && nlt_interactive; then
-    # 用 nlt_ui_confirm 而非裸 gum：缺 gum 时降级为 read y/N，
+  if [[ -z "$assume_yes" ]] && [[ -n "$pid" || -n "$listener_pid" ]] && fundeploy_interactive; then
+    # 用 fundeploy_ui_confirm 而非裸 gum：缺 gum 时降级为 read y/N，
     # 而不是返回 127 让 `|| exit 0` 谎报「已停止」。
-    nlt_ui_confirm "停止 code-server（PID ${pid}）？" || return 1
+    fundeploy_ui_confirm "停止 code-server（PID ${pid}）？" || return 1
   fi
   if [[ -n "$pid" ]] && process_alive "$pid"; then
     kill -TERM "$pid" 2>/dev/null || true
@@ -308,9 +308,9 @@ cmd_status() {
 cmd_uninstall() {
   echo "将删除: ${CODE_SERVER_SERVICE_HOME}" >&2
   # 先确认再动手：确认通过后 cmd_stop 用 --yes，避免二次追问把卸载拦腰截断。
-  nlt_confirm_destructive "确认删除 ${CODE_SERVER_SERVICE_HOME}？" CODE_SERVER_UNINSTALL_YES || return 1
-  cmd_stop --yes || nlt_ui_warn "停止失败，仍继续删除。"
-  nlt_safe_rm "${CODE_SERVER_SERVICE_HOME}" || return 1
+  fundeploy_confirm_destructive "确认删除 ${CODE_SERVER_SERVICE_HOME}？" CODE_SERVER_UNINSTALL_YES || return 1
+  cmd_stop --yes || fundeploy_ui_warn "停止失败，仍继续删除。"
+  fundeploy_safe_rm "${CODE_SERVER_SERVICE_HOME}" || return 1
   echo "已删除。用户配置可能在 ~/.config/code-server"
 }
 
@@ -336,10 +336,10 @@ dispatch() {
 }
 
 interactive_main() {
-  _nlt_ensure_gum || exit 1
-  declare -F nlt_ui_apply_theme >/dev/null 2>&1 && nlt_ui_apply_theme
-  if declare -F nlt_ui_banner >/dev/null 2>&1; then
-    nlt_ui_banner "fundeploy / service / code-server / manual" "本地安装 · ${CODE_SERVER_SERVICE_HOME} · ${CODE_SERVER_BIND}"
+  _fundeploy_ensure_gum || exit 1
+  declare -F fundeploy_ui_apply_theme >/dev/null 2>&1 && fundeploy_ui_apply_theme
+  if declare -F fundeploy_ui_banner >/dev/null 2>&1; then
+    fundeploy_ui_banner "fundeploy / service / code-server / manual" "本地安装 · ${CODE_SERVER_SERVICE_HOME} · ${CODE_SERVER_BIND}"
   else
     gum style --bold --foreground 212 "code-server 本地服务（coder/code-server）"
     gum style "安装目录: ${CODE_SERVER_SERVICE_HOME}"
@@ -349,7 +349,7 @@ interactive_main() {
   set +e
   while true; do
     local pick
-    pick="$(nlt_ui_choose "fundeploy / service / code-server / manual / 选择动作" \
+    pick="$(fundeploy_ui_choose "fundeploy / service / code-server / manual / 选择动作" \
       "install" "update" "start" "run" "stop" "restart" "status" "uninstall" "help" "quit")" || break
     [[ -z "$pick" ]] && break
     case "$pick" in

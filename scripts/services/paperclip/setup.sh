@@ -29,14 +29,14 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -f "${SCRIPT_DIR}/../lib/nlt-common.sh" ]]; then
-  # shellcheck source=../lib/nlt-common.sh
-  source "${SCRIPT_DIR}/../lib/nlt-common.sh"
-elif [[ -f "${SCRIPT_DIR}/../../lib/nlt-common.sh" ]]; then
-  # shellcheck source=../../lib/nlt-common.sh
-  source "${SCRIPT_DIR}/../../lib/nlt-common.sh"
+if [[ -f "${SCRIPT_DIR}/../lib/fundeploy-common.sh" ]]; then
+  # shellcheck source=../lib/fundeploy-common.sh
+  source "${SCRIPT_DIR}/../lib/fundeploy-common.sh"
+elif [[ -f "${SCRIPT_DIR}/../../lib/fundeploy-common.sh" ]]; then
+  # shellcheck source=../../lib/fundeploy-common.sh
+  source "${SCRIPT_DIR}/../../lib/fundeploy-common.sh"
 else
-  echo "错误: 找不到 lib/nlt-common.sh（已检查 ${SCRIPT_DIR}/../lib 与 ${SCRIPT_DIR}/../../lib）" >&2
+  echo "错误: 找不到 lib/fundeploy-common.sh（已检查 ${SCRIPT_DIR}/../lib 与 ${SCRIPT_DIR}/../../lib）" >&2
   exit 1
 fi
 
@@ -123,7 +123,7 @@ process_alive() {
 }
 
 port_listener_pid() {
-  _nlt_listener_pid_for_port "$1"
+  _fundeploy_listener_pid_for_port "$1"
 }
 
 read_pid() {
@@ -242,7 +242,7 @@ cmd_plugin_install() {
     urls+=("${url}")
   done < <(paperclip_plugin_catalog_records)
 
-  pick="$(nlt_ui_choose "Paperclip / 从 awesome-paperclip 选择插件" "${labels[@]}")" || return 0
+  pick="$(fundeploy_ui_choose "Paperclip / 从 awesome-paperclip 选择插件" "${labels[@]}")" || return 0
   for i in "${!labels[@]}"; do
     [[ "${labels[$i]}" == "$pick" ]] || continue
     package="${packages[$i]}"
@@ -480,9 +480,9 @@ cmd_stop() {
   [[ "${1:-}" == "--yes" ]] && assume_yes=1
   local pid
   pid="$(read_pid)"
-  if [[ -z "$assume_yes" ]] && [[ -n "$pid" ]] && nlt_interactive; then
-    # nlt_ui_confirm 在缺 gum 时降级为 read y/N，无需 _nlt_ensure_gum 硬拉依赖。
-    nlt_ui_confirm "停止 Paperclip（PID ${pid:--}）？" || return 1
+  if [[ -z "$assume_yes" ]] && [[ -n "$pid" ]] && fundeploy_interactive; then
+    # fundeploy_ui_confirm 在缺 gum 时降级为 read y/N，无需 _fundeploy_ensure_gum 硬拉依赖。
+    fundeploy_ui_confirm "停止 Paperclip（PID ${pid:--}）？" || return 1
   fi
 
   local server_pid
@@ -557,8 +557,8 @@ cmd_uninstall() {
   echo "将删除目录: ${PAPERCLIP_SERVICE_HOME}" >&2
   echo "Paperclip 数据目录默认位于: ${PAPERCLIP_HOME}（不会自动删除）" >&2
   # 先确认再动手：确认通过后 cmd_stop 用 --yes，避免二次追问把卸载拦腰截断。
-  nlt_confirm_destructive "确认永久删除 ${PAPERCLIP_SERVICE_HOME}？" PAPERCLIP_UNINSTALL_YES || return 1
-  cmd_stop --yes || nlt_ui_warn "停止失败，仍继续卸载。"
+  fundeploy_confirm_destructive "确认永久删除 ${PAPERCLIP_SERVICE_HOME}？" PAPERCLIP_UNINSTALL_YES || return 1
+  cmd_stop --yes || fundeploy_ui_warn "停止失败，仍继续卸载。"
   if [[ -f "${PAPERCLIP_HOME}/cli/.managed-install" ]]; then
     paperclip_cli uninstall
     command -v npm >/dev/null 2>&1 && npm uninstall -g paperclipai
@@ -566,7 +566,7 @@ cmd_uninstall() {
     command -v pnpm >/dev/null 2>&1 || die "未找到 pnpm，无法卸载全局 paperclipai"
     pnpm remove -g paperclipai
   fi
-  nlt_safe_rm "${PAPERCLIP_SERVICE_HOME}" || return 1
+  fundeploy_safe_rm "${PAPERCLIP_SERVICE_HOME}" || return 1
   echo "已卸载 paperclipai CLI 并删除 ${PAPERCLIP_SERVICE_HOME}。若需彻底清理数据，请自行删除 ${PAPERCLIP_HOME}"
 }
 
@@ -594,9 +594,9 @@ dispatch() {
 }
 
 interactive_main() {
-  declare -F nlt_ui_apply_theme >/dev/null 2>&1 && nlt_ui_apply_theme
-  if declare -F nlt_ui_banner >/dev/null 2>&1; then
-    nlt_ui_banner "Paperclip 本地服务（pnpm 全局安装）" "PAPERCLIP_HOME=${PAPERCLIP_HOME}" "PAPERCLIP_NPM_PACKAGE=${PAPERCLIP_NPM_PACKAGE}"
+  declare -F fundeploy_ui_apply_theme >/dev/null 2>&1 && fundeploy_ui_apply_theme
+  if declare -F fundeploy_ui_banner >/dev/null 2>&1; then
+    fundeploy_ui_banner "Paperclip 本地服务（pnpm 全局安装）" "PAPERCLIP_HOME=${PAPERCLIP_HOME}" "PAPERCLIP_NPM_PACKAGE=${PAPERCLIP_NPM_PACKAGE}"
   else
     gum style --bold --foreground 212 "Paperclip 本地服务（pnpm 全局安装）"
     gum style "PAPERCLIP_HOME=${PAPERCLIP_HOME}"
@@ -606,7 +606,7 @@ interactive_main() {
   set +e
   while true; do
     local pick
-    pick="$(nlt_ui_choose "fundeploy / service / paperclip / 选择动作" \
+    pick="$(fundeploy_ui_choose "fundeploy / service / paperclip / 选择动作" \
       "install" "update" "onboard" "plugin install" "start" "run" "stop" "restart" "status" "uninstall" "help" "quit")" || break
     [[ -z "$pick" ]] && break
     case "$pick" in
@@ -636,7 +636,7 @@ main() {
     esac
   fi
   if [[ $# -eq 0 ]]; then
-    _nlt_ensure_gum || exit 1
+    _fundeploy_ensure_gum || exit 1
     interactive_main
     return 0
   fi

@@ -8,16 +8,16 @@
 set -euo pipefail
 
 _PSDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -f "${_PSDIR}/../lib/nlt-common.sh" ]]; then
-  _NLT_LIB="$(cd "${_PSDIR}/../lib" && pwd)"
-elif [[ -f "${_PSDIR}/../../lib/nlt-common.sh" ]]; then
-  _NLT_LIB="$(cd "${_PSDIR}/../../lib" && pwd)"
+if [[ -f "${_PSDIR}/../lib/fundeploy-common.sh" ]]; then
+  _FUNDEPLOY_LIB="$(cd "${_PSDIR}/../lib" && pwd)"
+elif [[ -f "${_PSDIR}/../../lib/fundeploy-common.sh" ]]; then
+  _FUNDEPLOY_LIB="$(cd "${_PSDIR}/../../lib" && pwd)"
 else
-  echo "错误: 找不到 lib/nlt-common.sh（已检查 ${_PSDIR}/../lib 与 ${_PSDIR}/../../lib）" >&2
+  echo "错误: 找不到 lib/fundeploy-common.sh（已检查 ${_PSDIR}/../lib 与 ${_PSDIR}/../../lib）" >&2
   exit 1
 fi
-# shellcheck source=../lib/nlt-common.sh
-source "${_NLT_LIB}/nlt-common.sh"
+# shellcheck source=../lib/fundeploy-common.sh
+source "${_FUNDEPLOY_LIB}/fundeploy-common.sh"
 
 # 颜色输出
 RED='\033[0;31m'
@@ -341,8 +341,8 @@ cmd_pyenv_update() {
 
 # 删除并重建默认版本环境
 cmd_pyenv_reinstall() {
-    # 不再为一次是非题去装 gum：nlt_ui_confirm 无 gum 时降级为 read y/N。
-    nlt_confirm_destructive "将删除并重建 Python ${DEFAULT_VERSION} 环境（~/opt/py*），继续？" \
+    # 不再为一次是非题去装 gum：fundeploy_ui_confirm 无 gum 时降级为 read y/N。
+    fundeploy_confirm_destructive "将删除并重建 Python ${DEFAULT_VERSION} 环境（~/opt/py*），继续？" \
         PYTHON_ENV_ASSUME_YES || return 1
     PYTHON_VERSION="$DEFAULT_VERSION"
     local num
@@ -362,7 +362,7 @@ cmd_pyenv_reinstall() {
 
 # 删除所选版本环境（交互选版本；NONINTERACTIVE=1 时删默认版本）
 cmd_pyenv_uninstall() {
-    _nlt_ensure_gum || exit 1
+    _fundeploy_ensure_gum || exit 1
     if [ "${NONINTERACTIVE:-}" = "1" ]; then
         PYTHON_VERSION="$DEFAULT_VERSION"
         local num
@@ -371,14 +371,14 @@ cmd_pyenv_uninstall() {
     else
         select_python_version
     fi
-    nlt_confirm_destructive "永久删除 $ENV_PATH？" PYTHON_ENV_ASSUME_YES || return 1
-    nlt_safe_rm "$ENV_PATH" || return 1
+    fundeploy_confirm_destructive "永久删除 $ENV_PATH？" PYTHON_ENV_ASSUME_YES || return 1
+    fundeploy_safe_rm "$ENV_PATH" || return 1
     print_info "已删除 $ENV_PATH"
 }
 
-nlt_cli_main() {
+fundeploy_cli_main() {
     if [ $# -eq 0 ]; then
-        _nlt_ensure_gum || exit 1
+        _fundeploy_ensure_gum || exit 1
         local pick
         pick=$(gum choose --header "Python 环境 (uv)" \
             "install" "update" "reinstall" "uninstall" "help") || exit 0
@@ -412,7 +412,7 @@ nlt_cli_main() {
 
 # 主函数
 main() {
-    _nlt_ensure_gum || exit 1
+    _fundeploy_ensure_gum || exit 1
     print_info "开始设置Python环境..."
     echo ""
     
@@ -430,4 +430,4 @@ main() {
 }
 
 # 执行主函数（无参时 gum 选子命令）
-nlt_cli_main "$@"
+fundeploy_cli_main "$@"

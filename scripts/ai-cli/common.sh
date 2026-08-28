@@ -2,17 +2,17 @@
 # AI CLI 子入口共用的轻量命令解析与安全删除。
 
 AI_CLI_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -f "${AI_CLI_DIR}/../lib/nlt-install.sh" ]]; then
-  # shellcheck source=../lib/nlt-install.sh
-  source "${AI_CLI_DIR}/../lib/nlt-install.sh"
+if [[ -f "${AI_CLI_DIR}/../lib/fundeploy-install.sh" ]]; then
+  # shellcheck source=../lib/fundeploy-install.sh
+  source "${AI_CLI_DIR}/../lib/fundeploy-install.sh"
 fi
 
-if ! declare -F _nlt_say_step >/dev/null 2>&1; then
-  _nlt_say_title() { printf '\n=== %s ===\n' "$*" >&2; }
-  _nlt_say_step() { printf '> %s\n' "$*" >&2; }
-  _nlt_say_ok() { printf 'OK: %s\n' "$*" >&2; }
-  _nlt_say_warn() { printf 'WARN: %s\n' "$*" >&2; }
-  _nlt_confirm() {
+if ! declare -F _fundeploy_say_step >/dev/null 2>&1; then
+  _fundeploy_say_title() { printf '\n=== %s ===\n' "$*" >&2; }
+  _fundeploy_say_step() { printf '> %s\n' "$*" >&2; }
+  _fundeploy_say_ok() { printf 'OK: %s\n' "$*" >&2; }
+  _fundeploy_say_warn() { printf 'WARN: %s\n' "$*" >&2; }
+  _fundeploy_confirm() {
     local answer
     read -r -p "$1 [y/N] " answer
     [[ "${answer}" == "y" || "${answer}" == "Y" || "${answer}" == "yes" ]]
@@ -58,12 +58,12 @@ ai_safe_rm_home_path() {
   resolved="$(cd "$(dirname "${path}")" && pwd -P)/$(basename "${path}")"
   home_resolved="$(cd "${HOME}" && pwd -P)"
   [[ "${resolved}" == "${home_resolved}/"* ]] || ai_die "拒绝删除非 HOME 路径: ${path}"
-  if [[ "${NLT_ASSUME_YES:-}" != "1" ]]; then
-    ai_interactive || ai_die "非交互卸载请设置 NLT_ASSUME_YES=1"
-    _nlt_confirm "删除 ${path}？" || { _nlt_say_warn "已跳过: ${path}"; return; }
+  if [[ "${FUNDEPLOY_ASSUME_YES:-}" != "1" ]]; then
+    ai_interactive || ai_die "非交互卸载请设置 FUNDEPLOY_ASSUME_YES=1"
+    _fundeploy_confirm "删除 ${path}？" || { _fundeploy_say_warn "已跳过: ${path}"; return; }
   fi
   rm -rf -- "${path}"
-  _nlt_say_ok "已删除 ${path}"
+  _fundeploy_say_ok "已删除 ${path}"
 }
 
 ai_package_install() {

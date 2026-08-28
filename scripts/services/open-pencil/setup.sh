@@ -29,23 +29,23 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -f "${SCRIPT_DIR}/../lib/nlt-common.sh" ]]; then
-  # shellcheck source=../lib/nlt-common.sh
-  source "${SCRIPT_DIR}/../lib/nlt-common.sh"
-elif [[ -f "${SCRIPT_DIR}/../../lib/nlt-common.sh" ]]; then
-  # shellcheck source=../../lib/nlt-common.sh
-  source "${SCRIPT_DIR}/../../lib/nlt-common.sh"
+if [[ -f "${SCRIPT_DIR}/../lib/fundeploy-common.sh" ]]; then
+  # shellcheck source=../lib/fundeploy-common.sh
+  source "${SCRIPT_DIR}/../lib/fundeploy-common.sh"
+elif [[ -f "${SCRIPT_DIR}/../../lib/fundeploy-common.sh" ]]; then
+  # shellcheck source=../../lib/fundeploy-common.sh
+  source "${SCRIPT_DIR}/../../lib/fundeploy-common.sh"
 else
-  echo "错误: 找不到 lib/nlt-common.sh（已检查 ${SCRIPT_DIR}/../lib 与 ${SCRIPT_DIR}/../../lib）" >&2
+  echo "错误: 找不到 lib/fundeploy-common.sh（已检查 ${SCRIPT_DIR}/../lib 与 ${SCRIPT_DIR}/../../lib）" >&2
   exit 1
 fi
 
-if [[ -f "${SCRIPT_DIR}/../lib/nlt-progress.sh" ]]; then
-  # shellcheck source=../lib/nlt-progress.sh
-  source "${SCRIPT_DIR}/../lib/nlt-progress.sh"
-elif [[ -f "${SCRIPT_DIR}/../../lib/nlt-progress.sh" ]]; then
-  # shellcheck source=../../lib/nlt-progress.sh
-  source "${SCRIPT_DIR}/../../lib/nlt-progress.sh"
+if [[ -f "${SCRIPT_DIR}/../lib/fundeploy-progress.sh" ]]; then
+  # shellcheck source=../lib/fundeploy-progress.sh
+  source "${SCRIPT_DIR}/../lib/fundeploy-progress.sh"
+elif [[ -f "${SCRIPT_DIR}/../../lib/fundeploy-progress.sh" ]]; then
+  # shellcheck source=../../lib/fundeploy-progress.sh
+  source "${SCRIPT_DIR}/../../lib/fundeploy-progress.sh"
 fi
 
 OPEN_PENCIL_GITHUB_REPO="${OPEN_PENCIL_GITHUB_REPO:-open-pencil/open-pencil}"
@@ -202,7 +202,7 @@ _asset_name_for_tag() {
 _fetch_latest_desktop_tag() {
   command -v curl >/dev/null 2>&1 || die "需要 curl"
   local json tag
-  json="$(_nlt_github_download_curl -fsSL "https://api.github.com/repos/${OPEN_PENCIL_GITHUB_REPO}/releases/latest")" || json=""
+  json="$(_fundeploy_github_download_curl -fsSL "https://api.github.com/repos/${OPEN_PENCIL_GITHUB_REPO}/releases/latest")" || json=""
   if [[ -n "$json" ]]; then
     tag="$(printf '%s' "$json" | sed -n 's/.*"tag_name": *"\(v[0-9][0-9.]*\)".*/\1/p' | head -1)"
     [[ -n "$tag" ]] && { printf '%s\n' "$tag"; return; }
@@ -226,11 +226,11 @@ cmd_install_desktop() {
   echo "==> 下载桌面安装包 ${tag}"
   echo "    ${url}"
   echo "    → ${dest}"
-  _nlt_github_download_print_accel_hint
-  if declare -F nlt_pb_curl_to_file >/dev/null 2>&1; then
-    NLT_PB_LABEL="open-pencil ${tag}" nlt_pb_curl_to_file "$url" "$dest" || die "下载失败: ${url}"
+  _fundeploy_github_download_print_accel_hint
+  if declare -F fundeploy_pb_curl_to_file >/dev/null 2>&1; then
+    FUNDEPLOY_PB_LABEL="open-pencil ${tag}" fundeploy_pb_curl_to_file "$url" "$dest" || die "下载失败: ${url}"
   else
-    _nlt_github_download_curl -fsSL "$url" -o "$dest" || die "下载失败: ${url}"
+    _fundeploy_github_download_curl -fsSL "$url" -o "$dest" || die "下载失败: ${url}"
   fi
   case "$asset" in
     *.AppImage)
@@ -335,7 +335,7 @@ cmd_status() {
 cmd_uninstall() {
   local npm_bin pkg
   npm_bin="$(_resolve_npm)"
-  nlt_confirm_destructive \
+  fundeploy_confirm_destructive \
     "将卸载 npm -g ${OPEN_PENCIL_CLI_PACKAGE} 与 ${OPEN_PENCIL_MCP_PACKAGE}，并删除 ${OPEN_PENCIL_SERVICE_HOME}。确认？" \
     OPEN_PENCIL_UNINSTALL_YES || return 1
   for pkg in "${OPEN_PENCIL_MCP_PACKAGE}" "${OPEN_PENCIL_CLI_PACKAGE}"; do
@@ -343,7 +343,7 @@ cmd_uninstall() {
     "${npm_bin}" uninstall -g "${pkg}" || echo "（忽略）卸载 ${pkg} 失败"
   done
   if [[ -d "${OPEN_PENCIL_SERVICE_HOME}" ]]; then
-    nlt_safe_rm "${OPEN_PENCIL_SERVICE_HOME}" || return 1
+    fundeploy_safe_rm "${OPEN_PENCIL_SERVICE_HOME}" || return 1
     echo "已删除 ${OPEN_PENCIL_SERVICE_HOME}"
   fi
   echo "已卸载。"
@@ -369,9 +369,9 @@ dispatch() {
 }
 
 interactive_main() {
-  declare -F nlt_ui_apply_theme >/dev/null 2>&1 && nlt_ui_apply_theme
-  if declare -F nlt_ui_banner >/dev/null 2>&1; then
-    nlt_ui_banner "OpenPencil 本地部署（open-pencil/open-pencil）" "安装目录: ${OPEN_PENCIL_SERVICE_HOME}" "CLI: ${OPEN_PENCIL_CLI_PACKAGE}  MCP: ${OPEN_PENCIL_MCP_PACKAGE}  版本: ${OPEN_PENCIL_VERSION}"
+  declare -F fundeploy_ui_apply_theme >/dev/null 2>&1 && fundeploy_ui_apply_theme
+  if declare -F fundeploy_ui_banner >/dev/null 2>&1; then
+    fundeploy_ui_banner "OpenPencil 本地部署（open-pencil/open-pencil）" "安装目录: ${OPEN_PENCIL_SERVICE_HOME}" "CLI: ${OPEN_PENCIL_CLI_PACKAGE}  MCP: ${OPEN_PENCIL_MCP_PACKAGE}  版本: ${OPEN_PENCIL_VERSION}"
   else
     gum style --bold --foreground 212 "OpenPencil 本地部署（open-pencil/open-pencil）"
     gum style "安装目录: ${OPEN_PENCIL_SERVICE_HOME}"
@@ -381,7 +381,7 @@ interactive_main() {
   set +e
   while true; do
     local pick
-    pick="$(nlt_ui_choose "fundeploy / service / open-pencil / 选择动作" \
+    pick="$(fundeploy_ui_choose "fundeploy / service / open-pencil / 选择动作" \
       "install" "update" "install-desktop" "mcp-config" "status" "uninstall" "help" "quit")" || break
     [[ -z "$pick" ]] && break
     case "$pick" in
@@ -403,7 +403,7 @@ main() {
         ;;
     esac
   fi
-  _nlt_ensure_gum || exit 1
+  _fundeploy_ensure_gum || exit 1
   if [[ $# -eq 0 ]]; then
     interactive_main
     return 0

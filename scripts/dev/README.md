@@ -44,7 +44,7 @@ fundeploy dev pnpm         # 在已有 Node 前提下用 corepack 启用 pnpm
 
 ## 迁移说明
 
-- **以前**：文档主路径常写「先装 `nlt-pip-sources` 再装 `nlt-python-env`」。
+- **以前**：文档主路径常写「先装 `fundeploy-pip-sources` 再装 `fundeploy-python-env`」。
 - **现在**：统一使用 `fundeploy dev pip|uv|python`；旧命令入口不再安装。
 
 ## 相关文档

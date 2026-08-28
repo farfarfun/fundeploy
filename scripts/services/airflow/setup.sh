@@ -65,32 +65,32 @@ FAB_AUTH_MANAGER_CLASS="airflow.providers.fab.auth_manager.fab_auth_manager.FabA
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
 
-if [[ -f "${SCRIPT_DIR}/../lib/nlt-common.sh" ]]; then
-  # shellcheck source=../lib/nlt-common.sh
-  source "${SCRIPT_DIR}/../lib/nlt-common.sh"
-elif [[ -f "${SCRIPT_DIR}/../../lib/nlt-common.sh" ]]; then
-  # shellcheck source=../../lib/nlt-common.sh
-  source "${SCRIPT_DIR}/../../lib/nlt-common.sh"
+if [[ -f "${SCRIPT_DIR}/../lib/fundeploy-common.sh" ]]; then
+  # shellcheck source=../lib/fundeploy-common.sh
+  source "${SCRIPT_DIR}/../lib/fundeploy-common.sh"
+elif [[ -f "${SCRIPT_DIR}/../../lib/fundeploy-common.sh" ]]; then
+  # shellcheck source=../../lib/fundeploy-common.sh
+  source "${SCRIPT_DIR}/../../lib/fundeploy-common.sh"
 else
-  echo "错误: 找不到 lib/nlt-common.sh（已检查 ${SCRIPT_DIR}/../lib 与 ${SCRIPT_DIR}/../../lib）" >&2
+  echo "错误: 找不到 lib/fundeploy-common.sh（已检查 ${SCRIPT_DIR}/../lib 与 ${SCRIPT_DIR}/../../lib）" >&2
   exit 1
 fi
 
-# 复用 lib/nlt-ui.sh 的统一输出层：原实现直接调 `gum style`，
+# 复用 lib/fundeploy-ui.sh 的统一输出层：原实现直接调 `gum style`，
 # 缺 gum 时整条日志语句返回 127，在 set -e 下把脚本打断在无关位置。
-say_info() { nlt_ui_info "$*"; }
-say_warn() { nlt_ui_warn "$*"; }
-die() { nlt_die "$*"; }
+say_info() { fundeploy_ui_info "$*"; }
+say_warn() { fundeploy_ui_warn "$*"; }
+die() { fundeploy_die "$*"; }
 
 # 幂等操作（重装依赖 / stop）前的确认。非交互时自动通过，便于 CI/脚本 —— 这是
 # 刻意行为，两个调用点（install 续做、stop）在自动化环境下本就应当继续。
 # 真正不可逆的 uninstall 不走这里，另有 AIRFLOW_UNINSTALL_YES 把关。
-# 交互路径改用 nlt_ui_confirm：缺 gum 时降级为 read y/N，而不是返回 127
+# 交互路径改用 fundeploy_ui_confirm：缺 gum 时降级为 read y/N，而不是返回 127
 # 被 `if ! confirm_yes` 判成「用户拒绝」从而无故中止。
 confirm_yes() {
   local prompt="${1:-是否继续？}"
-  nlt_interactive || return 0
-  nlt_ui_confirm "$prompt"
+  fundeploy_interactive || return 0
+  fundeploy_ui_confirm "$prompt"
 }
 
 usage() {
@@ -326,7 +326,7 @@ process_alive() {
 }
 
 listener_pid_for_port() {
-  _nlt_listener_pid_for_port "$1"
+  _fundeploy_listener_pid_for_port "$1"
 }
 
 read_pid() {
@@ -489,7 +489,7 @@ cmd_uninstall() {
   echo "  AIRFLOW_HOME=${AIRFLOW_HOME}"
   echo ""
 
-  nlt_confirm_destructive \
+  fundeploy_confirm_destructive \
     "确认永久删除以上路径？数据库、DAG、日志与虚拟环境将全部移除。" \
     AIRFLOW_UNINSTALL_YES || return 1
 
@@ -757,9 +757,9 @@ dispatch() {
 }
 
 interactive_main() {
-  declare -F nlt_ui_apply_theme >/dev/null 2>&1 && nlt_ui_apply_theme
-  if declare -F nlt_ui_banner >/dev/null 2>&1; then
-    nlt_ui_banner "Airflow 本地助手" "AIRFLOW_HOME=${AIRFLOW_HOME}"
+  declare -F fundeploy_ui_apply_theme >/dev/null 2>&1 && fundeploy_ui_apply_theme
+  if declare -F fundeploy_ui_banner >/dev/null 2>&1; then
+    fundeploy_ui_banner "Airflow 本地助手" "AIRFLOW_HOME=${AIRFLOW_HOME}"
   else
     gum style --bold --foreground 212 "Airflow 本地助手"
     gum style "AIRFLOW_HOME=${AIRFLOW_HOME}"
@@ -767,7 +767,7 @@ interactive_main() {
   set +e
   while true; do
     local pick
-    pick="$(nlt_ui_choose "fundeploy / service / airflow / 选择动作" \
+    pick="$(fundeploy_ui_choose "fundeploy / service / airflow / 选择动作" \
       "install" "update" "start" "run" "stop" "restart" "status" \
       "dag-scaffold" "dags-list" "trigger" "task-test" \
       "users-create" "users-list" "users-reset-password" "http-trigger" \
@@ -819,7 +819,7 @@ main() {
         ;;
     esac
   fi
-  _nlt_ensure_gum || exit 1
+  _fundeploy_ensure_gum || exit 1
   if [[ $# -eq 0 ]]; then
     interactive_main
     return 0

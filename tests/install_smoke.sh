@@ -53,9 +53,9 @@ mkdir -p "${TMP}/safe-root"
 
 bash "${ROOT}/install.sh" install
 legacy_bins=(
-  nlt nlt-build nlt-tools nlt-dev nlt-ai-cli nlt-pip-sources nlt-python-env nlt-utils nlt-github-net nlt-port-kill nlt-download nlt-services nlt-cockpit-tools
-  nlt-airflow nlt-celery nlt-paperclip nlt-code-server nlt-new-api nlt-sub2api nlt-open-pencil
-  nlt-airflow-install nlt-celery-install nlt-celery-update nlt-paperclip-install nlt-code-server-install nlt-new-api-install nlt-sub2api-install
+  nlt fundeploy-build fundeploy-tools fundeploy-dev fundeploy-ai-cli fundeploy-pip-sources fundeploy-python-env fundeploy-utils fundeploy-github-net fundeploy-port-kill fundeploy-download fundeploy-services fundeploy-cockpit-tools
+  fundeploy-airflow fundeploy-celery fundeploy-paperclip fundeploy-code-server fundeploy-new-api fundeploy-sub2api fundeploy-open-pencil
+  fundeploy-airflow-install fundeploy-celery-install fundeploy-celery-update fundeploy-paperclip-install fundeploy-code-server-install fundeploy-new-api-install fundeploy-sub2api-install
 )
 for f in "${legacy_bins[@]}"; do
   printf '#!/usr/bin/env bash\nexit 0\n' >"${FUNDEPLOY_ROOT}/bin/${f}"
@@ -231,7 +231,7 @@ printf '%s\n' \
 PAPERCLIP_BUILD_VERSION=2026.811.0-nightly.1 \
   node --import="${TMP}/paperclip-service/paperclip-host-version-register.mjs" \
   "${PAPERCLIP_LOADER_FIXTURE}/check.mjs" || exit 1
-bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/nlt-services.sh" || exit 1
+bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/fundeploy-services.sh" || exit 1
 bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/port-kill/setup.sh" || exit 1
 bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/brew/setup.sh" || exit 1
 bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/brew/setup.sh" --help >/dev/null || exit 1
@@ -266,7 +266,7 @@ export -f curl npm pnpm brew
 unset -f curl npm pnpm brew
 mkdir -p "${TMP}/ai-home/.local/bin" "${TMP}/ai-home/.codex/packages/standalone"
 touch "${TMP}/ai-home/.local/bin/codex"
-HOME="${TMP}/ai-home" NLT_ASSUME_YES=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" ai codex official uninstall
+HOME="${TMP}/ai-home" FUNDEPLOY_ASSUME_YES=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" ai codex official uninstall
 [[ ! -e "${TMP}/ai-home/.local/bin/codex" && ! -e "${TMP}/ai-home/.codex/packages/standalone" ]] || exit 1
 bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/dev/go/setup.sh" || exit 1
 bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/dev/rust/setup.sh" || exit 1
@@ -329,8 +329,8 @@ NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" ai list | grep -q "claude" ||
 NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" tool download resolve-url "https://github.com/foo/bar" | grep -q "https://github.com/foo/bar" || exit 1
 NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" tool port-kill list 59999 >/dev/null || exit 1
 mkdir -p "${TMP}/legacy-bin"
-touch "${TMP}/legacy-bin/nlt-port-kill"
-NLT_BIN_DIR="${TMP}/legacy-bin" NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" tool port-kill install >/dev/null || exit 1
-[[ ! -e "${TMP}/legacy-bin/nlt-port-kill" ]] || exit 1
+touch "${TMP}/legacy-bin/fundeploy-port-kill"
+FUNDEPLOY_BIN_DIR="${TMP}/legacy-bin" NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" tool port-kill install >/dev/null || exit 1
+[[ ! -e "${TMP}/legacy-bin/fundeploy-port-kill" ]] || exit 1
 "${FUNDEPLOY_ROOT}/bin/fundeploy" service status --no-http >/dev/null || exit 1
 echo "install_smoke OK"

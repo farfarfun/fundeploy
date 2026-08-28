@@ -29,23 +29,23 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # 仓库内为 scripts/.../<域>/；install 同步后为 libexec/fundeploy/<域>/（与 lib/ 同级）→ 先试 ../lib 再 ../../lib
-if [[ -f "${SCRIPT_DIR}/../lib/nlt-common.sh" ]]; then
-  # shellcheck source=../lib/nlt-common.sh
-  source "${SCRIPT_DIR}/../lib/nlt-common.sh"
-elif [[ -f "${SCRIPT_DIR}/../../lib/nlt-common.sh" ]]; then
-  # shellcheck source=../../lib/nlt-common.sh
-  source "${SCRIPT_DIR}/../../lib/nlt-common.sh"
+if [[ -f "${SCRIPT_DIR}/../lib/fundeploy-common.sh" ]]; then
+  # shellcheck source=../lib/fundeploy-common.sh
+  source "${SCRIPT_DIR}/../lib/fundeploy-common.sh"
+elif [[ -f "${SCRIPT_DIR}/../../lib/fundeploy-common.sh" ]]; then
+  # shellcheck source=../../lib/fundeploy-common.sh
+  source "${SCRIPT_DIR}/../../lib/fundeploy-common.sh"
 else
-  echo "错误: 找不到 lib/nlt-common.sh（已检查 ${SCRIPT_DIR}/../lib 与 ${SCRIPT_DIR}/../../lib）" >&2
+  echo "错误: 找不到 lib/fundeploy-common.sh（已检查 ${SCRIPT_DIR}/../lib 与 ${SCRIPT_DIR}/../../lib）" >&2
   exit 1
 fi
 
-if [[ -f "${SCRIPT_DIR}/../lib/nlt-progress.sh" ]]; then
-  # shellcheck source=../lib/nlt-progress.sh
-  source "${SCRIPT_DIR}/../lib/nlt-progress.sh"
-elif [[ -f "${SCRIPT_DIR}/../../lib/nlt-progress.sh" ]]; then
-  # shellcheck source=../../lib/nlt-progress.sh
-  source "${SCRIPT_DIR}/../../lib/nlt-progress.sh"
+if [[ -f "${SCRIPT_DIR}/../lib/fundeploy-progress.sh" ]]; then
+  # shellcheck source=../lib/fundeploy-progress.sh
+  source "${SCRIPT_DIR}/../lib/fundeploy-progress.sh"
+elif [[ -f "${SCRIPT_DIR}/../../lib/fundeploy-progress.sh" ]]; then
+  # shellcheck source=../../lib/fundeploy-progress.sh
+  source "${SCRIPT_DIR}/../../lib/fundeploy-progress.sh"
 fi
 
 NEW_API_GITHUB_REPO="${NEW_API_GITHUB_REPO:-QuantumNous/new-api}"
@@ -104,7 +104,7 @@ process_alive() {
 }
 
 listener_pid_for_port() {
-  _nlt_listener_pid_for_port "$1"
+  _fundeploy_listener_pid_for_port "$1"
 }
 
 read_pid() {
@@ -207,7 +207,7 @@ _resolve_tag() {
   fi
   require_curl
   local json picked
-  json="$(_nlt_github_download_curl -fsSL "https://api.github.com/repos/${NEW_API_GITHUB_REPO}/releases?per_page=40")" || json=""
+  json="$(_fundeploy_github_download_curl -fsSL "https://api.github.com/repos/${NEW_API_GITHUB_REPO}/releases?per_page=40")" || json=""
   if [[ -n "$json" ]]; then
     picked="$(_pick_tag_from_releases_json "$json" || true)"
     if [[ -n "$picked" ]]; then
@@ -228,11 +228,11 @@ _download_install() {
   echo "    ${url}" >&2
   tmp="$(mktemp)"
   trap '[[ -n "${tmp-}" ]] && rm -f "${tmp}"' RETURN
-  _nlt_github_download_print_accel_hint
-  if declare -F nlt_pb_curl_to_file >/dev/null 2>&1; then
-    NLT_PB_LABEL="new-api ${tag}" nlt_pb_curl_to_file "$url" "${tmp}" || die "下载失败: ${url}"
+  _fundeploy_github_download_print_accel_hint
+  if declare -F fundeploy_pb_curl_to_file >/dev/null 2>&1; then
+    FUNDEPLOY_PB_LABEL="new-api ${tag}" fundeploy_pb_curl_to_file "$url" "${tmp}" || die "下载失败: ${url}"
   else
-    _nlt_github_download_curl -fsSL "$url" -o "${tmp}"
+    _fundeploy_github_download_curl -fsSL "$url" -o "${tmp}"
   fi
   mkdir -p "${NEW_API_SERVICE_HOME}/bin"
   install -m 0755 "${tmp}" "${NEW_API_BIN}"
@@ -344,10 +344,10 @@ cmd_stop() {
   elif ! process_alive "$pid"; then
     rm -f "$PID_FILE"
   fi
-  if [[ -z "$assume_yes" ]] && [[ -n "$pid" || -n "$listener_pid" ]] && nlt_interactive; then
-    # 用 nlt_ui_confirm 而非裸 gum：缺 gum 时降级为 read y/N，
+  if [[ -z "$assume_yes" ]] && [[ -n "$pid" || -n "$listener_pid" ]] && fundeploy_interactive; then
+    # 用 fundeploy_ui_confirm 而非裸 gum：缺 gum 时降级为 read y/N，
     # 而不是返回 127 让 `|| exit 0` 谎报「已停止」。
-    nlt_ui_confirm "停止 new-api（PID ${pid}）？" || return 1
+    fundeploy_ui_confirm "停止 new-api（PID ${pid}）？" || return 1
   fi
   if [[ -n "$pid" ]] && process_alive "$pid"; then
     kill -TERM "$pid" 2>/dev/null || true
@@ -405,9 +405,9 @@ cmd_status() {
 cmd_uninstall() {
   echo "将删除: ${NEW_API_SERVICE_HOME}" >&2
   # 先确认再动手：确认通过后 cmd_stop 用 --yes，避免二次追问把卸载拦腰截断。
-  nlt_confirm_destructive "确认删除 ${NEW_API_SERVICE_HOME}？" NEW_API_UNINSTALL_YES || return 1
-  cmd_stop --yes || nlt_ui_warn "停止失败，仍继续删除。"
-  nlt_safe_rm "${NEW_API_SERVICE_HOME}" || return 1
+  fundeploy_confirm_destructive "确认删除 ${NEW_API_SERVICE_HOME}？" NEW_API_UNINSTALL_YES || return 1
+  cmd_stop --yes || fundeploy_ui_warn "停止失败，仍继续删除。"
+  fundeploy_safe_rm "${NEW_API_SERVICE_HOME}" || return 1
   echo "已删除。"
 }
 
@@ -433,9 +433,9 @@ dispatch() {
 }
 
 interactive_main() {
-  declare -F nlt_ui_apply_theme >/dev/null 2>&1 && nlt_ui_apply_theme
-  if declare -F nlt_ui_banner >/dev/null 2>&1; then
-    nlt_ui_banner "new-api 本地服务（QuantumNous/new-api）" "安装目录: ${NEW_API_SERVICE_HOME}" "数据目录: ${NEW_API_DATA_DIR}  端口: ${NEW_API_PORT}"
+  declare -F fundeploy_ui_apply_theme >/dev/null 2>&1 && fundeploy_ui_apply_theme
+  if declare -F fundeploy_ui_banner >/dev/null 2>&1; then
+    fundeploy_ui_banner "new-api 本地服务（QuantumNous/new-api）" "安装目录: ${NEW_API_SERVICE_HOME}" "数据目录: ${NEW_API_DATA_DIR}  端口: ${NEW_API_PORT}"
   else
     gum style --bold --foreground 212 "new-api 本地服务（QuantumNous/new-api）"
     gum style "安装目录: ${NEW_API_SERVICE_HOME}"
@@ -445,7 +445,7 @@ interactive_main() {
   set +e
   while true; do
     local pick
-    pick="$(nlt_ui_choose "fundeploy / service / new-api / 选择动作" \
+    pick="$(fundeploy_ui_choose "fundeploy / service / new-api / 选择动作" \
       "install" "update" "start" "run" "stop" "restart" "status" "uninstall" "help" "quit")" || break
     [[ -z "$pick" ]] && break
     case "$pick" in
@@ -467,7 +467,7 @@ main() {
         ;;
     esac
   fi
-  _nlt_ensure_gum || exit 1
+  _fundeploy_ensure_gum || exit 1
   if [[ $# -eq 0 ]]; then
     interactive_main
     return 0

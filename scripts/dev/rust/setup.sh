@@ -10,21 +10,21 @@ die() { echo "错误: $*" >&2; exit 1; }
 
 _RUST_ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 for _c in "${_RUST_ROOT_DIR}/../../lib" "${_RUST_ROOT_DIR}/../../../lib"; do
-  if [[ -f "${_c}/nlt-install.sh" ]]; then
-    # shellcheck source=../../lib/nlt-install.sh
-    source "${_c}/nlt-install.sh"
+  if [[ -f "${_c}/fundeploy-install.sh" ]]; then
+    # shellcheck source=../../lib/fundeploy-install.sh
+    source "${_c}/fundeploy-install.sh"
     break
   fi
 done
-if ! declare -F _nlt_say_step >/dev/null 2>&1; then
-  _nlt_say_title() { printf '\n=== %s ===\n' "$*" >&2; }
-  _nlt_say_step()  { printf '▸ %s\n' "$*" >&2; }
-  _nlt_say_ok()    { printf '✓ %s\n' "$*" >&2; }
-  _nlt_say_warn()  { printf '! %s\n' "$*" >&2; }
-  _nlt_pm_detect() { printf ''; return 1; }
-  _nlt_pm_install() { return 2; }
-  _nlt_pm_uninstall() { return 2; }
-  _nlt_resolve_method() { printf '%s\n' "${INSTALL_METHOD:-source}"; }
+if ! declare -F _fundeploy_say_step >/dev/null 2>&1; then
+  _fundeploy_say_title() { printf '\n=== %s ===\n' "$*" >&2; }
+  _fundeploy_say_step()  { printf '▸ %s\n' "$*" >&2; }
+  _fundeploy_say_ok()    { printf '✓ %s\n' "$*" >&2; }
+  _fundeploy_say_warn()  { printf '! %s\n' "$*" >&2; }
+  _fundeploy_pm_detect() { printf ''; return 1; }
+  _fundeploy_pm_install() { return 2; }
+  _fundeploy_pm_uninstall() { return 2; }
+  _fundeploy_resolve_method() { printf '%s\n' "${INSTALL_METHOD:-source}"; }
 fi
 
 RUST_INSTALL_ROOT="${RUST_INSTALL_ROOT:-${HOME}/opt/rust}"
@@ -39,11 +39,11 @@ _rust_pkg_names() {
 
 do_install_pkg() {
   local mgr pkgs
-  mgr="$(_nlt_pm_detect)" || die "未探测到包管理器；请改用源码方式：INSTALL_METHOD=source $0 install"
+  mgr="$(_fundeploy_pm_detect)" || die "未探测到包管理器；请改用源码方式：INSTALL_METHOD=source $0 install"
   read -r -a pkgs <<<"$(_rust_pkg_names "${mgr}")"
-  _nlt_say_step "使用 ${mgr} 安装 Rust 包: ${pkgs[*]}"
-  _nlt_pm_install "${mgr}" "${pkgs[@]}" || die "${mgr} 安装 Rust 失败"
-  _nlt_say_ok "已通过 ${mgr} 安装 Rust。"
+  _fundeploy_say_step "使用 ${mgr} 安装 Rust 包: ${pkgs[*]}"
+  _fundeploy_pm_install "${mgr}" "${pkgs[@]}" || die "${mgr} 安装 Rust 失败"
+  _fundeploy_say_ok "已通过 ${mgr} 安装 Rust。"
 }
 
 do_install_source() {
@@ -51,9 +51,9 @@ do_install_source() {
   export RUSTUP_HOME="${RUSTUP_HOME:-${RUST_INSTALL_ROOT}/rustup}"
   export CARGO_HOME="${CARGO_HOME:-${RUST_INSTALL_ROOT}/cargo}"
   mkdir -p "${RUSTUP_HOME}" "${CARGO_HOME}"
-  _nlt_say_step "执行 rustup 安装（stable）到 ${RUST_INSTALL_ROOT}"
+  _fundeploy_say_step "执行 rustup 安装（stable）到 ${RUST_INSTALL_ROOT}"
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
-  _nlt_say_ok "Rust source 安装完成。"
+  _fundeploy_say_ok "Rust source 安装完成。"
   echo "请配置 PATH：" >&2
   echo "  export PATH=\"${CARGO_HOME}/bin:\${PATH}\"" >&2
 }
@@ -66,17 +66,17 @@ do_update_source() {
     rustup self update || true
     rustup update stable
   else
-    _nlt_say_warn "未找到 rustup，改为执行 source install。"
+    _fundeploy_say_warn "未找到 rustup，改为执行 source install。"
     do_install_source
   fi
 }
 
 do_uninstall_pkg() {
   local mgr pkgs
-  mgr="$(_nlt_pm_detect)" || { _nlt_say_warn "未探测到包管理器，跳过 pkg 卸载。"; return 0; }
+  mgr="$(_fundeploy_pm_detect)" || { _fundeploy_say_warn "未探测到包管理器，跳过 pkg 卸载。"; return 0; }
   read -r -a pkgs <<<"$(_rust_pkg_names "${mgr}")"
-  _nlt_say_step "使用 ${mgr} 卸载 Rust 包: ${pkgs[*]}"
-  _nlt_pm_uninstall "${mgr}" "${pkgs[@]}" || _nlt_say_warn "${mgr} 卸载 Rust 失败（可能本就未通过 ${mgr} 安装）。"
+  _fundeploy_say_step "使用 ${mgr} 卸载 Rust 包: ${pkgs[*]}"
+  _fundeploy_pm_uninstall "${mgr}" "${pkgs[@]}" || _fundeploy_say_warn "${mgr} 卸载 Rust 失败（可能本就未通过 ${mgr} 安装）。"
 }
 
 do_uninstall_source() {
@@ -88,16 +88,16 @@ do_uninstall_source() {
   fi
   if [[ -d "${RUST_INSTALL_ROOT}" ]]; then
     rm -rf "${RUST_INSTALL_ROOT}"
-    _nlt_say_ok "已删除源码安装目录: ${RUST_INSTALL_ROOT}"
+    _fundeploy_say_ok "已删除源码安装目录: ${RUST_INSTALL_ROOT}"
   else
-    _nlt_say_warn "目录不存在，跳过: ${RUST_INSTALL_ROOT}"
+    _fundeploy_say_warn "目录不存在，跳过: ${RUST_INSTALL_ROOT}"
   fi
 }
 
 do_install() {
   local method
-  method="$(_nlt_resolve_method Rust)"
-  _nlt_say_title "安装 Rust（方式: ${method}）"
+  method="$(_fundeploy_resolve_method Rust)"
+  _fundeploy_say_title "安装 Rust（方式: ${method}）"
   case "${method}" in
     pkg) do_install_pkg ;;
     source) do_install_source ;;
@@ -107,8 +107,8 @@ do_install() {
 
 do_update() {
   local method
-  method="$(_nlt_resolve_method Rust)"
-  _nlt_say_title "升级 Rust（方式: ${method}）"
+  method="$(_fundeploy_resolve_method Rust)"
+  _fundeploy_say_title "升级 Rust（方式: ${method}）"
   case "${method}" in
     pkg) do_install_pkg ;;
     source) do_update_source ;;
@@ -118,7 +118,7 @@ do_update() {
 
 do_uninstall() {
   local method="${INSTALL_METHOD:-all}"
-  _nlt_say_title "卸载 Rust（方式: ${method}）"
+  _fundeploy_say_title "卸载 Rust（方式: ${method}）"
   case "${method}" in
     pkg) do_uninstall_pkg ;;
     source) do_uninstall_source ;;

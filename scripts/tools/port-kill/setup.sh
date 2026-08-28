@@ -11,9 +11,9 @@
 #
 # 作为库使用（source）：
 #   source /path/to/port-kill/setup.sh --lib
-#   nlt_kill_port 8080          # 终止占用 8080 的进程
-#   nlt_list_port 8080          # 列出占用 8080 的进程信息
-#   nlt_kill_ports 8080 8443    # 批量终止
+#   fundeploy_kill_port 8080          # 终止占用 8080 的进程
+#   fundeploy_list_port 8080          # 列出占用 8080 的进程信息
+#   fundeploy_kill_ports 8080 8443    # 批量终止
 
 # 本文件同时用作可 source 的库（见头部 `--lib` 用法）。直接执行时才收紧 shell 选项——
 # 原先无条件 `set -euo pipefail` 会把 nounset/pipefail 泄漏进调用方 shell，
@@ -26,21 +26,21 @@ fi
 
 # ── 路径解析 & 公共库 ────────────────────────────────────────────────────────
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-_NLT_LIB=""
-if [[ -f "${_SCRIPT_DIR}/../lib/nlt-common.sh" ]]; then
-  _NLT_LIB="$(cd "${_SCRIPT_DIR}/../lib" && pwd)"
-elif [[ -f "${_SCRIPT_DIR}/../../lib/nlt-common.sh" ]]; then
-  _NLT_LIB="$(cd "${_SCRIPT_DIR}/../../lib" && pwd)"
+_FUNDEPLOY_LIB=""
+if [[ -f "${_SCRIPT_DIR}/../lib/fundeploy-common.sh" ]]; then
+  _FUNDEPLOY_LIB="$(cd "${_SCRIPT_DIR}/../lib" && pwd)"
+elif [[ -f "${_SCRIPT_DIR}/../../lib/fundeploy-common.sh" ]]; then
+  _FUNDEPLOY_LIB="$(cd "${_SCRIPT_DIR}/../../lib" && pwd)"
 fi
 
-if [[ -n "${_NLT_LIB}" ]]; then
-  # shellcheck source=../../lib/nlt-common.sh
-  source "${_NLT_LIB}/nlt-common.sh"
+if [[ -n "${_FUNDEPLOY_LIB}" ]]; then
+  # shellcheck source=../../lib/fundeploy-common.sh
+  source "${_FUNDEPLOY_LIB}/fundeploy-common.sh"
 fi
 
 # ── 历史独立入口（仅用于清理）─────────────────────────────────────────────────
-NLT_BIN_DIR="${NLT_BIN_DIR:-${HOME}/opt/nlt/bin}"
-INSTALL_NAME="nlt-port-kill"
+FUNDEPLOY_BIN_DIR="${FUNDEPLOY_BIN_DIR:-${HOME}/opt/nlt/bin}"
+INSTALL_NAME="fundeploy-port-kill"
 
 # ── 基础输出工具 ──────────────────────────────────────────────────────────────
 _pk_say()  { printf '%s\n' "$*"; }
@@ -65,8 +65,8 @@ _pk_err()  { printf '[ERROR] %s\n' "$*" >&2; }
 # 于是 kill 会在完全没有提示的情况下执行。
 _pk_confirm() {
   local prompt="$1"
-  if declare -F nlt_ui_confirm >/dev/null 2>&1; then
-    nlt_ui_confirm "${prompt}"
+  if declare -F fundeploy_ui_confirm >/dev/null 2>&1; then
+    fundeploy_ui_confirm "${prompt}"
     return $?
   fi
   local a
@@ -84,9 +84,9 @@ _pk_header() {
 
 # ── 核心库函数（可被其他脚本 source 使用）────────────────────────────────────
 
-# nlt_list_port <port>
+# fundeploy_list_port <port>
 # 列出占用指定端口的进程，返回 "pid:comm" 行列表；没有进程时返回空。
-nlt_list_port() {
+fundeploy_list_port() {
   local port="$1"
   local result=()
 
@@ -124,18 +124,18 @@ nlt_list_port() {
   printf '%s\n' "${result[@]+"${result[@]}"}"
 }
 
-# nlt_kill_port <port> [signal]
+# fundeploy_kill_port <port> [signal]
 # 终止占用 <port> 的所有进程。
 # signal 默认 TERM；15s 后若还存在则升级 KILL。
 # 返回 0 = 成功（含"本来就没进程"），1 = 仍有进程未被杀死。
-nlt_kill_port() {
+fundeploy_kill_port() {
   local port="$1"
   local sig="${2:-TERM}"
   local entries=() line
   while IFS= read -r line || [[ -n "${line}" ]]; do
     [[ -z "${line}" ]] && continue
     entries+=("$line")
-  done < <(nlt_list_port "${port}")
+  done < <(fundeploy_list_port "${port}")
 
   if [[ ${#entries[@]} -eq 0 ]]; then
     _pk_info "端口 ${port}：无占用进程。"
@@ -207,12 +207,12 @@ nlt_kill_port() {
   fi
 }
 
-# nlt_kill_ports <port> [port…]
+# fundeploy_kill_ports <port> [port…]
 # 批量终止多个端口的进程，收集失败并在末尾汇报。
-nlt_kill_ports() {
+fundeploy_kill_ports() {
   local failed=()
   for port in "$@"; do
-    nlt_kill_port "${port}" || failed+=("${port}")
+    fundeploy_kill_port "${port}" || failed+=("${port}")
   done
   if [[ ${#failed[@]} -gt 0 ]]; then
     _pk_err "以下端口的进程未能完全终止：${failed[*]}"
@@ -222,7 +222,7 @@ nlt_kill_ports() {
 }
 
 _pk_uninstall_wrapper() {
-  local target="${NLT_BIN_DIR}/${INSTALL_NAME}"
+  local target="${FUNDEPLOY_BIN_DIR}/${INSTALL_NAME}"
   if [[ -f "${target}" ]]; then
     rm -f "${target}"
     _pk_info "已移除: ${target}"
@@ -252,7 +252,7 @@ cmd_list() {
     while IFS= read -r line || [[ -n "${line}" ]]; do
       [[ -z "${line}" ]] && continue
       entries+=("$line")
-    done < <(nlt_list_port "${port}")
+    done < <(fundeploy_list_port "${port}")
     if [[ ${#entries[@]} -eq 0 ]]; then
       _pk_say "  (无占用进程)"
     else
@@ -276,13 +276,13 @@ cmd_kill() {
       }
       [[ -z "${ports_str}" ]] && { _pk_warn "端口号不能为空。"; return 1; }
       read -ra _ports <<< "${ports_str}"
-      nlt_kill_ports "${_ports[@]}"
+      fundeploy_kill_ports "${_ports[@]}"
     else
       _pk_err "用法: kill <port> [port…]"
       return 1
     fi
   else
-    nlt_kill_ports "$@"
+    fundeploy_kill_ports "$@"
   fi
 }
 
@@ -306,7 +306,7 @@ cmd_reinstall() {
 cmd_uninstall() {
   _pk_header "卸载 ${INSTALL_NAME}"
   if [[ "${NONINTERACTIVE:-0}" != "1" ]] && [[ -t 0 ]]; then
-    _pk_confirm "将移除 ${NLT_BIN_DIR}/${INSTALL_NAME}，继续？" || {
+    _pk_confirm "将移除 ${FUNDEPLOY_BIN_DIR}/${INSTALL_NAME}，继续？" || {
       _pk_warn "已取消。"; return 0
     }
   fi
@@ -316,8 +316,8 @@ cmd_uninstall() {
 # ── 无参交互主菜单 ────────────────────────────────────────────────────────────
 
 _interactive_main() {
-  if [[ -n "${_NLT_LIB}" ]]; then
-    _nlt_ensure_gum || true
+  if [[ -n "${_FUNDEPLOY_LIB}" ]]; then
+    _fundeploy_ensure_gum || true
   fi
   command -v gum >/dev/null 2>&1 || {
     _pk_err "gum 未安装，无法进入交互模式。请传入子命令，如: $0 kill <port>"
@@ -337,7 +337,7 @@ _interactive_main() {
         ports_str="$(gum input --placeholder "输入端口号，多个用空格分隔")" || { _pk_warn "已取消。"; continue; }
         [[ -z "${ports_str}" ]] && continue
         read -ra _ports <<< "${ports_str}"
-        nlt_kill_ports "${_ports[@]}" || true
+        fundeploy_kill_ports "${_ports[@]}" || true
         ;;
       list*)
         local port
@@ -368,13 +368,13 @@ Tool 管理子命令:
 
 库 source 模式:
   source setup.sh --lib
-  nlt_kill_port <port>        # 终止单个端口
-  nlt_kill_ports <port>…      # 批量终止
-  nlt_list_port <port>        # 列出进程（返回 "pid:comm" 行）
+  fundeploy_kill_port <port>        # 终止单个端口
+  fundeploy_kill_ports <port>…      # 批量终止
+  fundeploy_list_port <port>        # 列出进程（返回 "pid:comm" 行）
 
 环境变量:
   NONINTERACTIVE=1      跳过所有 gum 确认
-  NLT_BIN_DIR           旧版入口清理目录（默认 ~/opt/nlt/bin）
+  FUNDEPLOY_BIN_DIR           旧版入口清理目录（默认 ~/opt/nlt/bin）
 EOF
 }
 

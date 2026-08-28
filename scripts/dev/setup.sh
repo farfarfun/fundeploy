@@ -3,16 +3,16 @@
 set -euo pipefail
 
 _DEV_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-_NLT_LIB=""
+_FUNDEPLOY_LIB=""
 for _c in "${_DEV_ROOT}/../lib" "${_DEV_ROOT}/../../lib"; do
-  if [[ -f "${_c}/nlt-common.sh" ]]; then
-    _NLT_LIB="$(cd "${_c}" && pwd)"
+  if [[ -f "${_c}/fundeploy-common.sh" ]]; then
+    _FUNDEPLOY_LIB="$(cd "${_c}" && pwd)"
     break
   fi
 done
-if [[ -n "${_NLT_LIB}" ]]; then
-  # shellcheck source=../lib/nlt-common.sh
-  source "${_NLT_LIB}/nlt-common.sh"
+if [[ -n "${_FUNDEPLOY_LIB}" ]]; then
+  # shellcheck source=../lib/fundeploy-common.sh
+  source "${_FUNDEPLOY_LIB}/fundeploy-common.sh"
 fi
 
 die() { echo "错误: $*" >&2; exit 1; }
@@ -21,7 +21,7 @@ usage() {
   cat <<'EOF'
 用法: fundeploy dev [子命令] [参数…]
 
-  推荐主入口（替代在文档中单独强调 nlt-pip-sources / nlt-python-env）:
+  推荐主入口（替代在文档中单独强调 fundeploy-pip-sources / fundeploy-python-env）:
     pip | pip-sources     pip 镜像与源配置（委派到 pip-sources）
     uv                    uv 多方式安装 / 升级 / 卸载（默认包管理器，source 到 ~/opt）
     python | python-env   uv 与 Python 虚拟环境（委派到 python-env；会按需自动装 uv）
@@ -60,16 +60,16 @@ _dispatch_child() {
 _pick_menu() {
   if command -v gum >/dev/null 2>&1; then
     :
-  elif [[ -n "${_NLT_LIB:-}" ]] && declare -F _nlt_ensure_gum >/dev/null 2>&1; then
-    _nlt_ensure_gum || return 1
+  elif [[ -n "${_FUNDEPLOY_LIB:-}" ]] && declare -F _fundeploy_ensure_gum >/dev/null 2>&1; then
+    _fundeploy_ensure_gum || return 1
   else
     return 1
   fi
-  if declare -F nlt_ui_banner >/dev/null 2>&1; then
-    nlt_ui_banner "fundeploy / dev" "语言、运行时与包管理器" >&2
+  if declare -F fundeploy_ui_banner >/dev/null 2>&1; then
+    fundeploy_ui_banner "fundeploy / dev" "语言、运行时与包管理器" >&2
   fi
-  if declare -F nlt_ui_choose >/dev/null 2>&1; then
-    nlt_ui_choose "fundeploy / dev / 选择工具" \
+  if declare -F fundeploy_ui_choose >/dev/null 2>&1; then
+    fundeploy_ui_choose "fundeploy / dev / 选择工具" \
       "pip（pip 源 / 镜像）" \
       "uv（Astral 安装器）" \
       "python（uv / 虚拟环境）" \
@@ -94,7 +94,7 @@ _pick_menu() {
 main() {
   local cmd="${1:-}"
   if [[ -z "$cmd" ]]; then
-    # 与 fundeploy.sh / nlt-tools.sh 保持一致：非交互（NONINTERACTIVE=1 或
+    # 与 fundeploy.sh / fundeploy-tools.sh 保持一致：非交互（NONINTERACTIVE=1 或
     # stdin 非 TTY）时打印帮助后退出，而不是弹出 gum 菜单。此前本入口漏了
     # 这道判断，CI 上一旦装了 gum，`NONINTERACTIVE=1 fundeploy dev` 会直接
     # 进入阻塞式 TUI。
@@ -143,7 +143,7 @@ main() {
       usage
       ;;
     *)
-      # 退出码 2 = 用法错误，与 fundeploy.sh / nlt-tools.sh / nlt-services.sh
+      # 退出码 2 = 用法错误，与 fundeploy.sh / fundeploy-tools.sh / fundeploy-services.sh
       # 对齐（此前本入口用 1，调用方无法靠 $?==2 区分「用法错」与「执行失败」）。
       echo "错误: 未知子命令: ${cmd}（见 fundeploy dev --help）" >&2
       usage >&2

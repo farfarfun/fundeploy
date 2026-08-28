@@ -3,17 +3,17 @@
 set -euo pipefail
 
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-_NLT_LIB=""
-if [[ -f "${_SCRIPT_DIR}/../lib/nlt-common.sh" ]]; then
-  _NLT_LIB="$(cd "${_SCRIPT_DIR}/../lib" && pwd)"
-elif [[ -f "${_SCRIPT_DIR}/../../lib/nlt-common.sh" ]]; then
-  _NLT_LIB="$(cd "${_SCRIPT_DIR}/../../lib" && pwd)"
+_FUNDEPLOY_LIB=""
+if [[ -f "${_SCRIPT_DIR}/../lib/fundeploy-common.sh" ]]; then
+  _FUNDEPLOY_LIB="$(cd "${_SCRIPT_DIR}/../lib" && pwd)"
+elif [[ -f "${_SCRIPT_DIR}/../../lib/fundeploy-common.sh" ]]; then
+  _FUNDEPLOY_LIB="$(cd "${_SCRIPT_DIR}/../../lib" && pwd)"
 else
   echo "selftest: 找不到 lib" >&2
   exit 1
 fi
-# shellcheck source=../../lib/nlt-github-download.sh
-source "${_NLT_LIB}/nlt-github-download.sh"
+# shellcheck source=../../lib/fundeploy-github-download.sh
+source "${_FUNDEPLOY_LIB}/fundeploy-github-download.sh"
 
 _die() {
   echo "selftest FAIL: $*" >&2
@@ -37,9 +37,9 @@ _resolve_under_env() {
     [[ -n "${2+x}" ]] && export FUNDEPLOY_GITHUB_HUB_PROXY_PREFIX="$2"
     [[ -n "${3+x}" ]] && export FUNDEPLOY_GITHUB_DOWNLOAD_MODE="$3"
     [[ -n "${4+x}" ]] && export FUNDEPLOY_GITHUB_RAW_MIRROR_BASE="$4"
-    # shellcheck source=../../lib/nlt-github-download.sh
-    source "${_NLT_LIB}/nlt-github-download.sh"
-    _nlt_github_download_resolve_url "$url"
+    # shellcheck source=../../lib/fundeploy-github-download.sh
+    source "${_FUNDEPLOY_LIB}/fundeploy-github-download.sh"
+    _fundeploy_github_download_resolve_url "$url"
   )
 }
 

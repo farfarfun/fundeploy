@@ -6,7 +6,7 @@
 
 | 子命令 | 说明 |
 |--------|------|
-| `curl …` | 扫描参数中的 `https://…` 字符串，对命中 GitHub 白名单的项调用 `_nlt_github_download_resolve_url` 后 **`exec curl`**（退出码为 `curl` 的退出码）。 |
+| `curl …` | 扫描参数中的 `https://…` 字符串，对命中 GitHub 白名单的项调用 `_fundeploy_github_download_resolve_url` 后 **`exec curl`**（退出码为 `curl` 的退出码）。 |
 | `resolve-url <url>` | 打印一行改写结果（便于脚本与排障）。 |
 | `install` / `update` / `reinstall` / `uninstall` | 本工具随 **fundeploy** 安装到 `libexec`；此处仅输出说明。`NONINTERACTIVE=1` 且 `install` 时会运行内置 `selftest.sh`。 |
 
@@ -24,7 +24,7 @@
 
 **不会改写**：非 `https://` 的 URL、不在白名单内的主机、已是 hub 前缀开头的 URL（避免双写）。
 
-**大文件下载进度条**：new-api / code-server 的 `install` / `update` 在已 `source` 到 `nlt-progress.sh` 时，会用 **`nlt_pb_curl_to_file`** 拉取 Release 资产（stdout 为 TTY 时显示条形进度；否则仅周期性字节日志）。
+**大文件下载进度条**：new-api / code-server 的 `install` / `update` 在已 `source` 到 `fundeploy-progress.sh` 时，会用 **`fundeploy_pb_curl_to_file`** 拉取 Release 资产（stdout 为 TTY 时显示条形进度；否则仅周期性字节日志）。
 
 **直连提示**：未配置任何加速变量时，上述服务在下载前会向 stderr 打一行说明；不需要可设 **`FUNDEPLOY_GITHUB_DOWNLOAD_HINT=0`**。
 
@@ -39,11 +39,11 @@
 其它 Bash 脚本可：
 
 ```bash
-source /path/to/scripts/lib/nlt-github-download.sh
-_nlt_github_download_resolve_url "https://raw.githubusercontent.com/…"
+source /path/to/scripts/lib/fundeploy-github-download.sh
+_fundeploy_github_download_resolve_url "https://raw.githubusercontent.com/…"
 ```
 
-（`nlt-common.sh` 也会 `source` 本库，以便 `_nlt_ensure_gum` 等路径统一走同一套 URL 改写。）
+（`fundeploy-common.sh` 也会 `source` 本库，以便 `_fundeploy_ensure_gum` 等路径统一走同一套 URL 改写。）
 
 ## 示例
 

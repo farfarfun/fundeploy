@@ -25,7 +25,7 @@ usage() {
 
 环境变量:
   CLAUDE_INSTALL_URL | CODEX_INSTALL_URL | CURSOR_INSTALL_URL  覆盖官方安装器地址
-  NLT_ASSUME_YES=1   允许非交互删除官方安装产物
+  FUNDEPLOY_ASSUME_YES=1   允许非交互删除官方安装产物
 
 示例:
   fundeploy ai claude install

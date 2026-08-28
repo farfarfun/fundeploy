@@ -4,14 +4,14 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -f "${SCRIPT_DIR}/../lib/nlt-common.sh" ]]; then
-  # shellcheck source=../lib/nlt-common.sh
-  source "${SCRIPT_DIR}/../lib/nlt-common.sh"
-elif [[ -f "${SCRIPT_DIR}/../../lib/nlt-common.sh" ]]; then
-  # shellcheck source=../../lib/nlt-common.sh
-  source "${SCRIPT_DIR}/../../lib/nlt-common.sh"
+if [[ -f "${SCRIPT_DIR}/../lib/fundeploy-common.sh" ]]; then
+  # shellcheck source=../lib/fundeploy-common.sh
+  source "${SCRIPT_DIR}/../lib/fundeploy-common.sh"
+elif [[ -f "${SCRIPT_DIR}/../../lib/fundeploy-common.sh" ]]; then
+  # shellcheck source=../../lib/fundeploy-common.sh
+  source "${SCRIPT_DIR}/../../lib/fundeploy-common.sh"
 else
-  echo "错误: 找不到 lib/nlt-common.sh" >&2
+  echo "错误: 找不到 lib/fundeploy-common.sh" >&2
   exit 1
 fi
 
@@ -41,12 +41,12 @@ EOF
 }
 
 interactive_main() {
-  _nlt_ensure_gum || exit 1
-  nlt_ui_banner "fundeploy / service / code-server" "选择互相独立的安装与服务管理模式" >&2
+  _fundeploy_ensure_gum || exit 1
+  fundeploy_ui_banner "fundeploy / service / code-server" "选择互相独立的安装与服务管理模式" >&2
   set +e
   while true; do
     local pick
-    pick="$(nlt_ui_choose "fundeploy / service / code-server / 选择模式" \
+    pick="$(fundeploy_ui_choose "fundeploy / service / code-server / 选择模式" \
       "official   官方模式 · install.sh + 系统服务" \
       "manual     手动模式 · Release 包 + 本地 PID" \
       "help       命令帮助" \

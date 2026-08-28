@@ -12,16 +12,16 @@ fi
 set -euo pipefail
 
 _PSDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -f "${_PSDIR}/../lib/nlt-common.sh" ]]; then
-  _NLT_LIB="$(cd "${_PSDIR}/../lib" && pwd)"
-elif [[ -f "${_PSDIR}/../../lib/nlt-common.sh" ]]; then
-  _NLT_LIB="$(cd "${_PSDIR}/../../lib" && pwd)"
+if [[ -f "${_PSDIR}/../lib/fundeploy-common.sh" ]]; then
+  _FUNDEPLOY_LIB="$(cd "${_PSDIR}/../lib" && pwd)"
+elif [[ -f "${_PSDIR}/../../lib/fundeploy-common.sh" ]]; then
+  _FUNDEPLOY_LIB="$(cd "${_PSDIR}/../../lib" && pwd)"
 else
-  echo "错误: 找不到 lib/nlt-common.sh（已检查 ${_PSDIR}/../lib 与 ${_PSDIR}/../../lib）" >&2
+  echo "错误: 找不到 lib/fundeploy-common.sh（已检查 ${_PSDIR}/../lib 与 ${_PSDIR}/../../lib）" >&2
   exit 1
 fi
-# shellcheck source=../lib/nlt-common.sh
-source "${_NLT_LIB}/nlt-common.sh"
+# shellcheck source=../lib/fundeploy-common.sh
+source "${_FUNDEPLOY_LIB}/fundeploy-common.sh"
 
 # 颜色输出
 RED='\033[0;31m'
@@ -493,7 +493,7 @@ test_package_download_speed() {
 }
 
 # 探测单个源；向 stdout 输出两行：PRIMARY|…（可无正文）与 ALL|…（供并行合并）
-__nlt_pip_probe_one_source() {
+__fundeploy_pip_probe_one_source() {
     local source_name=$1
     local source_url display_name latency download_speed test_url start_time end_time http_code is_authenticated response_headers
     local primary_line=""
@@ -591,9 +591,9 @@ test_all_sources() {
 
     if [[ "$parallel_jobs" -le 1 ]]; then
         local _pair_tmp pl al
-        _pair_tmp="$(mktemp "${TMPDIR:-/tmp}/nlt-pip-pair.XXXXXX")"
+        _pair_tmp="$(mktemp "${TMPDIR:-/tmp}/fundeploy-pip-pair.XXXXXX")"
         for source_name in "${PIP_SOURCE_NAMES[@]}"; do
-            __nlt_pip_probe_one_source "$source_name" > "$_pair_tmp"
+            __fundeploy_pip_probe_one_source "$source_name" > "$_pair_tmp"
             {
                 IFS= read -r pl
                 IFS= read -r al
@@ -606,10 +606,10 @@ test_all_sources() {
         rm -f "$_pair_tmp"
     else
         local _probe_dir out_i j pl al
-        _probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/nlt-pip-probe.XXXXXX")"
+        _probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/fundeploy-pip-probe.XXXXXX")"
         out_i=0
         for source_name in "${PIP_SOURCE_NAMES[@]}"; do
-            __nlt_pip_probe_one_source "$source_name" > "$_probe_dir/$out_i.out" &
+            __fundeploy_pip_probe_one_source "$source_name" > "$_probe_dir/$out_i.out" &
             ((out_i++)) || true
             if (( out_i % parallel_jobs == 0 )); then
                 wait || true
@@ -666,7 +666,7 @@ test_all_sources() {
         done
 
         local _ps_sort_tmp
-        _ps_sort_tmp="$(mktemp "${TMPDIR:-/tmp}/nlt-pip-sort.XXXXXX")"
+        _ps_sort_tmp="$(mktemp "${TMPDIR:-/tmp}/fundeploy-pip-sort.XXXXXX")"
         printf '%s\n' "${sorted_lines[@]}" | LC_ALL=C sort -t'|' -k1,1 >"$_ps_sort_tmp"
         primary_sources=()
         while IFS= read -r item || [[ -n "$item" ]]; do
@@ -991,7 +991,7 @@ backup_config() {
             # 使用 ls -t 按修改时间排序（最新的在前），兼容 macOS 和 Linux
             # 写入临时文件而非 < <(...)，兼容「sh 实为 bash --posix」时禁用进程替换的情况
             local _ls_tmp
-            _ls_tmp="$(mktemp "${TMPDIR:-/tmp}/nlt-pip-ls.XXXXXX")"
+            _ls_tmp="$(mktemp "${TMPDIR:-/tmp}/fundeploy-pip-ls.XXXXXX")"
             ls -t "$PIP_CONFIG_DIR"/"${backup_base}".backup.* 2>/dev/null >"$_ls_tmp" || true
             while IFS= read -r file; do
                 [ -n "$file" ] && [ -f "$file" ] && backup_files+=("$file")
@@ -1055,7 +1055,7 @@ generate_pip_config_content() {
     
     # 文件头注释
     config_content+="# pip 配置文件\n"
-    config_content+="# 由 nlt-pip-sources / pip-sources/setup.sh 自动生成\n"
+    config_content+="# 由 fundeploy-pip-sources / pip-sources/setup.sh 自动生成\n"
     config_content+="# 生成时间: $(date '+%Y-%m-%d %H:%M:%S')\n"
     config_content+="# 配置了 ${#AVAILABLE_SOURCES[@]} 个可用源（按测速结果排序）\n"
     if [ ${#UNAVAILABLE_SOURCES[@]} -gt 0 ]; then
@@ -1306,15 +1306,15 @@ cmd_pip_uninstall_restore() {
         exit 1
     fi
     if [ "${NONINTERACTIVE:-}" != "1" ]; then
-        nlt_ui_confirm "用备份恢复 pip 配置？ ${backup_file} -> ${PIP_CONFIG_FILE}" || return 0
+        fundeploy_ui_confirm "用备份恢复 pip 配置？ ${backup_file} -> ${PIP_CONFIG_FILE}" || return 0
     fi
     cp "$backup_file" "$PIP_CONFIG_FILE"
     print_info "已从备份恢复: ${PIP_CONFIG_FILE}"
 }
 
-nlt_cli_main() {
+fundeploy_cli_main() {
     if [ $# -eq 0 ]; then
-        _nlt_ensure_gum || exit 1
+        _fundeploy_ensure_gum || exit 1
         local pick
         pick=$(gum choose --header "pip 源配置（fundeploy 工具）" \
             "install" "update" "reinstall" "uninstall" "help") || exit 0
@@ -1351,7 +1351,7 @@ main() {
         exit 0
     fi
 
-    _nlt_ensure_gum || exit 1
+    _fundeploy_ensure_gum || exit 1
     
     # 如果指定了单个源，提示用户现在支持多源配置
     if [ -n "$SELECTED_SOURCE" ]; then
@@ -1397,4 +1397,4 @@ main() {
 }
 
 # 执行主函数（无参时 gum 选子命令）
-nlt_cli_main "$@"
+fundeploy_cli_main "$@"

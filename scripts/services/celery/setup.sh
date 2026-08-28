@@ -33,14 +33,14 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -f "${SCRIPT_DIR}/../lib/nlt-common.sh" ]]; then
-  # shellcheck source=../lib/nlt-common.sh
-  source "${SCRIPT_DIR}/../lib/nlt-common.sh"
-elif [[ -f "${SCRIPT_DIR}/../../lib/nlt-common.sh" ]]; then
-  # shellcheck source=../../lib/nlt-common.sh
-  source "${SCRIPT_DIR}/../../lib/nlt-common.sh"
+if [[ -f "${SCRIPT_DIR}/../lib/fundeploy-common.sh" ]]; then
+  # shellcheck source=../lib/fundeploy-common.sh
+  source "${SCRIPT_DIR}/../lib/fundeploy-common.sh"
+elif [[ -f "${SCRIPT_DIR}/../../lib/fundeploy-common.sh" ]]; then
+  # shellcheck source=../../lib/fundeploy-common.sh
+  source "${SCRIPT_DIR}/../../lib/fundeploy-common.sh"
 else
-  echo "错误: 找不到 lib/nlt-common.sh（已检查 ${SCRIPT_DIR}/../lib 与 ${SCRIPT_DIR}/../../lib）" >&2
+  echo "错误: 找不到 lib/fundeploy-common.sh（已检查 ${SCRIPT_DIR}/../lib 与 ${SCRIPT_DIR}/../../lib）" >&2
   exit 1
 fi
 
@@ -337,10 +337,10 @@ cmd_start_worker() {
   ensure_scaffold
   if ! check_redis; then
     echo "警告: 无法连接 Redis，worker 可能无法启动。请先启动 Redis 或检查 CELERY_BROKER_URL。" >&2
-    if nlt_interactive; then
-      # nlt_ui_confirm 在缺 gum 时降级为 read y/N；原来的裸 gum 会返回 127，
+    if fundeploy_interactive; then
+      # fundeploy_ui_confirm 在缺 gum 时降级为 read y/N；原来的裸 gum 会返回 127，
       # 被 `|| return 0` 判成「用户拒绝」，于是 Redis 不通时静默不启动。
-      nlt_ui_confirm "仍尝试启动 worker？" || return 0
+      fundeploy_ui_confirm "仍尝试启动 worker？" || return 0
     fi
   fi
   local existing
@@ -412,8 +412,8 @@ cmd_start_flower() {
   if [[ -n "${FLOWER_BASIC_AUTH}" ]]; then
     flower_args+=(--basic-auth="${FLOWER_BASIC_AUTH}")
   elif [[ "${FLOWER_ADDRESS}" != "127.0.0.1" && "${FLOWER_ADDRESS}" != "localhost" ]]; then
-    nlt_ui_warn "Flower 监听 ${FLOWER_ADDRESS} 且未设置 FLOWER_BASIC_AUTH：任务参数与 revoke/terminate 将对该网络完全开放。"
-    nlt_ui_warn "建议: FLOWER_BASIC_AUTH=user:pass fundeploy service celery start-flower"
+    fundeploy_ui_warn "Flower 监听 ${FLOWER_ADDRESS} 且未设置 FLOWER_BASIC_AUTH：任务参数与 revoke/terminate 将对该网络完全开放。"
+    fundeploy_ui_warn "建议: FLOWER_BASIC_AUTH=user:pass fundeploy service celery start-flower"
   fi
 
   if [[ "${CELERY_APP}" == "celery_app:app" ]] && [[ -f "${CELERY_ETC_DIR}/celery_app.py" ]]; then
@@ -465,10 +465,10 @@ cmd_run_worker() {
   ensure_scaffold
   if ! check_redis; then
     echo "警告: 无法连接 Redis，worker 可能无法正常启动。请先启动 Redis 或检查 CELERY_BROKER_URL。" >&2
-    if nlt_interactive; then
-      # nlt_ui_confirm 在缺 gum 时降级为 read y/N；原来的裸 gum 会返回 127，
+    if fundeploy_interactive; then
+      # fundeploy_ui_confirm 在缺 gum 时降级为 read y/N；原来的裸 gum 会返回 127，
       # 被 `|| return 0` 判成「用户拒绝」，于是 Redis 不通时静默不启动。
-      nlt_ui_confirm "仍尝试启动 worker？" || return 0
+      fundeploy_ui_confirm "仍尝试启动 worker？" || return 0
     fi
   fi
   local existing
@@ -544,11 +544,11 @@ cmd_restart() {
     return 0
   fi
   echo ""
-  if nlt_ui_confirm "是否同时启动 beat？"; then
+  if fundeploy_ui_confirm "是否同时启动 beat？"; then
     cmd_start_beat
   fi
   echo ""
-  if nlt_ui_confirm "是否同时启动 flower？"; then
+  if fundeploy_ui_confirm "是否同时启动 flower？"; then
     cmd_start_flower
   fi
 }
@@ -648,9 +648,9 @@ dispatch() {
 }
 
 interactive_main() {
-  declare -F nlt_ui_apply_theme >/dev/null 2>&1 && nlt_ui_apply_theme
-  if declare -F nlt_ui_banner >/dev/null 2>&1; then
-    nlt_ui_banner "Celery 本地助手" "CELERY_HOME=${CELERY_HOME}" "CELERY_BROKER_URL=${CELERY_BROKER_URL}"
+  declare -F fundeploy_ui_apply_theme >/dev/null 2>&1 && fundeploy_ui_apply_theme
+  if declare -F fundeploy_ui_banner >/dev/null 2>&1; then
+    fundeploy_ui_banner "Celery 本地助手" "CELERY_HOME=${CELERY_HOME}" "CELERY_BROKER_URL=${CELERY_BROKER_URL}"
   else
     gum style --bold --foreground 212 "Celery 本地助手"
     gum style "CELERY_HOME=${CELERY_HOME}"
@@ -660,7 +660,7 @@ interactive_main() {
   set +e
   while true; do
     local pick
-    pick="$(nlt_ui_choose "fundeploy / service / celery / 选择动作" \
+    pick="$(fundeploy_ui_choose "fundeploy / service / celery / 选择动作" \
       "install" "update" "start" "run" "stop" "restart" "status" \
       "start-worker" "start-beat" "start-flower" \
       "run-worker" "run-beat" "run-flower" \
@@ -685,7 +685,7 @@ main() {
         ;;
     esac
   fi
-  _nlt_ensure_gum || exit 1
+  _fundeploy_ensure_gum || exit 1
   if [[ $# -eq 0 ]]; then
     interactive_main
     return 0

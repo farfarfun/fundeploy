@@ -99,7 +99,7 @@ _resolve_scripts_from_install_sh() {
 }
 
 # 浅克隆；若设置了 FUNDEPLOY_GIT_CLONE_REF 则固定该分支/tag（与 raw 脚本 URL 中的 ref 对齐）。
-_nlt_git_clone_shallow() {
+_fundeploy_git_clone_shallow() {
   local url="$1" dest="$2"
   if [[ -n "${FUNDEPLOY_GIT_CLONE_REF:-}" ]]; then
     git clone --depth 1 --branch "${FUNDEPLOY_GIT_CLONE_REF}" "${url}" "${dest}"
@@ -173,19 +173,19 @@ _ensure_clone_for_scripts() {
     case "${_FUNDEPLOY_SOURCE}" in
       github)
         echo "正在从 GitHub 克隆 farfarfun/fundeploy …" >&2
-        _nlt_git_clone_shallow "${FUNDEPLOY_GITHUB_REPO}" "${repo}" || die "GitHub 克隆失败，请检查网络与代理"
+        _fundeploy_git_clone_shallow "${FUNDEPLOY_GITHUB_REPO}" "${repo}" || die "GitHub 克隆失败，请检查网络与代理"
         ;;
       gitee)
         echo "正在从 Gitee 克隆 farfarfun/fundeploy …" >&2
-        _nlt_git_clone_shallow "${FUNDEPLOY_GITEE_REPO}" "${repo}" || die "Gitee 克隆失败，请检查网络与代理"
+        _fundeploy_git_clone_shallow "${FUNDEPLOY_GITEE_REPO}" "${repo}" || die "Gitee 克隆失败，请检查网络与代理"
         ;;
       *)
         echo "正在从 GitHub 克隆 farfarfun/fundeploy …" >&2
-        if _nlt_git_clone_shallow "${FUNDEPLOY_GITHUB_REPO}" "${repo}"; then
+        if _fundeploy_git_clone_shallow "${FUNDEPLOY_GITHUB_REPO}" "${repo}"; then
           _FUNDEPLOY_SOURCE="github"
         else
           echo "GitHub 不可用，正在从 Gitee 克隆 farfarfun/fundeploy …" >&2
-          _nlt_git_clone_shallow "${FUNDEPLOY_GITEE_REPO}" "${repo}" || die "GitHub 与 Gitee 克隆均失败，请检查网络与代理"
+          _fundeploy_git_clone_shallow "${FUNDEPLOY_GITEE_REPO}" "${repo}" || die "GitHub 与 Gitee 克隆均失败，请检查网络与代理"
           _FUNDEPLOY_SOURCE="gitee"
         fi
         ;;
@@ -226,21 +226,21 @@ _sync_git_upstream_for_scripts() {
 }
 
 # 规范路径，便于去重与写入 rc
-_nlt_canonical_bin_dir() {
+_fundeploy_canonical_bin_dir() {
   (cd "${FUNDEPLOY_ROOT}/bin" && pwd -P)
 }
 
-_nlt_rc_has_managed_block() {
+_fundeploy_rc_has_managed_block() {
   local f="$1"
   [[ -f "$f" ]] && grep -Fq -e '--- fundeploy PATH' "$f"
 }
 
-_nlt_rc_path_mentions_bin() {
+_fundeploy_rc_path_mentions_bin() {
   local f="$1" bin="$2"
   [[ -f "$f" ]] && grep -qF "${bin}" "$f"
 }
 
-_nlt_append_nlt_path_block() {
+_fundeploy_append_fundeploy_path_block() {
   local rc="$1"
   local bin="$2"
   local line marker_top marker_bot
@@ -248,11 +248,11 @@ _nlt_append_nlt_path_block() {
   marker_top='# --- fundeploy PATH (github.com/farfarfun/fundeploy install.sh) ---'
   marker_bot='# --- end fundeploy PATH ---'
 
-  if _nlt_rc_has_managed_block "$rc"; then
+  if _fundeploy_rc_has_managed_block "$rc"; then
     echo "PATH 已配置（存在 fundeploy 标记块）: ${rc}" >&2
     return 0
   fi
-  if _nlt_rc_path_mentions_bin "$rc" "$bin"; then
+  if _fundeploy_rc_path_mentions_bin "$rc" "$bin"; then
     echo "跳过写入 ${rc}：文件中已出现 ${bin}（请确认 PATH 已包含 fundeploy bin）" >&2
     return 0
   fi
@@ -266,7 +266,7 @@ _nlt_append_nlt_path_block() {
   echo "已追加 PATH 到: ${rc}" >&2
 }
 
-_nlt_collect_profile_targets() {
+_fundeploy_collect_profile_targets() {
   local -a out=()
   local p t
 
@@ -298,7 +298,7 @@ _nlt_collect_profile_targets() {
 }
 
 # 当前进程的父进程命令名是否像 zsh（用于安装后是否 exec zsh -l）
-_nlt_parent_shell_looks_like_zsh() {
+_fundeploy_parent_shell_looks_like_zsh() {
   local c
   c="$(ps -p "$PPID" -o comm= 2>/dev/null || true)"
   c="${c##-}"
@@ -307,10 +307,10 @@ _nlt_parent_shell_looks_like_zsh() {
 }
 
 # 安装后立即生效：当前 install 进程 PATH + 可选 exec 登录 zsh 以加载 ~/.zshrc
-_nlt_post_install_refresh_shell() {
+_fundeploy_post_install_refresh_shell() {
   [[ "${FUNDEPLOY_SKIP_PROFILE_HINT:-}" == "1" ]] && return 0
   local bin
-  bin="$(_nlt_canonical_bin_dir)" || return 0
+  bin="$(_fundeploy_canonical_bin_dir)" || return 0
   case ":${PATH}:" in
     *":${bin}:"*) ;;
     *) export PATH="${bin}:${PATH}" ;;
@@ -319,7 +319,7 @@ _nlt_post_install_refresh_shell() {
   if
     [[ "${FUNDEPLOY_AUTO_EXEC_ZSH_AFTER_INSTALL:-1}" == "1" ]] &&
       [[ -t 1 ]] &&
-      _nlt_parent_shell_looks_like_zsh &&
+      _fundeploy_parent_shell_looks_like_zsh &&
       [[ -f "${HOME}/.zshrc" ]] &&
       command -v zsh >/dev/null 2>&1
   then
@@ -327,13 +327,13 @@ _nlt_post_install_refresh_shell() {
     exec zsh -l
   fi
 
-  echo "已将 ${bin} 加入当前 shell 的 PATH（本进程内可直接使用 nlt-*）。"
+  echo "已将 ${bin} 加入当前 shell 的 PATH（本进程内可直接使用 fundeploy-*）。"
   echo "新开终端或手动执行: source ~/.zshrc（zsh）或 source ~/.bashrc（bash）"
 }
 
-_nlt_install_path_to_profiles() {
+_fundeploy_install_path_to_profiles() {
   local bin
-  bin="$(_nlt_canonical_bin_dir)" || die "无法解析 ${FUNDEPLOY_ROOT}/bin 为绝对路径"
+  bin="$(_fundeploy_canonical_bin_dir)" || die "无法解析 ${FUNDEPLOY_ROOT}/bin 为绝对路径"
   local rc
   while IFS= read -r rc; do
     [[ -n "$rc" ]] || continue
@@ -341,8 +341,8 @@ _nlt_install_path_to_profiles() {
       echo "无法写入 ${rc}，跳过。" >&2
       continue
     }
-    _nlt_append_nlt_path_block "$rc" "$bin"
-  done < <(_nlt_collect_profile_targets)
+    _fundeploy_append_fundeploy_path_block "$rc" "$bin"
+  done < <(_fundeploy_collect_profile_targets)
 }
 
 _remove_managed_path_block_from_file() {
@@ -421,7 +421,7 @@ _emit_wrapper() {
 }
 
 # 从候选路径中选第一个存在的文件复制到 dest 并 chmod 0755（兼容 _lib→lib、扁平 scripts 与 tools/services 分层）。
-_nlt_cp_first() {
+_fundeploy_cp_first() {
   local dest="$1"
   shift
   local f
@@ -465,148 +465,148 @@ do_install_or_update() {
     "${LIBEXEC}/tools" \
     "${LIBEXEC}/lib"
 
-  _nlt_cp_first "${LIBEXEC}/lib/nlt-ui.sh" \
-    "${SCRIPTS}/lib/nlt-ui.sh"
+  _fundeploy_cp_first "${LIBEXEC}/lib/fundeploy-ui.sh" \
+    "${SCRIPTS}/lib/fundeploy-ui.sh"
 
-  _nlt_cp_first "${LIBEXEC}/lib/nlt-install.sh" \
-    "${SCRIPTS}/lib/nlt-install.sh"
+  _fundeploy_cp_first "${LIBEXEC}/lib/fundeploy-install.sh" \
+    "${SCRIPTS}/lib/fundeploy-install.sh"
 
-  _nlt_cp_first "${LIBEXEC}/lib/nlt-github-download.sh" \
-    "${SCRIPTS}/lib/nlt-github-download.sh"
+  _fundeploy_cp_first "${LIBEXEC}/lib/fundeploy-github-download.sh" \
+    "${SCRIPTS}/lib/fundeploy-github-download.sh"
 
-  _nlt_cp_first "${LIBEXEC}/lib/nlt-progress.sh" \
-    "${SCRIPTS}/lib/nlt-progress.sh"
+  _fundeploy_cp_first "${LIBEXEC}/lib/fundeploy-progress.sh" \
+    "${SCRIPTS}/lib/fundeploy-progress.sh"
 
-  _nlt_cp_first "${LIBEXEC}/lib/nlt-common.sh" \
-    "${SCRIPTS}/lib/nlt-common.sh" \
-    "${SCRIPTS}/_lib/nlt-common.sh"
+  _fundeploy_cp_first "${LIBEXEC}/lib/fundeploy-common.sh" \
+    "${SCRIPTS}/lib/fundeploy-common.sh" \
+    "${SCRIPTS}/_lib/fundeploy-common.sh"
 
-  _nlt_cp_first "${LIBEXEC}/dev/setup.sh" \
+  _fundeploy_cp_first "${LIBEXEC}/dev/setup.sh" \
     "${SCRIPTS}/dev/setup.sh"
 
-  _nlt_cp_first "${LIBEXEC}/dev/go/setup.sh" \
+  _fundeploy_cp_first "${LIBEXEC}/dev/go/setup.sh" \
     "${SCRIPTS}/dev/go/setup.sh"
 
-  _nlt_cp_first "${LIBEXEC}/dev/rust/setup.sh" \
+  _fundeploy_cp_first "${LIBEXEC}/dev/rust/setup.sh" \
     "${SCRIPTS}/dev/rust/setup.sh"
 
-  _nlt_cp_first "${LIBEXEC}/dev/nodejs/setup.sh" \
+  _fundeploy_cp_first "${LIBEXEC}/dev/nodejs/setup.sh" \
     "${SCRIPTS}/dev/nodejs/setup.sh"
 
-  _nlt_cp_first "${LIBEXEC}/dev/pnpm/setup.sh" \
+  _fundeploy_cp_first "${LIBEXEC}/dev/pnpm/setup.sh" \
     "${SCRIPTS}/dev/pnpm/setup.sh"
 
-  _nlt_cp_first "${LIBEXEC}/dev/uv/setup.sh" \
+  _fundeploy_cp_first "${LIBEXEC}/dev/uv/setup.sh" \
     "${SCRIPTS}/dev/uv/setup.sh"
 
-  _nlt_cp_first "${LIBEXEC}/ai-cli/common.sh" \
+  _fundeploy_cp_first "${LIBEXEC}/ai-cli/common.sh" \
     "${SCRIPTS}/ai-cli/common.sh"
 
-  _nlt_cp_first "${LIBEXEC}/ai-cli/setup.sh" \
+  _fundeploy_cp_first "${LIBEXEC}/ai-cli/setup.sh" \
     "${SCRIPTS}/ai-cli/setup.sh"
 
-  _nlt_cp_first "${LIBEXEC}/ai-cli/claude/setup.sh" \
+  _fundeploy_cp_first "${LIBEXEC}/ai-cli/claude/setup.sh" \
     "${SCRIPTS}/ai-cli/claude/setup.sh"
 
-  _nlt_cp_first "${LIBEXEC}/ai-cli/codex/setup.sh" \
+  _fundeploy_cp_first "${LIBEXEC}/ai-cli/codex/setup.sh" \
     "${SCRIPTS}/ai-cli/codex/setup.sh"
 
-  _nlt_cp_first "${LIBEXEC}/ai-cli/cursor/setup.sh" \
+  _fundeploy_cp_first "${LIBEXEC}/ai-cli/cursor/setup.sh" \
     "${SCRIPTS}/ai-cli/cursor/setup.sh"
 
-  _nlt_cp_first "${LIBEXEC}/pip-sources/setup.sh" \
+  _fundeploy_cp_first "${LIBEXEC}/pip-sources/setup.sh" \
     "${SCRIPTS}/tools/pip-sources/setup.sh" \
     "${SCRIPTS}/pip-sources/setup.sh"
 
-  _nlt_cp_first "${LIBEXEC}/python-env/setup.sh" \
+  _fundeploy_cp_first "${LIBEXEC}/python-env/setup.sh" \
     "${SCRIPTS}/tools/python-env/setup.sh" \
     "${SCRIPTS}/python-env/setup.sh"
 
-  _nlt_cp_first "${LIBEXEC}/airflow/setup.sh" \
+  _fundeploy_cp_first "${LIBEXEC}/airflow/setup.sh" \
     "${SCRIPTS}/services/airflow/setup.sh" \
     "${SCRIPTS}/airflow/setup.sh"
 
-  _nlt_cp_first "${LIBEXEC}/celery/setup.sh" \
+  _fundeploy_cp_first "${LIBEXEC}/celery/setup.sh" \
     "${SCRIPTS}/services/celery/setup.sh" \
     "${SCRIPTS}/celery/setup.sh" \
     "${SCRIPTS}/celery/celery-setup.sh"
 
-  _nlt_cp_first "${LIBEXEC}/utils/setup.sh" \
+  _fundeploy_cp_first "${LIBEXEC}/utils/setup.sh" \
     "${SCRIPTS}/tools/utils/setup.sh" \
     "${SCRIPTS}/utils/setup.sh" \
     "${SCRIPTS}/utils/utils-setup.sh"
 
-  _nlt_cp_first "${LIBEXEC}/github-net/setup.sh" \
+  _fundeploy_cp_first "${LIBEXEC}/github-net/setup.sh" \
     "${SCRIPTS}/tools/github-net/setup.sh" \
     "${SCRIPTS}/github-net/setup.sh"
 
-  _nlt_cp_first "${LIBEXEC}/port-kill/setup.sh" \
+  _fundeploy_cp_first "${LIBEXEC}/port-kill/setup.sh" \
     "${SCRIPTS}/tools/port-kill/setup.sh"
 
-  _nlt_cp_first "${LIBEXEC}/brew/setup.sh" \
+  _fundeploy_cp_first "${LIBEXEC}/brew/setup.sh" \
     "${SCRIPTS}/tools/brew/setup.sh"
 
-  _nlt_cp_first "${LIBEXEC}/download/setup.sh" \
+  _fundeploy_cp_first "${LIBEXEC}/download/setup.sh" \
     "${SCRIPTS}/tools/download/setup.sh"
 
-  _nlt_cp_first "${LIBEXEC}/download/selftest.sh" \
+  _fundeploy_cp_first "${LIBEXEC}/download/selftest.sh" \
     "${SCRIPTS}/tools/download/selftest.sh"
 
-  _nlt_cp_first "${LIBEXEC}/cockpit-tools/setup.sh" \
+  _fundeploy_cp_first "${LIBEXEC}/cockpit-tools/setup.sh" \
     "${SCRIPTS}/tools/cockpit-tools/setup.sh"
 
-  _nlt_cp_first "${LIBEXEC}/skills-sync/setup.sh" \
+  _fundeploy_cp_first "${LIBEXEC}/skills-sync/setup.sh" \
     "${SCRIPTS}/tools/skills-sync/setup.sh"
 
-  _nlt_cp_first "${LIBEXEC}/paperclip/setup.sh" \
+  _fundeploy_cp_first "${LIBEXEC}/paperclip/setup.sh" \
     "${SCRIPTS}/services/paperclip/setup.sh" \
     "${SCRIPTS}/paperclip/setup.sh" \
     "${SCRIPTS}/paperclip/paperclip-setup.sh"
 
-  _nlt_cp_first "${LIBEXEC}/code-server/setup.sh" \
+  _fundeploy_cp_first "${LIBEXEC}/code-server/setup.sh" \
     "${SCRIPTS}/services/code-server/setup.sh" \
     "${SCRIPTS}/code-server/setup.sh" \
     "${SCRIPTS}/code-server/code-server-setup.sh"
 
-  _nlt_cp_first "${LIBEXEC}/code-server/setup-manual.sh" \
+  _fundeploy_cp_first "${LIBEXEC}/code-server/setup-manual.sh" \
     "${SCRIPTS}/services/code-server/setup-manual.sh"
 
-  _nlt_cp_first "${LIBEXEC}/code-server/setup-offical.sh" \
+  _fundeploy_cp_first "${LIBEXEC}/code-server/setup-offical.sh" \
     "${SCRIPTS}/services/code-server/setup-offical.sh"
 
-  _nlt_cp_first "${LIBEXEC}/new-api/setup.sh" \
+  _fundeploy_cp_first "${LIBEXEC}/new-api/setup.sh" \
     "${SCRIPTS}/services/new-api/setup.sh" \
     "${SCRIPTS}/new-api/setup.sh" \
     "${SCRIPTS}/new-api/new-api-setup.sh"
 
-  _nlt_cp_first "${LIBEXEC}/sub2api/setup.sh" \
+  _fundeploy_cp_first "${LIBEXEC}/sub2api/setup.sh" \
     "${SCRIPTS}/services/sub2api/setup.sh" \
     "${SCRIPTS}/sub2api/setup.sh"
 
-  _nlt_cp_first "${LIBEXEC}/sub2api/setup-manual.sh" \
+  _fundeploy_cp_first "${LIBEXEC}/sub2api/setup-manual.sh" \
     "${SCRIPTS}/services/sub2api/setup-manual.sh"
 
-  _nlt_cp_first "${LIBEXEC}/sub2api/setup-offical.sh" \
+  _fundeploy_cp_first "${LIBEXEC}/sub2api/setup-offical.sh" \
     "${SCRIPTS}/services/sub2api/setup-offical.sh"
 
-  _nlt_cp_first "${LIBEXEC}/open-pencil/setup.sh" \
+  _fundeploy_cp_first "${LIBEXEC}/open-pencil/setup.sh" \
     "${SCRIPTS}/services/open-pencil/setup.sh" \
     "${SCRIPTS}/open-pencil/setup.sh"
 
-  _nlt_cp_first "${LIBEXEC}/services/nlt-services.sh" \
-    "${SCRIPTS}/services/nlt-services.sh" \
+  _fundeploy_cp_first "${LIBEXEC}/services/fundeploy-services.sh" \
+    "${SCRIPTS}/services/fundeploy-services.sh" \
     "${SCRIPTS}/services/services.sh" \
     "${SCRIPTS}/10-services/services.sh"
 
   # 顶层与工具统一入口（WAR-402）。
-  _nlt_cp_first "${LIBEXEC}/tools/nlt-tools.sh" \
-    "${SCRIPTS}/tools/nlt-tools.sh"
+  _fundeploy_cp_first "${LIBEXEC}/tools/fundeploy-tools.sh" \
+    "${SCRIPTS}/tools/fundeploy-tools.sh"
 
-  _nlt_cp_first "${LIBEXEC}/fundeploy.sh" \
+  _fundeploy_cp_first "${LIBEXEC}/fundeploy.sh" \
     "${SCRIPTS}/fundeploy.sh"
 
   # 供 fundeploy uninstall / --source local 离线复用（无需公网 raw）。
-  _nlt_cp_first "${LIBEXEC}/fundeploy-install.sh" \
+  _fundeploy_cp_first "${LIBEXEC}/fundeploy-install.sh" \
     "${SCRIPTS}/../install.sh"
 
   _emit_wrapper fundeploy fundeploy.sh
@@ -615,34 +615,34 @@ do_install_or_update() {
   # 更新旧版本时只清理本项目曾安装过的包装器，保留用户的其它命令。
   rm -f \
     "${FUNDEPLOY_ROOT}/bin/nlt" \
-    "${FUNDEPLOY_ROOT}/bin/nlt-build" \
-    "${FUNDEPLOY_ROOT}/bin/nlt-dev" \
-    "${FUNDEPLOY_ROOT}/bin/nlt-ai-cli" \
-    "${FUNDEPLOY_ROOT}/bin/nlt-pip-sources" \
-    "${FUNDEPLOY_ROOT}/bin/nlt-python-env" \
-    "${FUNDEPLOY_ROOT}/bin/nlt-utils" \
-    "${FUNDEPLOY_ROOT}/bin/nlt-github-net" \
-    "${FUNDEPLOY_ROOT}/bin/nlt-port-kill" \
-    "${FUNDEPLOY_ROOT}/bin/nlt-download" \
-    "${FUNDEPLOY_ROOT}/bin/nlt-cockpit-tools" \
-    "${FUNDEPLOY_ROOT}/bin/nlt-services" \
-    "${FUNDEPLOY_ROOT}/bin/nlt-tools" \
-    "${FUNDEPLOY_ROOT}/bin/nlt-airflow" \
-    "${FUNDEPLOY_ROOT}/bin/nlt-celery" \
-    "${FUNDEPLOY_ROOT}/bin/nlt-paperclip" \
-    "${FUNDEPLOY_ROOT}/bin/nlt-code-server" \
-    "${FUNDEPLOY_ROOT}/bin/nlt-new-api" \
-    "${FUNDEPLOY_ROOT}/bin/nlt-sub2api" \
-    "${FUNDEPLOY_ROOT}/bin/nlt-open-pencil" \
-    "${FUNDEPLOY_ROOT}/bin/nlt-airflow-install" \
-    "${FUNDEPLOY_ROOT}/bin/nlt-celery-install" \
-    "${FUNDEPLOY_ROOT}/bin/nlt-celery-update" \
-    "${FUNDEPLOY_ROOT}/bin/nlt-paperclip-install" \
-    "${FUNDEPLOY_ROOT}/bin/nlt-code-server-install" \
-    "${FUNDEPLOY_ROOT}/bin/nlt-new-api-install" \
-    "${FUNDEPLOY_ROOT}/bin/nlt-sub2api-install"
+    "${FUNDEPLOY_ROOT}/bin/fundeploy-build" \
+    "${FUNDEPLOY_ROOT}/bin/fundeploy-dev" \
+    "${FUNDEPLOY_ROOT}/bin/fundeploy-ai-cli" \
+    "${FUNDEPLOY_ROOT}/bin/fundeploy-pip-sources" \
+    "${FUNDEPLOY_ROOT}/bin/fundeploy-python-env" \
+    "${FUNDEPLOY_ROOT}/bin/fundeploy-utils" \
+    "${FUNDEPLOY_ROOT}/bin/fundeploy-github-net" \
+    "${FUNDEPLOY_ROOT}/bin/fundeploy-port-kill" \
+    "${FUNDEPLOY_ROOT}/bin/fundeploy-download" \
+    "${FUNDEPLOY_ROOT}/bin/fundeploy-cockpit-tools" \
+    "${FUNDEPLOY_ROOT}/bin/fundeploy-services" \
+    "${FUNDEPLOY_ROOT}/bin/fundeploy-tools" \
+    "${FUNDEPLOY_ROOT}/bin/fundeploy-airflow" \
+    "${FUNDEPLOY_ROOT}/bin/fundeploy-celery" \
+    "${FUNDEPLOY_ROOT}/bin/fundeploy-paperclip" \
+    "${FUNDEPLOY_ROOT}/bin/fundeploy-code-server" \
+    "${FUNDEPLOY_ROOT}/bin/fundeploy-new-api" \
+    "${FUNDEPLOY_ROOT}/bin/fundeploy-sub2api" \
+    "${FUNDEPLOY_ROOT}/bin/fundeploy-open-pencil" \
+    "${FUNDEPLOY_ROOT}/bin/fundeploy-airflow-install" \
+    "${FUNDEPLOY_ROOT}/bin/fundeploy-celery-install" \
+    "${FUNDEPLOY_ROOT}/bin/fundeploy-celery-update" \
+    "${FUNDEPLOY_ROOT}/bin/fundeploy-paperclip-install" \
+    "${FUNDEPLOY_ROOT}/bin/fundeploy-code-server-install" \
+    "${FUNDEPLOY_ROOT}/bin/fundeploy-new-api-install" \
+    "${FUNDEPLOY_ROOT}/bin/fundeploy-sub2api-install"
   if [[ -z "${FUNDEPLOY_PACKAGE_MANAGER:-}" ]]; then
-    rm -f "${HOME}/opt/nlt/bin/nlt-port-kill"
+    rm -f "${HOME}/opt/nlt/bin/fundeploy-port-kill"
   fi
 
   if [[ "${FUNDEPLOY_SKIP_PROFILE_HINT:-}" != "1" ]]; then
@@ -650,11 +650,11 @@ do_install_or_update() {
     echo "已安装到: ${FUNDEPLOY_ROOT}"
     echo "统一入口: ${FUNDEPLOY_ROOT}/bin/fundeploy"
     echo "PATH 生效后可运行: fundeploy"
-    _nlt_install_path_to_profiles
+    _fundeploy_install_path_to_profiles
     echo ""
     echo "若不想自动写入 shell 配置，可设置 FUNDEPLOY_SKIP_PROFILE_HINT=1"
     echo "若不想安装结束后自动 exec 登录 zsh，可设置 FUNDEPLOY_AUTO_EXEC_ZSH_AFTER_INSTALL=0"
-    _nlt_post_install_refresh_shell
+    _fundeploy_post_install_refresh_shell
   fi
 }
 
@@ -682,7 +682,7 @@ do_uninstall() {
   while IFS= read -r rc; do
     [[ -n "$rc" ]] || continue
     _remove_managed_path_block_from_file "$rc"
-  done < <(_nlt_collect_profile_targets)
+  done < <(_fundeploy_collect_profile_targets)
 
   echo "正在删除: ${FUNDEPLOY_ROOT}" >&2
   rm -rf "${FUNDEPLOY_ROOT}"

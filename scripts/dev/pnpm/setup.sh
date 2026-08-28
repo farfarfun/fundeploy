@@ -10,27 +10,27 @@ die() { echo "错误: $*" >&2; exit 1; }
 
 _PNPM_ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 for _c in "${_PNPM_ROOT_DIR}/../../lib" "${_PNPM_ROOT_DIR}/../../../lib"; do
-  if [[ -f "${_c}/nlt-install.sh" ]]; then
-    # shellcheck source=../../lib/nlt-install.sh
-    source "${_c}/nlt-install.sh"
+  if [[ -f "${_c}/fundeploy-install.sh" ]]; then
+    # shellcheck source=../../lib/fundeploy-install.sh
+    source "${_c}/fundeploy-install.sh"
     break
   fi
 done
-if ! declare -F _nlt_say_step >/dev/null 2>&1; then
-  _nlt_say_title() { printf '\n=== %s ===\n' "$*" >&2; }
-  _nlt_say_step()  { printf '▸ %s\n' "$*" >&2; }
-  _nlt_say_ok()    { printf '✓ %s\n' "$*" >&2; }
-  _nlt_say_warn()  { printf '! %s\n' "$*" >&2; }
-  _nlt_pm_detect() { printf ''; return 1; }
-  _nlt_pm_install() { return 2; }
-  _nlt_pm_uninstall() { return 2; }
-  _nlt_resolve_method() { printf '%s\n' "${INSTALL_METHOD:-source}"; }
+if ! declare -F _fundeploy_say_step >/dev/null 2>&1; then
+  _fundeploy_say_title() { printf '\n=== %s ===\n' "$*" >&2; }
+  _fundeploy_say_step()  { printf '▸ %s\n' "$*" >&2; }
+  _fundeploy_say_ok()    { printf '✓ %s\n' "$*" >&2; }
+  _fundeploy_say_warn()  { printf '! %s\n' "$*" >&2; }
+  _fundeploy_pm_detect() { printf ''; return 1; }
+  _fundeploy_pm_install() { return 2; }
+  _fundeploy_pm_uninstall() { return 2; }
+  _fundeploy_resolve_method() { printf '%s\n' "${INSTALL_METHOD:-source}"; }
 fi
 
 NODE_INSTALL_ROOT="${NODE_INSTALL_ROOT:-${HOME}/opt/node}"
 NPM_GLOBAL_ROOT="${NPM_GLOBAL_ROOT:-${HOME}/opt/npm}"
 
-_nlt_prepend_node_path() {
+_fundeploy_prepend_node_path() {
   if [[ -x "${NODE_INSTALL_ROOT}/bin/node" ]]; then
     export PATH="${NODE_INSTALL_ROOT}/bin:${PATH}"
   fi
@@ -38,19 +38,19 @@ _nlt_prepend_node_path() {
 
 do_install_pkg() {
   local mgr
-  mgr="$(_nlt_pm_detect)" || die "未探测到包管理器；请改用源码方式：INSTALL_METHOD=source $0 install"
-  _nlt_say_step "使用 ${mgr} 安装 pnpm 包"
-  _nlt_pm_install "${mgr}" pnpm || die "${mgr} 安装 pnpm 失败；可改用 INSTALL_METHOD=source"
-  _nlt_say_ok "已通过 ${mgr} 安装 pnpm。"
+  mgr="$(_fundeploy_pm_detect)" || die "未探测到包管理器；请改用源码方式：INSTALL_METHOD=source $0 install"
+  _fundeploy_say_step "使用 ${mgr} 安装 pnpm 包"
+  _fundeploy_pm_install "${mgr}" pnpm || die "${mgr} 安装 pnpm 失败；可改用 INSTALL_METHOD=source"
+  _fundeploy_say_ok "已通过 ${mgr} 安装 pnpm。"
 }
 
 do_install_source() {
-  _nlt_prepend_node_path
+  _fundeploy_prepend_node_path
   command -v node >/dev/null 2>&1 || die "需要 node（可先运行 fundeploy dev nodejs install，或自行安装 Node 16.17+）"
   if [[ "${PNPM_USE_NPM_GLOBAL:-}" == "1" ]]; then
     mkdir -p "${NPM_GLOBAL_ROOT}/bin"
     export npm_config_prefix="${NPM_GLOBAL_ROOT}"
-    _nlt_say_step "使用 npm 全局安装 pnpm 到 ${NPM_GLOBAL_ROOT}"
+    _fundeploy_say_step "使用 npm 全局安装 pnpm 到 ${NPM_GLOBAL_ROOT}"
     command -v npm >/dev/null 2>&1 || die "需要 npm"
     npm install -g pnpm
     echo "请将 PATH 加入: ${NPM_GLOBAL_ROOT}/bin" >&2
@@ -58,42 +58,42 @@ do_install_source() {
   fi
   node -e 'const p=process.version.slice(1).split(".").map(Number);process.exit(p[0]>16||(p[0]===16&&p[1]>=17)?0:1)' 2>/dev/null \
     || die "corepack 需要 Node 16.17+；当前版本过低或无法解析"
-  _nlt_say_step "启用 corepack 并激活 pnpm"
+  _fundeploy_say_step "启用 corepack 并激活 pnpm"
   corepack enable
   corepack prepare pnpm@latest --activate
   command -v pnpm >/dev/null 2>&1 || die "pnpm 仍未在 PATH 中（尝试重新打开终端或检查 corepack 输出）"
-  _nlt_say_ok "pnpm 已就绪: $(command -v pnpm)"
+  _fundeploy_say_ok "pnpm 已就绪: $(command -v pnpm)"
 }
 
 do_version() {
-  _nlt_prepend_node_path
+  _fundeploy_prepend_node_path
   command -v pnpm >/dev/null 2>&1 && pnpm -v || die "未找到 pnpm"
 }
 
 do_uninstall_pkg() {
   local mgr
-  mgr="$(_nlt_pm_detect)" || { _nlt_say_warn "未探测到包管理器，跳过 pkg 卸载。"; return 0; }
-  _nlt_say_step "使用 ${mgr} 卸载 pnpm 包"
-  _nlt_pm_uninstall "${mgr}" pnpm || _nlt_say_warn "${mgr} 卸载 pnpm 失败（可能本就未通过 ${mgr} 安装）。"
+  mgr="$(_fundeploy_pm_detect)" || { _fundeploy_say_warn "未探测到包管理器，跳过 pkg 卸载。"; return 0; }
+  _fundeploy_say_step "使用 ${mgr} 卸载 pnpm 包"
+  _fundeploy_pm_uninstall "${mgr}" pnpm || _fundeploy_say_warn "${mgr} 卸载 pnpm 失败（可能本就未通过 ${mgr} 安装）。"
 }
 
 do_uninstall_source() {
-  _nlt_prepend_node_path
+  _fundeploy_prepend_node_path
   if command -v corepack >/dev/null 2>&1; then
     corepack disable pnpm 2>/dev/null || true
   fi
   if [[ -d "${NPM_GLOBAL_ROOT}" ]]; then
     rm -rf "${NPM_GLOBAL_ROOT}"
-    _nlt_say_ok "已删除 npm 全局前缀目录: ${NPM_GLOBAL_ROOT}"
+    _fundeploy_say_ok "已删除 npm 全局前缀目录: ${NPM_GLOBAL_ROOT}"
   else
-    _nlt_say_warn "目录不存在，跳过: ${NPM_GLOBAL_ROOT}"
+    _fundeploy_say_warn "目录不存在，跳过: ${NPM_GLOBAL_ROOT}"
   fi
 }
 
 do_install() {
   local method
-  method="$(_nlt_resolve_method pnpm)"
-  _nlt_say_title "安装 pnpm（方式: ${method}）"
+  method="$(_fundeploy_resolve_method pnpm)"
+  _fundeploy_say_title "安装 pnpm（方式: ${method}）"
   case "${method}" in
     pkg) do_install_pkg ;;
     source) do_install_source ;;
@@ -103,7 +103,7 @@ do_install() {
 
 do_uninstall() {
   local method="${INSTALL_METHOD:-all}"
-  _nlt_say_title "卸载 pnpm（方式: ${method}）"
+  _fundeploy_say_title "卸载 pnpm（方式: ${method}）"
   case "${method}" in
     pkg) do_uninstall_pkg ;;
     source) do_uninstall_source ;;

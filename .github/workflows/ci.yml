@@ -79,8 +79,8 @@ jobs:
         run: |
           set -uo pipefail
           rc=0
-          for s in scripts/fundeploy.sh scripts/services/nlt-services.sh \
-                   scripts/tools/nlt-tools.sh scripts/dev/setup.sh scripts/ai-cli/setup.sh; do
+          for s in scripts/fundeploy.sh scripts/services/fundeploy-services.sh \
+                   scripts/tools/fundeploy-tools.sh scripts/dev/setup.sh scripts/ai-cli/setup.sh; do
             if ! NONINTERACTIVE=1 bash "$s" help >/dev/null 2>&1; then
               echo "FAIL: $s help 返回非 0"; rc=1
             fi
@@ -95,8 +95,8 @@ jobs:
         run: |
           set -uo pipefail
           rc=0
-          for s in scripts/fundeploy.sh scripts/dev/setup.sh scripts/tools/nlt-tools.sh \
-                   scripts/services/nlt-services.sh scripts/ai-cli/setup.sh; do
+          for s in scripts/fundeploy.sh scripts/dev/setup.sh scripts/tools/fundeploy-tools.sh \
+                   scripts/services/fundeploy-services.sh scripts/ai-cli/setup.sh; do
             if timeout 20 env NONINTERACTIVE=1 bash "$s" </dev/null >/dev/null 2>&1; then
               code=0
             else

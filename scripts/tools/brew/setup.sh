@@ -2,10 +2,10 @@
 # Homebrew：通过官方安装器安装 / 升级 / 卸载。
 set -euo pipefail
 
-# 尽力加载公共库（独立执行时缺失也能跑）。主要为拿到 _nlt_github_download_curl：
+# 尽力加载公共库（独立执行时缺失也能跑）。主要为拿到 _fundeploy_github_download_curl：
 # 下面两个 URL 指向 raw.githubusercontent.com，正是镜像改写层负责的主机。
 _BREW_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-for _cand in "${_BREW_SCRIPT_DIR}/../lib/nlt-common.sh" "${_BREW_SCRIPT_DIR}/../../lib/nlt-common.sh"; do
+for _cand in "${_BREW_SCRIPT_DIR}/../lib/fundeploy-common.sh" "${_BREW_SCRIPT_DIR}/../../lib/fundeploy-common.sh"; do
   if [[ -f "${_cand}" ]]; then
     # shellcheck source=/dev/null
     source "${_cand}" || true
@@ -40,12 +40,12 @@ run_official_script() {
   trap "rm -rf '${tmpdir}'" RETURN EXIT
   script="${tmpdir}/brew-official.sh"
   echo "==> 下载: ${url}" >&2
-  # 走 _nlt_github_download_curl（若可用）：URL 指向 raw.githubusercontent.com，
-  # 正是 nlt-github-download.sh 负责改写的主机 —— 原来的裸 curl 让
+  # 走 _fundeploy_github_download_curl（若可用）：URL 指向 raw.githubusercontent.com，
+  # 正是 fundeploy-github-download.sh 负责改写的主机 —— 原来的裸 curl 让
   # FUNDEPLOY_GITHUB_HUB_PROXY_PREFIX 对 brew 安装完全失效。同时获得统一的
   # --proto '=https' TLS 下限。
-  if declare -F _nlt_github_download_curl >/dev/null 2>&1; then
-    _nlt_github_download_curl -fsSL "${url}" -o "${script}" || die "下载安装脚本失败: ${url}"
+  if declare -F _fundeploy_github_download_curl >/dev/null 2>&1; then
+    _fundeploy_github_download_curl -fsSL "${url}" -o "${script}" || die "下载安装脚本失败: ${url}"
   else
     curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 "${url}" -o "${script}" \
       || die "下载安装脚本失败: ${url}"

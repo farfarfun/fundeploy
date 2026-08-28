@@ -19,8 +19,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=../lib/nlt-common.sh
-source "${SCRIPT_DIR}/../lib/nlt-common.sh"
+# shellcheck source=../lib/fundeploy-common.sh
+source "${SCRIPT_DIR}/../lib/fundeploy-common.sh"
 
 die() { echo "错误: $*" >&2; exit 1; }
 
@@ -108,7 +108,7 @@ proc_alive() {
 }
 
 listener_pid_for_port() {
-  _nlt_listener_pid_for_port "$1"
+  _fundeploy_listener_pid_for_port "$1"
 }
 
 service_state_from_pid_and_port() {
@@ -346,7 +346,7 @@ cmd_install() {
     if [[ "${NONINTERACTIVE:-}" == "1" ]]; then
       die "NONINTERACTIVE=1 时请使用: fundeploy service install add|remove <模块>"
     fi
-    _nlt_ensure_gum || exit 1
+    _fundeploy_ensure_gum || exit 1
     action="$(gum choose --header "要对模块做什么？" \
       "安装" \
       "卸载" \
@@ -378,7 +378,7 @@ cmd_install() {
       name="${1:-}"
       if [[ -z "$name" ]]; then
         [[ "${NONINTERACTIVE:-}" == "1" ]] && die "请指定模块: fundeploy service install add <模块>"
-        _nlt_ensure_gum || exit 1
+        _fundeploy_ensure_gum || exit 1
         name="$(gum choose --header "选择要安装 / 初始化的模块" \
           "airflow" "celery" "paperclip" "code-server" "new-api" "sub2api" "open-pencil" \
           "pip-sources" "python-env" "utils" "github-net" "cockpit-tools" "取消")" || return 0
@@ -391,7 +391,7 @@ cmd_install() {
       name="${1:-}"
       if [[ -z "$name" ]]; then
         [[ "${NONINTERACTIVE:-}" == "1" ]] && die "请指定模块: fundeploy service install remove <模块>"
-        _nlt_ensure_gum || exit 1
+        _fundeploy_ensure_gum || exit 1
         name="$(gum choose --header "选择要卸载的模块" \
           "airflow" "paperclip" "code-server" "new-api" "sub2api" "open-pencil" \
           "pip-sources" "python-env" "github-net" "cockpit-tools" "取消")" || return 0
@@ -406,15 +406,15 @@ cmd_install() {
 }
 
 interactive_main() {
-  _nlt_ensure_gum || exit 1
-  declare -F nlt_ui_apply_theme >/dev/null 2>&1 && nlt_ui_apply_theme
-  if declare -F nlt_ui_banner >/dev/null 2>&1; then
-    nlt_ui_banner "fundeploy / service" "安装、运行与查看本机服务" >&2
+  _fundeploy_ensure_gum || exit 1
+  declare -F fundeploy_ui_apply_theme >/dev/null 2>&1 && fundeploy_ui_apply_theme
+  if declare -F fundeploy_ui_banner >/dev/null 2>&1; then
+    fundeploy_ui_banner "fundeploy / service" "安装、运行与查看本机服务" >&2
   fi
   set +e
   while true; do
     local pick name
-    pick="$(nlt_ui_choose "fundeploy / service / 选择服务" \
+    pick="$(fundeploy_ui_choose "fundeploy / service / 选择服务" \
       "status       全部服务状态" \
       "airflow      工作流调度" \
       "celery       异步任务队列" \

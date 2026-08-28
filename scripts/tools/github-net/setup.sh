@@ -18,14 +18,14 @@
 set -euo pipefail
 
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -f "${_SCRIPT_DIR}/../lib/nlt-common.sh" ]]; then
-  # shellcheck source=../lib/nlt-common.sh
-  source "${_SCRIPT_DIR}/../lib/nlt-common.sh"
-elif [[ -f "${_SCRIPT_DIR}/../../lib/nlt-common.sh" ]]; then
-  # shellcheck source=../../lib/nlt-common.sh
-  source "${_SCRIPT_DIR}/../../lib/nlt-common.sh"
+if [[ -f "${_SCRIPT_DIR}/../lib/fundeploy-common.sh" ]]; then
+  # shellcheck source=../lib/fundeploy-common.sh
+  source "${_SCRIPT_DIR}/../lib/fundeploy-common.sh"
+elif [[ -f "${_SCRIPT_DIR}/../../lib/fundeploy-common.sh" ]]; then
+  # shellcheck source=../../lib/fundeploy-common.sh
+  source "${_SCRIPT_DIR}/../../lib/fundeploy-common.sh"
 else
-  echo "错误: 找不到 lib/nlt-common.sh（已检查 ${_SCRIPT_DIR}/../lib 与 ${_SCRIPT_DIR}/../../lib）" >&2
+  echo "错误: 找不到 lib/fundeploy-common.sh（已检查 ${_SCRIPT_DIR}/../lib 与 ${_SCRIPT_DIR}/../../lib）" >&2
   exit 1
 fi
 
@@ -399,7 +399,7 @@ dispatch_github() {
 }
 
 main() {
-  _nlt_ensure_gum || exit 1
+  _fundeploy_ensure_gum || exit 1
   if [[ $# -eq 0 ]]; then
     interactive_main
     return 0

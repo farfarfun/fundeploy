@@ -4,14 +4,14 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -f "${SCRIPT_DIR}/../lib/nlt-common.sh" ]]; then
-  # shellcheck source=../lib/nlt-common.sh
-  source "${SCRIPT_DIR}/../lib/nlt-common.sh"
-elif [[ -f "${SCRIPT_DIR}/../../lib/nlt-common.sh" ]]; then
-  # shellcheck source=../../lib/nlt-common.sh
-  source "${SCRIPT_DIR}/../../lib/nlt-common.sh"
+if [[ -f "${SCRIPT_DIR}/../lib/fundeploy-common.sh" ]]; then
+  # shellcheck source=../lib/fundeploy-common.sh
+  source "${SCRIPT_DIR}/../lib/fundeploy-common.sh"
+elif [[ -f "${SCRIPT_DIR}/../../lib/fundeploy-common.sh" ]]; then
+  # shellcheck source=../../lib/fundeploy-common.sh
+  source "${SCRIPT_DIR}/../../lib/fundeploy-common.sh"
 else
-  echo "错误: 找不到 lib/nlt-common.sh" >&2
+  echo "错误: 找不到 lib/fundeploy-common.sh" >&2
   exit 1
 fi
 
@@ -83,7 +83,7 @@ run_official() {
   echo "==> 下载 Sub2API 官方脚本" >&2
   echo "    ${OFFICIAL_INSTALLER_URL}" >&2
   # 先落盘再执行，而不是 `curl … | sudo bash`：这样才能在赋予 root 之前校验内容。
-  _nlt_github_download_curl -fsSL "${OFFICIAL_INSTALLER_URL}" -o "${script}" \
+  _fundeploy_github_download_curl -fsSL "${OFFICIAL_INSTALLER_URL}" -o "${script}" \
     || die "下载官方脚本失败: ${OFFICIAL_INSTALLER_URL}"
   [[ -s "${script}" ]] || die "官方脚本为空: ${OFFICIAL_INSTALLER_URL}"
 
@@ -131,19 +131,19 @@ cmd_uninstall() {
     # 原判断是 `[[ "$confirmed" == "0" && -t 0 ]]`：非 TTY 且未加 -y 时整个
     # 分支被跳过，于是在毫无确认、也不带 -y 的情况下直接跑上游卸载器。
     # code-server 的同类路径在这种情形下是 die 的，这里对齐。
-    nlt_confirm_destructive "确认使用官方脚本卸载 Sub2API？" SUB2API_UNINSTALL_YES || return 1
+    fundeploy_confirm_destructive "确认使用官方脚本卸载 Sub2API？" SUB2API_UNINSTALL_YES || return 1
     set -- "$@" -y
   fi
   run_official uninstall "$@"
 }
 
 interactive_main() {
-  _nlt_ensure_gum || exit 1
-  nlt_ui_banner "fundeploy / service / sub2api / official" "官方脚本 · /opt/sub2api · systemd · 端口 8802" >&2
+  _fundeploy_ensure_gum || exit 1
+  fundeploy_ui_banner "fundeploy / service / sub2api / official" "官方脚本 · /opt/sub2api · systemd · 端口 8802" >&2
   set +e
   while true; do
     local pick
-    pick="$(nlt_ui_choose "fundeploy / service / sub2api / official / 选择动作" \
+    pick="$(fundeploy_ui_choose "fundeploy / service / sub2api / official / 选择动作" \
       "install           安装" \
       "update            更新" \
       "start             启动" \

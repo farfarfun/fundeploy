@@ -11,23 +11,23 @@ die() { echo "错误: $*" >&2; exit 1; }
 # 尽力而为 source 安装辅助库（找不到时保持可独立运行）。
 _GO_ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 for _c in "${_GO_ROOT_DIR}/../../lib" "${_GO_ROOT_DIR}/../../../lib"; do
-  if [[ -f "${_c}/nlt-install.sh" ]]; then
-    # shellcheck source=../../lib/nlt-install.sh
-    source "${_c}/nlt-install.sh"
+  if [[ -f "${_c}/fundeploy-install.sh" ]]; then
+    # shellcheck source=../../lib/fundeploy-install.sh
+    source "${_c}/fundeploy-install.sh"
     break
   fi
 done
 # 无辅助库时的降级桩，保证脚本仍可运行。
-if ! declare -F _nlt_say_step >/dev/null 2>&1; then
-  _nlt_say_title() { printf '\n=== %s ===\n' "$*" >&2; }
-  _nlt_say_step()  { printf '▸ %s\n' "$*" >&2; }
-  _nlt_say_ok()    { printf '✓ %s\n' "$*" >&2; }
-  _nlt_say_warn()  { printf '! %s\n' "$*" >&2; }
-  _nlt_say_err()   { printf '✗ %s\n' "$*" >&2; }
-  _nlt_pm_detect() { printf ''; return 1; }
-  _nlt_pm_install() { return 2; }
-  _nlt_pm_uninstall() { return 2; }
-  _nlt_resolve_method() { printf '%s\n' "${INSTALL_METHOD:-source}"; }
+if ! declare -F _fundeploy_say_step >/dev/null 2>&1; then
+  _fundeploy_say_title() { printf '\n=== %s ===\n' "$*" >&2; }
+  _fundeploy_say_step()  { printf '▸ %s\n' "$*" >&2; }
+  _fundeploy_say_ok()    { printf '✓ %s\n' "$*" >&2; }
+  _fundeploy_say_warn()  { printf '! %s\n' "$*" >&2; }
+  _fundeploy_say_err()   { printf '✗ %s\n' "$*" >&2; }
+  _fundeploy_pm_detect() { printf ''; return 1; }
+  _fundeploy_pm_install() { return 2; }
+  _fundeploy_pm_uninstall() { return 2; }
+  _fundeploy_resolve_method() { printf '%s\n' "${INSTALL_METHOD:-source}"; }
 fi
 
 GO_INSTALL_ROOT="${GO_INSTALL_ROOT:-${HOME}/opt/go}"
@@ -42,7 +42,7 @@ _go_pkg_name() {
   esac
 }
 
-_nlt_go_platform() {
+_fundeploy_go_platform() {
   local os arch
   os="$(uname -s 2>/dev/null || true)"
   arch="$(uname -m 2>/dev/null || true)"
@@ -55,7 +55,7 @@ _nlt_go_platform() {
   esac
 }
 
-_nlt_go_latest_version() {
+_fundeploy_go_latest_version() {
   command -v curl >/dev/null 2>&1 || die "需要 curl"
   local line
   line="$(curl -fsSL "https://go.dev/VERSION?m=text" | head -1 | tr -d '\r')"
@@ -66,30 +66,30 @@ _nlt_go_latest_version() {
 # ---- pkg 方式 ----
 do_install_pkg() {
   local mgr pkg
-  mgr="$(_nlt_pm_detect)" || die "未探测到包管理器；请改用源码方式：INSTALL_METHOD=source $0 install"
+  mgr="$(_fundeploy_pm_detect)" || die "未探测到包管理器；请改用源码方式：INSTALL_METHOD=source $0 install"
   pkg="$(_go_pkg_name "${mgr}")"
-  _nlt_say_step "使用 ${mgr} 安装 Go 包: ${pkg}"
-  _nlt_pm_install "${mgr}" "${pkg}" || die "${mgr} 安装 ${pkg} 失败"
-  _nlt_say_ok "已通过 ${mgr} 安装 Go：$(command -v go 2>/dev/null || echo '请重开终端确认 PATH')"
+  _fundeploy_say_step "使用 ${mgr} 安装 Go 包: ${pkg}"
+  _fundeploy_pm_install "${mgr}" "${pkg}" || die "${mgr} 安装 ${pkg} 失败"
+  _fundeploy_say_ok "已通过 ${mgr} 安装 Go：$(command -v go 2>/dev/null || echo '请重开终端确认 PATH')"
 }
 
 do_uninstall_pkg() {
   local mgr pkg
-  mgr="$(_nlt_pm_detect)" || { _nlt_say_warn "未探测到包管理器，跳过 pkg 卸载。"; return 0; }
+  mgr="$(_fundeploy_pm_detect)" || { _fundeploy_say_warn "未探测到包管理器，跳过 pkg 卸载。"; return 0; }
   pkg="$(_go_pkg_name "${mgr}")"
-  _nlt_say_step "使用 ${mgr} 卸载 Go 包: ${pkg}"
-  _nlt_pm_uninstall "${mgr}" "${pkg}" || _nlt_say_warn "${mgr} 卸载 ${pkg} 失败（可能本就未通过 ${mgr} 安装）。"
+  _fundeploy_say_step "使用 ${mgr} 卸载 Go 包: ${pkg}"
+  _fundeploy_pm_uninstall "${mgr}" "${pkg}" || _fundeploy_say_warn "${mgr} 卸载 ${pkg} 失败（可能本就未通过 ${mgr} 安装）。"
 }
 
 # ---- source 方式 ----
 do_install_source() {
   command -v curl >/dev/null 2>&1 || die "需要 curl"
   local plat ver tmp url
-  plat="$(_nlt_go_platform)"
+  plat="$(_fundeploy_go_platform)"
   if [[ -n "${GO_VERSION:-}" ]]; then
     ver="${GO_VERSION}"
   else
-    ver="$(_nlt_go_latest_version)"
+    ver="$(_fundeploy_go_latest_version)"
   fi
   [[ "$ver" == go* ]] || ver="go${ver#go}"
   url="https://go.dev/dl/${ver}.${plat}.tar.gz"
@@ -97,7 +97,7 @@ do_install_source() {
   tmp="$(mktemp)"
   # trap 确保下载/解压失败时不残留临时包（官方包数百 MB）。
   trap 'rm -f "${tmp}"' RETURN EXIT
-  _nlt_say_step "下载官方包: ${url}"
+  _fundeploy_say_step "下载官方包: ${url}"
   curl -fL --proto '=https' --proto-redir '=https' --tlsv1.2 --progress-bar "${url}" -o "${tmp}"
   rm -rf "${GO_INSTALL_ROOT}"
   mkdir -p "${GO_INSTALL_ROOT}"
@@ -107,21 +107,21 @@ do_install_source() {
   tar -C "${GO_INSTALL_ROOT}" --strip-components=1 -xzf "${tmp}"
   rm -f "${tmp}"
   trap - RETURN EXIT
-  _nlt_say_ok "已安装 Go ${ver} 到 ${GO_INSTALL_ROOT}"
+  _fundeploy_say_ok "已安装 Go ${ver} 到 ${GO_INSTALL_ROOT}"
   echo "请将下列行加入 shell 配置（若尚未配置）：" >&2
   echo "  export PATH=\"${GO_INSTALL_ROOT}/bin:\${PATH}\"" >&2
 }
 
 do_uninstall_source() {
-  [[ -d "${GO_INSTALL_ROOT}" ]] || { _nlt_say_warn "目录不存在，跳过: ${GO_INSTALL_ROOT}"; return 0; }
+  [[ -d "${GO_INSTALL_ROOT}" ]] || { _fundeploy_say_warn "目录不存在，跳过: ${GO_INSTALL_ROOT}"; return 0; }
   rm -rf "${GO_INSTALL_ROOT}"
-  _nlt_say_ok "已删除源码安装目录: ${GO_INSTALL_ROOT}"
+  _fundeploy_say_ok "已删除源码安装目录: ${GO_INSTALL_ROOT}"
 }
 
 do_install() {
   local method
-  method="$(_nlt_resolve_method Go)"
-  _nlt_say_title "安装 Go（方式: ${method}）"
+  method="$(_fundeploy_resolve_method Go)"
+  _fundeploy_say_title "安装 Go（方式: ${method}）"
   case "${method}" in
     pkg) do_install_pkg ;;
     source) do_install_source ;;
@@ -132,7 +132,7 @@ do_install() {
 # 卸载：未显式指定方式时清理所有已知安装位置（pkg + source）。
 do_uninstall() {
   local method="${INSTALL_METHOD:-all}"
-  _nlt_say_title "卸载 Go（方式: ${method}）"
+  _fundeploy_say_title "卸载 Go（方式: ${method}）"
   case "${method}" in
     pkg) do_uninstall_pkg ;;
     source) do_uninstall_source ;;

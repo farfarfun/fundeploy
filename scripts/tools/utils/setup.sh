@@ -22,21 +22,21 @@
 set -euo pipefail
 
 _UTILS_INIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -f "${_UTILS_INIT_DIR}/../lib/nlt-common.sh" ]]; then
-  # shellcheck source=../lib/nlt-common.sh
-  source "${_UTILS_INIT_DIR}/../lib/nlt-common.sh"
-elif [[ -f "${_UTILS_INIT_DIR}/../../lib/nlt-common.sh" ]]; then
-  # shellcheck source=../../lib/nlt-common.sh
-  source "${_UTILS_INIT_DIR}/../../lib/nlt-common.sh"
-elif [[ -f "${_UTILS_INIT_DIR}/../lib/nlt-github-download.sh" ]]; then
-  # shellcheck source=../lib/nlt-github-download.sh
-  source "${_UTILS_INIT_DIR}/../lib/nlt-github-download.sh"
-elif [[ -f "${_UTILS_INIT_DIR}/../../lib/nlt-github-download.sh" ]]; then
-  # shellcheck source=../../lib/nlt-github-download.sh
-  source "${_UTILS_INIT_DIR}/../../lib/nlt-github-download.sh"
+if [[ -f "${_UTILS_INIT_DIR}/../lib/fundeploy-common.sh" ]]; then
+  # shellcheck source=../lib/fundeploy-common.sh
+  source "${_UTILS_INIT_DIR}/../lib/fundeploy-common.sh"
+elif [[ -f "${_UTILS_INIT_DIR}/../../lib/fundeploy-common.sh" ]]; then
+  # shellcheck source=../../lib/fundeploy-common.sh
+  source "${_UTILS_INIT_DIR}/../../lib/fundeploy-common.sh"
+elif [[ -f "${_UTILS_INIT_DIR}/../lib/fundeploy-github-download.sh" ]]; then
+  # shellcheck source=../lib/fundeploy-github-download.sh
+  source "${_UTILS_INIT_DIR}/../lib/fundeploy-github-download.sh"
+elif [[ -f "${_UTILS_INIT_DIR}/../../lib/fundeploy-github-download.sh" ]]; then
+  # shellcheck source=../../lib/fundeploy-github-download.sh
+  source "${_UTILS_INIT_DIR}/../../lib/fundeploy-github-download.sh"
 fi
-if ! declare -F _nlt_github_download_curl >/dev/null 2>&1; then
-  _nlt_github_download_curl() { command curl "$@"; }
+if ! declare -F _fundeploy_github_download_curl >/dev/null 2>&1; then
+  _fundeploy_github_download_curl() { command curl "$@"; }
 fi
 
 GUM_HOME="${GUM_HOME:-${HOME}/opt/gum}"
@@ -58,10 +58,10 @@ usage() {
 EOF
 }
 
-# 交互菜单前：保证 PATH 上有 gum（与 lib/nlt-common.sh 中 _nlt_ensure_gum 行为一致；单文件 curl 场景无 nlt-common 时内联）。
+# 交互菜单前：保证 PATH 上有 gum（与 lib/fundeploy-common.sh 中 _fundeploy_ensure_gum 行为一致；单文件 curl 场景无 fundeploy-common 时内联）。
 _ensure_gum_for_interactive_menu() {
-  if declare -F _nlt_ensure_gum >/dev/null 2>&1; then
-    _nlt_ensure_gum
+  if declare -F _fundeploy_ensure_gum >/dev/null 2>&1; then
+    _fundeploy_ensure_gum
     return $?
   fi
   export PATH="${HOME}/opt/gum/bin:${PATH}"
@@ -78,7 +78,7 @@ _ensure_gum_for_interactive_menu() {
   _ubase="${FUNDEPLOY_RAW_BASE:-${fundeploy_RAW_BASE:-https://raw.githubusercontent.com/farfarfun/fundeploy/HEAD}}"
   _uurl="${_ubase}/scripts/tools/utils/setup.sh"
   echo "未检测到 gum，执行: curl -LsSf ${_uurl} | NONINTERACTIVE=1 bash -s -- gum" >&2
-  NONINTERACTIVE=1 _nlt_github_download_curl -LsSf "${_uurl}" | NONINTERACTIVE=1 bash -s -- gum || {
+  NONINTERACTIVE=1 _fundeploy_github_download_curl -LsSf "${_uurl}" | NONINTERACTIVE=1 bash -s -- gum || {
     echo "错误: gum 安装失败（网络或 FUNDEPLOY_RAW_BASE / fundeploy_RAW_BASE）。" >&2
     return 1
   }
@@ -102,7 +102,7 @@ _interactive_main() {
 
   while true; do
     local pick
-    pick="$(gum choose --header "nlt-utils" \
+    pick="$(gum choose --header "fundeploy-utils" \
       "${L_GUM}" "${L_ALIAS}" "${L_ALL}" "${L_HELP}" "${L_QUIT}")" || return 0
     [[ -z "${pick}" ]] && return 0
     case "${pick}" in
@@ -309,7 +309,7 @@ cmd_all() {
 }
 
 fetch_latest_gum_tag() {
-  _nlt_github_download_curl -fsSL https://api.github.com/repos/charmbracelet/gum/releases/latest |
+  _fundeploy_github_download_curl -fsSL https://api.github.com/repos/charmbracelet/gum/releases/latest |
     sed -n 's/^  "tag_name": "\([^"]*\)".*/\1/p' | head -1
 }
 
@@ -393,7 +393,7 @@ _precheck_gum_release_downloadable() {
   asset="$(gum_tarball_name "$tag")" || return 1
   url="https://github.com/charmbracelet/gum/releases/download/${tag}/${asset}"
   _say_step "==> 校验: 探测 Release 包是否可访问（${asset}）…"
-  if ! _nlt_github_download_curl -fsSIL --connect-timeout 10 --max-time 30 -o /dev/null "$url"; then
+  if ! _fundeploy_github_download_curl -fsSIL --connect-timeout 10 --max-time 30 -o /dev/null "$url"; then
     echo "错误: 无法访问下载地址（网络、代理或 GUM_TAG 是否匹配该资源）。" >&2
     echo "       ${url}" >&2
     return 1
@@ -446,7 +446,7 @@ install_gum_release() {
   echo "    ${url}"
   tmp="$(mktemp -d)"
   trap 'rm -rf "${tmp}"' EXIT
-  _nlt_github_download_curl -fsSL "$url" -o "${tmp}/gum.tgz"
+  _fundeploy_github_download_curl -fsSL "$url" -o "${tmp}/gum.tgz"
   tar -xzf "${tmp}/gum.tgz" -C "${tmp}"
   shopt -s nullglob
   sub=( "${tmp}"/gum_* )

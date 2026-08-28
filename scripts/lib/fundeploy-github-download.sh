@@ -2,15 +2,15 @@
 # GitHub 族下载 URL 改写（供其它脚本 source）。默认不改写；由环境变量显式启用。
 # 参见 scripts/tools/download/README.md
 
-[[ -n "${_NLT_GITHUB_DOWNLOAD_LIB_LOADED:-}" ]] && return 0
-_NLT_GITHUB_DOWNLOAD_LIB_LOADED=1
+[[ -n "${_FUNDEPLOY_GITHUB_DOWNLOAD_LIB_LOADED:-}" ]] && return 0
+_FUNDEPLOY_GITHUB_DOWNLOAD_LIB_LOADED=1
 
-_nlt_gh_dl_lc() {
+_fundeploy_gh_dl_lc() {
   printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
 }
 
 # 参数：主机名（小写）
-_nlt_is_github_download_host() {
+_fundeploy_is_github_download_host() {
   case "$1" in
     github.com | www.github.com) return 0 ;;
     raw.githubusercontent.com) return 0 ;;
@@ -20,14 +20,14 @@ _nlt_is_github_download_host() {
 }
 
 # 将 https URL 解析为 host（小写）与路径部分（以 / 开头，无路径则为 /）
-_nlt_gh_dl_parse_https() {
+_fundeploy_gh_dl_parse_https() {
   local url="$1" rest host_raw host path
   if [[ "$url" != https://* ]]; then
     return 1
   fi
   rest="${url#https://}"
   host_raw="${rest%%/*}"
-  host="$(_nlt_gh_dl_lc "$host_raw")"
+  host="$(_fundeploy_gh_dl_lc "$host_raw")"
   path="${rest#"${host_raw}"}"
   [[ -z "$path" ]] && path="/"
   [[ "$path" != /* ]] && path="/${path}"
@@ -35,7 +35,7 @@ _nlt_gh_dl_parse_https() {
 }
 
 # 输出一行：改写后的 URL（stdout）。发生改写时 stderr 打一行诊断。
-_nlt_github_download_resolve_url() {
+_fundeploy_github_download_resolve_url() {
   local url="$1"
   local mode hub_pre raw_base
   mode="${FUNDEPLOY_GITHUB_DOWNLOAD_MODE:-off}"
@@ -53,14 +53,14 @@ _nlt_github_download_resolve_url() {
   fi
 
   local host path parsed
-  if ! parsed="$(_nlt_gh_dl_parse_https "$url")"; then
+  if ! parsed="$(_fundeploy_gh_dl_parse_https "$url")"; then
     printf '%s\n' "$url"
     return 0
   fi
   host="${parsed%%$'\t'*}"
   path="${parsed#*$'\t'}"
 
-  if ! _nlt_is_github_download_host "$host"; then
+  if ! _fundeploy_is_github_download_host "$host"; then
     printf '%s\n' "$url"
     return 0
   fi
@@ -112,7 +112,7 @@ _nlt_github_download_resolve_url() {
 }
 
 # 与 fundeploy tool download curl 子命令相同：扫描参数中的 HTTPS URL 并改写后调用 curl。
-_nlt_github_download_curl() {
+_fundeploy_github_download_curl() {
   command -v curl >/dev/null 2>&1 || {
     echo "错误: 需要 curl。" >&2
     return 127
@@ -120,7 +120,7 @@ _nlt_github_download_curl() {
   local args=() a new
   for a in "$@"; do
     if [[ "$a" == https://* ]]; then
-      new="$(_nlt_github_download_resolve_url "$a")"
+      new="$(_fundeploy_github_download_resolve_url "$a")"
       args+=("$new")
     else
       args+=("$a")
@@ -134,7 +134,7 @@ _nlt_github_download_curl() {
 }
 
 # 未启用任何镜像/前缀策略时，向 stderr 打一行说明（FUNDEPLOY_GITHUB_DOWNLOAD_HINT=0 可关）。
-_nlt_github_download_print_accel_hint() {
+_fundeploy_github_download_print_accel_hint() {
   [[ "${FUNDEPLOY_GITHUB_DOWNLOAD_HINT:-1}" == "0" ]] && return 0
   if [[ -n "${FUNDEPLOY_GITHUB_HUB_PROXY_PREFIX:-}" ]]; then return 0; fi
   if [[ "${FUNDEPLOY_GITHUB_DOWNLOAD_MODE:-off}" != "off" ]]; then return 0; fi

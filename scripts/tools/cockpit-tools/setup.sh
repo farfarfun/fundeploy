@@ -25,21 +25,21 @@
 set -euo pipefail
 
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-_NLT_LIB=""
-if [[ -f "${_SCRIPT_DIR}/../lib/nlt-common.sh" ]]; then
-  _NLT_LIB="$(cd "${_SCRIPT_DIR}/../lib" && pwd)"
-elif [[ -f "${_SCRIPT_DIR}/../../lib/nlt-common.sh" ]]; then
-  _NLT_LIB="$(cd "${_SCRIPT_DIR}/../../lib" && pwd)"
+_FUNDEPLOY_LIB=""
+if [[ -f "${_SCRIPT_DIR}/../lib/fundeploy-common.sh" ]]; then
+  _FUNDEPLOY_LIB="$(cd "${_SCRIPT_DIR}/../lib" && pwd)"
+elif [[ -f "${_SCRIPT_DIR}/../../lib/fundeploy-common.sh" ]]; then
+  _FUNDEPLOY_LIB="$(cd "${_SCRIPT_DIR}/../../lib" && pwd)"
 else
-  echo "错误: 找不到 lib/nlt-common.sh（已检查 ${_SCRIPT_DIR}/../lib 与 ${_SCRIPT_DIR}/../../lib）" >&2
+  echo "错误: 找不到 lib/fundeploy-common.sh（已检查 ${_SCRIPT_DIR}/../lib 与 ${_SCRIPT_DIR}/../../lib）" >&2
   exit 1
 fi
 
-# shellcheck source=../../lib/nlt-common.sh
-source "${_NLT_LIB}/nlt-common.sh"
-if [[ -f "${_NLT_LIB}/nlt-progress.sh" ]]; then
-  # shellcheck source=../../lib/nlt-progress.sh
-  source "${_NLT_LIB}/nlt-progress.sh"
+# shellcheck source=../../lib/fundeploy-common.sh
+source "${_FUNDEPLOY_LIB}/fundeploy-common.sh"
+if [[ -f "${_FUNDEPLOY_LIB}/fundeploy-progress.sh" ]]; then
+  # shellcheck source=../../lib/fundeploy-progress.sh
+  source "${_FUNDEPLOY_LIB}/fundeploy-progress.sh"
 fi
 
 COCKPIT_TOOLS_HOME="${COCKPIT_TOOLS_HOME:-${HOME}/opt/cockpit-tools}"
@@ -100,7 +100,7 @@ _ct_detect_arch() {
 _ct_fetch_latest_tag() {
   _ct_require_curl
   local out tag
-  out="$(_nlt_github_download_curl -fsSL "https://api.github.com/repos/${COCKPIT_TOOLS_GITHUB_REPO}/releases/latest")" || return 1
+  out="$(_fundeploy_github_download_curl -fsSL "https://api.github.com/repos/${COCKPIT_TOOLS_GITHUB_REPO}/releases/latest")" || return 1
   tag="$(printf '%s' "${out}" | sed -n 's/.*"tag_name": *"\(v\{0,1\}[0-9][0-9.]*\)".*/\1/p' | head -1)"
   [[ -n "${tag}" ]] || return 1
   _ct_normalize_tag "${tag}"
@@ -154,11 +154,11 @@ _ct_download_install() {
   echo "    ${url}" >&2
   tmp="$(mktemp)"
   trap '[[ -n "${tmp-}" ]] && rm -f "${tmp}"' RETURN
-  _nlt_github_download_print_accel_hint
-  if declare -F nlt_pb_curl_to_file >/dev/null 2>&1; then
-    NLT_PB_LABEL="cockpit-tools ${tag}" nlt_pb_curl_to_file "${url}" "${tmp}" || _ct_die "下载失败: ${url}"
+  _fundeploy_github_download_print_accel_hint
+  if declare -F fundeploy_pb_curl_to_file >/dev/null 2>&1; then
+    FUNDEPLOY_PB_LABEL="cockpit-tools ${tag}" fundeploy_pb_curl_to_file "${url}" "${tmp}" || _ct_die "下载失败: ${url}"
   else
-    _nlt_github_download_curl -fsSL "${url}" -o "${tmp}"
+    _fundeploy_github_download_curl -fsSL "${url}" -o "${tmp}"
   fi
   install -m 0755 "${tmp}" "${COCKPIT_TOOLS_APPIMAGE}"
   rm -f "${tmp}"
@@ -177,15 +177,15 @@ cmd_update() {
 }
 
 cmd_reinstall() {
-  if nlt_interactive; then
-    nlt_ui_confirm "将覆盖重装 ${COCKPIT_TOOLS_HOME} 下 Cockpit Tools，继续？" || return 0
+  if fundeploy_interactive; then
+    fundeploy_ui_confirm "将覆盖重装 ${COCKPIT_TOOLS_HOME} 下 Cockpit Tools，继续？" || return 0
   fi
   rm -f "${COCKPIT_TOOLS_APPIMAGE}"
   cmd_install
 }
 
 cmd_uninstall() {
-  nlt_confirm_destructive "删除 ${COCKPIT_TOOLS_HOME} 与桌面入口？" COCKPIT_TOOLS_UNINSTALL_YES || return 1
+  fundeploy_confirm_destructive "删除 ${COCKPIT_TOOLS_HOME} 与桌面入口？" COCKPIT_TOOLS_UNINSTALL_YES || return 1
   rm -rf "${COCKPIT_TOOLS_HOME}"
   rm -f "${COCKPIT_TOOLS_DESKTOP_FILE}"
   echo "已卸载 cockpit-tools。"
@@ -200,7 +200,7 @@ cmd_run() {
 _ct_interactive_main() {
   while true; do
     local pick
-    pick="$(gum choose --header "nlt-cockpit-tools" \
+    pick="$(gum choose --header "fundeploy-cockpit-tools" \
       "install" \
       "update" \
       "reinstall" \
@@ -228,7 +228,7 @@ main() {
       _ct_usage
       exit 0
     fi
-    _nlt_ensure_gum || exit 1
+    _fundeploy_ensure_gum || exit 1
     _ct_interactive_main
     exit 0
   fi
