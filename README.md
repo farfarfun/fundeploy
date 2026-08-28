@@ -28,7 +28,6 @@
   fundeploy upgrade --source gitee
   ```
 - 领域固定为 `service`、`dev`、`tool`、`ai`，后面依次是模块和动作。
-- 不再安装其它 `nlt-*` 兼容命令；旧版本升级时会自动清理这些历史入口。
 
 Homebrew 可通过官方安装器显式安装：
 
