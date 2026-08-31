@@ -219,8 +219,12 @@ CATALOG
 
 cmd_plugin_list() {
   local name package url description
+  # 下游可能是 grep -q/head 这类提前退出的消费者：默认 SIGPIPE 处置是收到信号直接杀死本进程，
+  # set -e 的调用方 shell 下这种信号终止会被 pipefail 当成整条管道失败。忽略 SIGPIPE，
+  # 让写入失败以 EPIPE 返回值的形式出现，才能被下面的 || return 0 正常捕获。
+  trap '' PIPE
   while IFS='|' read -r name package url description; do
-    printf '%s%s\n  %s\n  %s\n' "$name" "${package:+ (${package})}" "$description" "$url"
+    printf '%s%s\n  %s\n  %s\n' "$name" "${package:+ (${package})}" "$description" "$url" 2>/dev/null || return 0
   done < <(paperclip_plugin_catalog_records)
 }
 
