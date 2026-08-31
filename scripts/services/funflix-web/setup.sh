@@ -170,18 +170,51 @@ cmd_install() {
 
 cmd_update() { cmd_install; }
 
+# server start 只要成功 fork 出子进程就会返回 0；子进程若在几秒内因异常退出
+# （比如上游包自身的 bug），start 命令本身并不会失败。这里等端口真正被监听
+# 到，避免把「已启动」误报给用户。
+_wait_for_listener() {
+  local host="$1" port="$2" timeout="${3:-8}" waited=0
+  while (( waited < timeout )); do
+    [[ -n "$(_fundeploy_listener_pid_for_port "${port}")" ]] && return 0
+    sleep 1
+    waited=$((waited + 1))
+  done
+  return 1
+}
+
 cmd_start() {
   _require_cli funflix "pip/uv 安装 ${FUNFLIX_WEB_BACKEND_PACKAGE} 后应在 PATH 中"
   _require_cli funflix-web "npm -g 安装 ${FUNFLIX_WEB_FRONTEND_PACKAGE} 后应在 PATH 中"
-  echo "==> 启动后端 funflix，监听 ${FUNFLIX_WEB_BACKEND_HOST}:${FUNFLIX_WEB_BACKEND_PORT}"
-  funflix server start --host "${FUNFLIX_WEB_BACKEND_HOST}" --port "${FUNFLIX_WEB_BACKEND_PORT}" \
-    || die "后端启动失败，已中止（前端未启动）"
-  echo "==> 启动前端 funflix-web，监听 ${FUNFLIX_WEB_FRONTEND_HOST}:${FUNFLIX_WEB_FRONTEND_PORT}"
-  funflix-web server start \
-    --host "${FUNFLIX_WEB_FRONTEND_HOST}" \
-    --port "${FUNFLIX_WEB_FRONTEND_PORT}" \
-    --backend "http://${FUNFLIX_WEB_BACKEND_HOST}:${FUNFLIX_WEB_BACKEND_PORT}" \
-    || die "前端启动失败（后端已启动；如需回滚请执行 ./setup.sh stop）"
+
+  # start 在目标已经运行时，上游 CLI 会返回非零退出码（"已在运行，请用 restart"）；
+  # 这里先看端口是否已被监听，已在运行就跳过、不当成失败。
+  if [[ -n "$(_fundeploy_listener_pid_for_port "${FUNFLIX_WEB_BACKEND_PORT}")" ]]; then
+    echo "后端 ${FUNFLIX_WEB_BACKEND_HOST}:${FUNFLIX_WEB_BACKEND_PORT} 已在运行，跳过。"
+  else
+    echo "==> 启动后端 funflix，监听 ${FUNFLIX_WEB_BACKEND_HOST}:${FUNFLIX_WEB_BACKEND_PORT}"
+    funflix server start --host "${FUNFLIX_WEB_BACKEND_HOST}" --port "${FUNFLIX_WEB_BACKEND_PORT}" \
+      || die "后端启动失败，已中止（前端未启动）"
+    _wait_for_listener "${FUNFLIX_WEB_BACKEND_HOST}" "${FUNFLIX_WEB_BACKEND_PORT}" \
+      || die "后端启动命令已返回，但端口 ${FUNFLIX_WEB_BACKEND_PORT} 迟迟未监听（多半是启动后崩溃）。" \
+             "已中止（前端未启动）。请看日志: \${XDG_CONFIG_HOME:-~/.config}/farfarfun/funflix/server.log，" \
+             "或跑 funflix server run 看前台报错。"
+  fi
+
+  if [[ -n "$(_fundeploy_listener_pid_for_port "${FUNFLIX_WEB_FRONTEND_PORT}")" ]]; then
+    echo "前端 ${FUNFLIX_WEB_FRONTEND_HOST}:${FUNFLIX_WEB_FRONTEND_PORT} 已在运行，跳过。"
+  else
+    echo "==> 启动前端 funflix-web，监听 ${FUNFLIX_WEB_FRONTEND_HOST}:${FUNFLIX_WEB_FRONTEND_PORT}"
+    funflix-web server start \
+      --host "${FUNFLIX_WEB_FRONTEND_HOST}" \
+      --port "${FUNFLIX_WEB_FRONTEND_PORT}" \
+      --backend "http://${FUNFLIX_WEB_BACKEND_HOST}:${FUNFLIX_WEB_BACKEND_PORT}" \
+      || die "前端启动失败（后端已启动；如需回滚请执行 ./setup.sh stop）"
+    _wait_for_listener "${FUNFLIX_WEB_FRONTEND_HOST}" "${FUNFLIX_WEB_FRONTEND_PORT}" \
+      || die "前端启动命令已返回，但端口 ${FUNFLIX_WEB_FRONTEND_PORT} 迟迟未监听（多半是启动后崩溃）。" \
+             "后端已启动；如需回滚请执行 ./setup.sh stop。日志见 ~/.cache/farfarfun/funflix-web/run/。"
+  fi
+
   echo "已启动。界面: http://${FUNFLIX_WEB_FRONTEND_HOST}:${FUNFLIX_WEB_FRONTEND_PORT}/web"
 }
 
