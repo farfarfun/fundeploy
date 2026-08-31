@@ -90,6 +90,7 @@ _entry_rel() {
     new-api)        echo "new-api/setup.sh" ;;
     sub2api)        echo "sub2api/setup.sh" ;;
     open-pencil)    echo "open-pencil/setup.sh" ;;
+    funflix-web)    echo "funflix-web/setup.sh" ;;
     *)              return 1 ;;
   esac
 }
@@ -301,7 +302,7 @@ main() {
     tool|tools) shift; cmd_entry tools "$@" ;;
     ai|ai-cli) shift; cmd_entry ai-cli "$@" ;;
     dev) shift; cmd_entry dev "$@" ;;
-    pip-sources|python-env|utils|github-net|port-kill|download|cockpit-tools|airflow|celery|paperclip|code-server|new-api|sub2api|open-pencil)
+    pip-sources|python-env|utils|github-net|port-kill|download|cockpit-tools|airflow|celery|paperclip|code-server|new-api|sub2api|open-pencil|funflix-web)
       cmd="$1"; shift; cmd_entry "${cmd}" "$@"
       ;;
     help|-h|--help) usage ;;

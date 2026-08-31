@@ -4,7 +4,7 @@
 
 覆盖这些场景：
 - 开发环境：`pip` 镜像、`uv`、Python 虚拟环境、Go、Rust、Node.js、pnpm
-- 常驻服务：Airflow、Celery、Paperclip、code-server、new-api、sub2api
+- 常驻服务：Airflow、Celery、Paperclip、code-server、new-api、sub2api、funflix-web（影视库前后端一体化）
 - 桌面/AI 工具：`fundeploy ai`（Claude Code、Codex、Cursor）与 OpenPencil（CLI + MCP + Tauri 桌面包）
 - 常用工具：gum、GitHub 下载加速、GitHub 网络诊断、按端口杀进程
 
@@ -20,6 +20,8 @@
   fundeploy service sub2api official install
   fundeploy service sub2api official restart
   fundeploy service sub2api manual install
+  fundeploy service funflix-web install
+  fundeploy service funflix-web start
   fundeploy dev uv install
   fundeploy tool github-net doctor
   fundeploy ai codex update
@@ -125,7 +127,9 @@ brew uninstall fundeploy
 ### 服务
 
 - `fundeploy service status`：服务总览
-- `fundeploy service airflow|celery|paperclip|code-server|new-api|sub2api|open-pencil`
+- `fundeploy service airflow|celery|paperclip|code-server|new-api|sub2api|open-pencil|funflix-web`
+- `fundeploy service funflix-web install|start|stop|restart|status|uninstall`：funflix（后端，PyPI）+
+  funflix-web（前端，私有 npm）一起装/起/停，只提供合并命令
 
 ### 工具
 

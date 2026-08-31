@@ -79,6 +79,7 @@ bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/paperclip/setup.sh" || exit 1
 bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/sub2api/setup.sh" || exit 1
 bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/sub2api/setup-manual.sh" || exit 1
 bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/sub2api/setup-offical.sh" || exit 1
+bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/funflix-web/setup.sh" || exit 1
 curl() {
   [[ "$*" == "--proto =https --proto-redir =https --tlsv1.2 -LsSf https://example.invalid/install.sh" ]] || return 64
   printf '%s\n' '[[ "$*" == "update --source github" ]]'
@@ -277,6 +278,7 @@ out="$(NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" list)"
 grep -q "service" <<<"${out}" || exit 1
 out="$(NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" service list)"
 grep -q "sub2api" <<<"${out}" || exit 1
+grep -q "funflix-web" <<<"${out}" || exit 1
 NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" dev --help >/dev/null || exit 1
 out="$(NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" tool list)"
 grep -q "brew" <<<"${out}" || exit 1

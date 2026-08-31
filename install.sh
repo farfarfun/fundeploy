@@ -461,6 +461,7 @@ do_install_or_update() {
     "${LIBEXEC}/airflow" "${LIBEXEC}/celery" "${LIBEXEC}/utils" "${LIBEXEC}/github-net" \
     "${LIBEXEC}/paperclip" "${LIBEXEC}/code-server" "${LIBEXEC}/new-api" "${LIBEXEC}/sub2api" \
     "${LIBEXEC}/open-pencil" \
+    "${LIBEXEC}/funflix-web" \
     "${LIBEXEC}/services" \
     "${LIBEXEC}/tools" \
     "${LIBEXEC}/lib"
@@ -592,6 +593,10 @@ do_install_or_update() {
   _fundeploy_cp_first "${LIBEXEC}/open-pencil/setup.sh" \
     "${SCRIPTS}/services/open-pencil/setup.sh" \
     "${SCRIPTS}/open-pencil/setup.sh"
+
+  _fundeploy_cp_first "${LIBEXEC}/funflix-web/setup.sh" \
+    "${SCRIPTS}/services/funflix-web/setup.sh" \
+    "${SCRIPTS}/funflix-web/setup.sh"
 
   _fundeploy_cp_first "${LIBEXEC}/services/fundeploy-services.sh" \
     "${SCRIPTS}/services/fundeploy-services.sh" \

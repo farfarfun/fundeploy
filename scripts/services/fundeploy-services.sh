@@ -11,7 +11,7 @@
 #   fundeploy service help
 #
 # 模块名: airflow, celery, paperclip, code-server, new-api, sub2api, open-pencil,
-#         pip-sources, python-env, utils, github-net, cockpit-tools
+#         funflix-web, pip-sources, python-env, utils, github-net, cockpit-tools
 # 卸载不支持: celery、utils（脚本未提供 uninstall）
 #
 # NONINTERACTIVE=1 且无参数时打印 help 并退出（不进入 gum）。
@@ -39,18 +39,20 @@ usage() {
   install                 兼容原安装聚合菜单
   help / -h / --help      本说明
 
-服务: airflow celery paperclip code-server new-api sub2api open-pencil
+服务: airflow celery paperclip code-server new-api sub2api open-pencil funflix-web
 
 示例:
   fundeploy service code-server official install
   fundeploy service code-server official start
   fundeploy service sub2api official install
   fundeploy service sub2api official restart
+  fundeploy service funflix-web install
+  fundeploy service funflix-web start
   fundeploy service status
 EOF
 }
 
-_SERVICE_NAMES=(airflow celery paperclip code-server new-api sub2api open-pencil)
+_SERVICE_NAMES=(airflow celery paperclip code-server new-api sub2api open-pencil funflix-web)
 
 _service_known() {
   local name="$1" service
@@ -245,6 +247,14 @@ cmd_status() {
   pid_s2a="$(read_pid_file "${SUB2API_SERVICE_HOME}/run/sub2api.pid")"
   s2a_listener_pid="$(listener_pid_for_port "${SUB2API_PORT}")"
 
+  # funflix / funflix-web 各自管理自己的 PID 文件，这里只用端口探测判断是否在跑。
+  FUNFLIX_WEB_BACKEND_HOST="${FUNFLIX_WEB_BACKEND_HOST:-127.0.0.1}"
+  FUNFLIX_WEB_BACKEND_PORT="${FUNFLIX_WEB_BACKEND_PORT:-18810}"
+  FUNFLIX_WEB_FRONTEND_HOST="${FUNFLIX_WEB_FRONTEND_HOST:-127.0.0.1}"
+  FUNFLIX_WEB_FRONTEND_PORT="${FUNFLIX_WEB_FRONTEND_PORT:-8810}"
+  ffx_be_listener_pid="$(listener_pid_for_port "${FUNFLIX_WEB_BACKEND_PORT}")"
+  ffx_fe_listener_pid="$(listener_pid_for_port "${FUNFLIX_WEB_FRONTEND_PORT}")"
+
   local ts flower_url cel_wbf cel_pids cel_probe
   ts="$(date '+%Y-%m-%d %H:%M:%S %z')"
 
@@ -299,11 +309,24 @@ cmd_status() {
       "$(service_pid_display "$pid_s2a" "$s2a_listener_pid")" \
       "${SUB2API_PORT} → ${SUB2API_HOST}:${SUB2API_PORT}" \
       "$(http_probe "http://${SUB2API_HOST}:${SUB2API_PORT}/health")"
+    _status_csv_line \
+      "funflix" \
+      "$(service_state_from_pid_and_port "" "$ffx_be_listener_pid")" \
+      "$(service_pid_display "" "$ffx_be_listener_pid")" \
+      "${FUNFLIX_WEB_BACKEND_HOST}:${FUNFLIX_WEB_BACKEND_PORT}" \
+      "$(http_probe "http://${FUNFLIX_WEB_BACKEND_HOST}:${FUNFLIX_WEB_BACKEND_PORT}/docs")"
+    _status_csv_line \
+      "funflix-web" \
+      "$(service_state_from_pid_and_port "" "$ffx_fe_listener_pid")" \
+      "$(service_pid_display "" "$ffx_fe_listener_pid")" \
+      "${FUNFLIX_WEB_FRONTEND_HOST}:${FUNFLIX_WEB_FRONTEND_PORT}" \
+      "$(http_probe "http://${FUNFLIX_WEB_FRONTEND_HOST}:${FUNFLIX_WEB_FRONTEND_PORT}/web")"
   } | _render_status_table_from_csv
 
   echo ""
   echo "说明:"
   echo "  • celery 状态列 wbf 为 worker / beat / flower：√ 运行中，× 未运行；与 Airflow 同机时请区分 FLOWER_PORT。"
+  echo "  • funflix / funflix-web 各自管理自己的 PID/日志，此表仅按端口探测判断存活；一起装/起/停请用 fundeploy service funflix-web。"
   echo "  • 安装路径: airflow ${AIRFLOW_HOME} | celery ${CELERY_HOME} | paperclip ${PAPERCLIP_SERVICE_HOME} | code-server ${CODE_SERVER_SERVICE_HOME} | new-api ${NEW_API_SERVICE_HOME} | sub2api ${SUB2API_SERVICE_HOME}"
   echo "  • 详情: fundeploy service <服务> status"
   echo ""
@@ -314,7 +337,7 @@ cmd_status() {
 # 是否支持 uninstall（上游脚本有该子命令）
 _module_supports_uninstall() {
   case "$1" in
-    airflow | paperclip | code-server | new-api | sub2api | open-pencil | pip-sources | python-env | github-net | cockpit-tools) return 0 ;;
+    airflow | paperclip | code-server | new-api | sub2api | open-pencil | funflix-web | pip-sources | python-env | github-net | cockpit-tools) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -332,7 +355,7 @@ _dispatch_install_or_remove() {
 
   case "$name" in
     pip-sources | python-env | utils | github-net) exec bash "$target" ;;
-    airflow | celery | paperclip | code-server | new-api | sub2api | open-pencil | cockpit-tools)
+    airflow | celery | paperclip | code-server | new-api | sub2api | open-pencil | funflix-web | cockpit-tools)
       exec bash "$target" install
       ;;
     *) die "未知模块: ${name}（见 fundeploy service help）" ;;
@@ -360,11 +383,11 @@ cmd_install() {
 
     if [[ "$action" == "add" ]]; then
       name="$(gum choose --header "选择要安装 / 初始化的模块" \
-        "airflow" "celery" "paperclip" "code-server" "new-api" "sub2api" "open-pencil" \
+        "airflow" "celery" "paperclip" "code-server" "new-api" "sub2api" "open-pencil" "funflix-web" \
         "pip-sources" "python-env" "utils" "github-net" "cockpit-tools" "取消")" || return 0
     else
       name="$(gum choose --header "选择要卸载的模块（celery、utils 请手动清理）" \
-        "airflow" "paperclip" "code-server" "new-api" "sub2api" "open-pencil" \
+        "airflow" "paperclip" "code-server" "new-api" "sub2api" "open-pencil" "funflix-web" \
         "pip-sources" "python-env" "github-net" "cockpit-tools" "取消")" || return 0
     fi
     [[ -z "$name" || "$name" == "取消" ]] && return 0
@@ -380,7 +403,7 @@ cmd_install() {
         [[ "${NONINTERACTIVE:-}" == "1" ]] && die "请指定模块: fundeploy service install add <模块>"
         _fundeploy_ensure_gum || exit 1
         name="$(gum choose --header "选择要安装 / 初始化的模块" \
-          "airflow" "celery" "paperclip" "code-server" "new-api" "sub2api" "open-pencil" \
+          "airflow" "celery" "paperclip" "code-server" "new-api" "sub2api" "open-pencil" "funflix-web" \
           "pip-sources" "python-env" "utils" "github-net" "cockpit-tools" "取消")" || return 0
         [[ -z "$name" || "$name" == "取消" ]] && return 0
       fi
@@ -393,7 +416,7 @@ cmd_install() {
         [[ "${NONINTERACTIVE:-}" == "1" ]] && die "请指定模块: fundeploy service install remove <模块>"
         _fundeploy_ensure_gum || exit 1
         name="$(gum choose --header "选择要卸载的模块" \
-          "airflow" "paperclip" "code-server" "new-api" "sub2api" "open-pencil" \
+          "airflow" "paperclip" "code-server" "new-api" "sub2api" "open-pencil" "funflix-web" \
           "pip-sources" "python-env" "github-net" "cockpit-tools" "取消")" || return 0
         [[ -z "$name" || "$name" == "取消" ]] && return 0
       fi
@@ -423,6 +446,7 @@ interactive_main() {
       "new-api      API 网关" \
       "sub2api      订阅 API 网关" \
       "open-pencil  CLI、MCP 与桌面工具" \
+      "funflix-web  影视库前后端一体化" \
       "help         命令帮助" \
       "back         返回")" || break
     [[ -z "$pick" ]] && break
