@@ -19,6 +19,7 @@ concurrency:
 jobs:
   release:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: write
     steps:
@@ -77,6 +78,7 @@ jobs:
   apt-repository:
     needs: release
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     outputs:
       configured: ${{ steps.config.outputs.apt }}
     steps:
@@ -135,6 +137,7 @@ jobs:
     needs: apt-repository
     if: needs.apt-repository.outputs.configured == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       pages: write
       id-token: write
@@ -148,6 +151,7 @@ jobs:
   homebrew-tap:
     needs: release
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - id: config
         name: Check Homebrew Tap deploy key

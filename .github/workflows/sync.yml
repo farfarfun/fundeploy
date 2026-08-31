@@ -17,6 +17,7 @@ concurrency:
 jobs:
   repo-sync:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Mirror the Github organization repos to Gitee.
