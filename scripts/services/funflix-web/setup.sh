@@ -15,7 +15,7 @@
 # 用法：
 #   ./setup.sh                 # gum 菜单
 #   ./setup.sh install         # pip/uv 装 funflix + npm -g 装 funflix-web
-#   ./setup.sh update          # 同 install（重新安装到最新/指定版本）
+#   ./setup.sh update          # 同 install（重新安装到最新/指定版本），并打印升级前后版本对比
 #   ./setup.sh start           # 先启动后端，再启动前端（自动把 --backend 指向后端地址）
 #   ./setup.sh stop            # 先停止前端，再停止后端
 #   ./setup.sh restart         # stop + start
@@ -71,7 +71,8 @@ usage() {
   无参数：gum 菜单。
 
 命令:
-  install / update   pip/uv 装 ${FUNFLIX_WEB_BACKEND_PACKAGE}，npm -g 装 ${FUNFLIX_WEB_FRONTEND_PACKAGE}
+  install            pip/uv 装 ${FUNFLIX_WEB_BACKEND_PACKAGE}，npm -g 装 ${FUNFLIX_WEB_FRONTEND_PACKAGE}
+  update             同 install，并打印升级前后的版本对比
   start              按序启动：先 funflix 后端，再 funflix-web 前端（自动带上 --backend）
   stop               按序停止：先前端，再后端（best effort，不因某一端未运行而报错）
   restart            stop + start
@@ -168,7 +169,58 @@ cmd_install() {
   echo "已安装。"
 }
 
-cmd_update() { cmd_install; }
+# 已安装的 pip 包版本；镜像 _pip_install_pkg/_pip_uninstall_pkg 的探测优先级
+# （FUNFLIX_WEB_PIP_BIN > uv > python3 -m pip），未安装时输出空字符串。
+_pip_pkg_version() {
+  local pkg="$1" out
+  if [[ -n "${FUNFLIX_WEB_PIP_BIN}" ]]; then
+    out="$("${FUNFLIX_WEB_PIP_BIN}" show "${pkg}" 2>/dev/null || true)"
+  elif command -v uv >/dev/null 2>&1; then
+    out="$(uv pip show "${pkg}" 2>/dev/null || true)"
+  elif command -v python3 >/dev/null 2>&1; then
+    out="$(python3 -m pip show "${pkg}" 2>/dev/null || true)"
+  else
+    out=""
+  fi
+  printf '%s' "${out}" | sed -n 's/^Version: *//p' | head -1
+}
+
+# 已安装的 npm 全局包版本，未安装时输出空字符串。
+_npm_pkg_version() {
+  local pkg="$1" npm_bin json
+  npm_bin="$(_resolve_npm 2>/dev/null)" || { echo ""; return; }
+  json="$("${npm_bin}" ls -g "${pkg}" --depth=0 --json 2>/dev/null || true)"
+  [[ -n "${json}" ]] || { echo ""; return; }
+  if command -v python3 >/dev/null 2>&1; then
+    FUNFLIX_WEB_PKG_QUERY="${pkg}" python3 -c '
+import json, os, sys
+data = json.loads(sys.stdin.read() or "{}")
+pkg = os.environ.get("FUNFLIX_WEB_PKG_QUERY", "")
+deps = data.get("dependencies") or {}
+info = deps.get(pkg) or {}
+print(info.get("version") or "")
+' <<<"${json}"
+  else
+    # 无 python3 时的兜底：包名可能形如 @scope/name，分隔符须用 # 而非 /
+    printf '%s' "${json}" | sed -n "s#.*\"${pkg}\": *{[^}]*\"version\": *\"\\([^\"]*\\)\".*#\\1#p" | head -1
+  fi
+}
+
+cmd_update() {
+  local backend_before backend_after frontend_before frontend_after
+  backend_before="$(_pip_pkg_version "${FUNFLIX_WEB_BACKEND_PACKAGE}")"
+  frontend_before="$(_npm_pkg_version "${FUNFLIX_WEB_FRONTEND_PACKAGE}")"
+
+  cmd_install
+
+  backend_after="$(_pip_pkg_version "${FUNFLIX_WEB_BACKEND_PACKAGE}")"
+  frontend_after="$(_npm_pkg_version "${FUNFLIX_WEB_FRONTEND_PACKAGE}")"
+
+  echo ""
+  echo "== 版本变化 =="
+  echo "后端 ${FUNFLIX_WEB_BACKEND_PACKAGE}: ${backend_before:-未安装} -> ${backend_after:-未知}"
+  echo "前端 ${FUNFLIX_WEB_FRONTEND_PACKAGE}: ${frontend_before:-未安装} -> ${frontend_after:-未知}"
+}
 
 # server start 只要成功 fork 出子进程就会返回 0；子进程若在几秒内因异常退出
 # （比如上游包自身的 bug），start 命令本身并不会失败。这里等端口真正被监听
@@ -291,7 +343,7 @@ interactive_main() {
     local pick
     pick="$(fundeploy_ui_choose "fundeploy / service / funflix-web / 选择动作" \
       "install    安装（后端 pip + 前端 npm）" \
-      "update     更新到最新/指定版本" \
+      "update     更新到最新/指定版本，并显示升级前后版本" \
       "start      启动（后端 → 前端）" \
       "stop       停止（前端 → 后端）" \
       "restart    重启" \
