@@ -11,6 +11,13 @@ public/
 fundeploy-*.tar.gz
 # 生成的 Homebrew formula
 fundeploy.rb
+__pycache__/
+*.pyc
+*.db
+*.rar
+.venv/
+.run/
+node_modules/
 
 # ── 日志 ─────────────────────────────────────────────────────────
 logs/

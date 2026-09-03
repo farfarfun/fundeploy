@@ -177,4 +177,12 @@ bash tests/run-all.sh
 
 ## 许可证
 
-[MIT License](LICENSE)
+本项目基于 [MIT](LICENSE) 协议开源。
+
+## 关于 farfarfun
+
+[farfarfun](https://github.com/farfarfun) 是一个专注于实用工具库的开源组织，
+涵盖云存储、数据处理、AI、多媒体与开发工具链等方向。
+
+- 🏠 组织主页：<https://github.com/farfarfun>
+- 📧 联系：farfarfun@qq.com
