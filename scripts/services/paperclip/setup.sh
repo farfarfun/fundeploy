@@ -25,6 +25,13 @@
 #   PAPERCLIP_SKIP_START_HEALTH_CHECK=1 跳过 HTTP 健康检查
 #   NONINTERACTIVE=1         跳过 gum 确认；onboard 默认加 --yes
 #   PAPERCLIP_UNINSTALL_YES=1 非 TTY 卸载确认
+#   PAPERCLIP_NODE_MIN_VERSION  Paperclip 要求的最低 Node 版本（默认 24.11.0）
+#   PAPERCLIP_NODE_MIN_MAJOR    上述版本对应的主版本号，用于 nvm 自动切换（默认 24）
+#
+# Node 版本说明：
+#   当前 node 版本不满足要求时，若检测到 nvm 且已安装满足要求的版本，会在本次
+#   命令执行范围内自动 `nvm use`（不修改 nvm 全局默认版本，不自动下载安装）。
+#   若 nvm 中没有满足要求的版本，请先执行: nvm install 24
 
 set -euo pipefail
 
@@ -49,6 +56,8 @@ PAPERCLIP_AUTH_DISABLE_SIGN_UP="${PAPERCLIP_AUTH_DISABLE_SIGN_UP:-true}"
 PAPERCLIP_NPM_REGISTRY="${PAPERCLIP_NPM_REGISTRY:-https://registry.npmjs.org}"
 # npm 的 paperclip 是另一个 UI 工具；Paperclip AI 官方包名是 paperclipai。
 PAPERCLIP_NPM_PACKAGE="${PAPERCLIP_NPM_PACKAGE:-paperclipai@latest}"
+PAPERCLIP_NODE_MIN_VERSION="${PAPERCLIP_NODE_MIN_VERSION:-24.11.0}"
+PAPERCLIP_NODE_MIN_MAJOR="${PAPERCLIP_NODE_MIN_MAJOR:-24}"
 
 PAPERCLIP_RUN_DIR="${PAPERCLIP_SERVICE_HOME}/run"
 PAPERCLIP_LOG_DIR="${PAPERCLIP_SERVICE_HOME}/log"
@@ -134,13 +143,38 @@ read_pid() {
   tr -d '[:space:]' <"$PID_FILE" || true
 }
 
+node_version_meets() {
+  local min="$1"
+  command -v node >/dev/null 2>&1 || return 1
+  node -e '
+    const min = process.argv[1].split(".").map(Number);
+    const cur = process.versions.node.split(".").map(Number);
+    for (let i = 0; i < 3; i++) {
+      const a = cur[i] || 0, b = min[i] || 0;
+      if (a > b) process.exit(0);
+      if (a < b) process.exit(1);
+    }
+    process.exit(0);
+  ' "$min" 2>/dev/null
+}
+
+# 若当前 node 不满足最低版本要求，尝试在本次命令范围内 `nvm use` 一个已安装的
+# 满足要求的版本（不修改 nvm 全局默认版本，不自动联网下载安装）。
+paperclip_ensure_node_version() {
+  node_version_meets "${PAPERCLIP_NODE_MIN_VERSION}" && return 0
+
+  local nvm_dir="${NVM_DIR:-${HOME}/.nvm}"
+  [[ -s "${nvm_dir}/nvm.sh" ]] || return 0
+  # shellcheck source=/dev/null
+  source "${nvm_dir}/nvm.sh" >/dev/null 2>&1 || return 0
+  command -v nvm >/dev/null 2>&1 || return 0
+  nvm use "${PAPERCLIP_NODE_MIN_MAJOR}" >/dev/null 2>&1 || true
+}
+
 require_node() {
-  command -v node >/dev/null 2>&1 || die "需要 Node.js 20+（https://nodejs.org/）"
-  local major
-  major="$(node -p 'parseInt(process.versions.node.split(".")[0], 10)')"
-  if (( major < 20 )); then
-    die "需要 Node.js 20+，当前: $(node --version)"
-  fi
+  paperclip_ensure_node_version
+  command -v node >/dev/null 2>&1 || die "需要 Node.js ${PAPERCLIP_NODE_MIN_VERSION}+（https://nodejs.org/）"
+  node_version_meets "${PAPERCLIP_NODE_MIN_VERSION}" || die "需要 Node.js ${PAPERCLIP_NODE_MIN_VERSION}+，当前: $(node --version)。可执行: nvm install ${PAPERCLIP_NODE_MIN_MAJOR}"
 }
 
 paperclip_export_runtime_env() {
