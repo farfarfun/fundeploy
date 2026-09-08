@@ -4,8 +4,9 @@
 #
 # 用法：
 #   ./setup.sh              # gum 菜单
-#   ./setup.sh install      # pnpm add -g paperclipai@latest
-#   ./setup.sh update       # 升级后自动迁移数据库，并保持原运行状态
+#   ./setup.sh install-canary # pnpm add -g paperclipai@canary（官方公共源，最新开发版）
+#   ./setup.sh install-prod   # pnpm add -g paperclipai@latest（官方公共源，正式版）
+#   ./setup.sh update [canary|prod]  # 升级后自动迁移数据库，并保持原运行状态（默认 canary）
 #   ./setup.sh onboard      # 首次配置（默认 NONINTERACTIVE=1 时自动加 --yes）
 #   ./setup.sh plugin install # 从 awesome-paperclip 选择并安装插件
 #   ./setup.sh start        # 后台启动（paperclipai run）
@@ -19,8 +20,11 @@
 #   PAPERCLIP_HOST           Paperclip 监听地址（默认 0.0.0.0）
 #   PAPERCLIP_DATABASE_URL   数据库连接串（默认 postgresql://paperclip:paperclip@localhost:5432/paperclip）
 #   PAPERCLIP_AUTH_DISABLE_SIGN_UP  是否禁止注册（默认 true）
-#   PAPERCLIP_NPM_REGISTRY   用于版本对照的公共 npm registry（默认 https://registry.npmjs.org）
-#   PAPERCLIP_NPM_PACKAGE    npm 包规格（默认 paperclipai@latest）
+#   PAPERCLIP_NPM_REGISTRY   安装/查询用 npm registry（默认官方公共源 https://registry.npmjs.org，
+#                            始终显式传给 pnpm，忽略 ~/.npmrc 里配置的私有源）
+#   PAPERCLIP_NPM_PACKAGE_CANARY  install-canary 用的包规格（默认 paperclipai@canary，官方每次
+#                                 合并到 master 都会发布的开发版，是能拿到的最新版本）
+#   PAPERCLIP_NPM_PACKAGE_PROD    install-prod 用的包规格（默认 paperclipai@latest，正式版）
 #   PAPERCLIP_START_HEALTH_TIMEOUT_SEC  start 时等待 /api/health 健康检查最长秒数（默认 60）
 #   PAPERCLIP_SKIP_START_HEALTH_CHECK=1 跳过 HTTP 健康检查
 #   NONINTERACTIVE=1         跳过 gum 确认；onboard 默认加 --yes
@@ -55,7 +59,8 @@ PAPERCLIP_DATABASE_URL="${PAPERCLIP_DATABASE_URL:-postgresql://paperclip:papercl
 PAPERCLIP_AUTH_DISABLE_SIGN_UP="${PAPERCLIP_AUTH_DISABLE_SIGN_UP:-true}"
 PAPERCLIP_NPM_REGISTRY="${PAPERCLIP_NPM_REGISTRY:-https://registry.npmjs.org}"
 # npm 的 paperclip 是另一个 UI 工具；Paperclip AI 官方包名是 paperclipai。
-PAPERCLIP_NPM_PACKAGE="${PAPERCLIP_NPM_PACKAGE:-paperclipai@latest}"
+PAPERCLIP_NPM_PACKAGE_CANARY="${PAPERCLIP_NPM_PACKAGE_CANARY:-paperclipai@canary}"
+PAPERCLIP_NPM_PACKAGE_PROD="${PAPERCLIP_NPM_PACKAGE_PROD:-paperclipai@latest}"
 PAPERCLIP_NODE_MIN_VERSION="${PAPERCLIP_NODE_MIN_VERSION:-24.11.0}"
 PAPERCLIP_NODE_MIN_MAJOR="${PAPERCLIP_NODE_MIN_MAJOR:-24}"
 
@@ -74,8 +79,9 @@ usage() {
   无参数：gum 菜单。
 
 命令:
-  install     pnpm 全局安装 ${PAPERCLIP_NPM_PACKAGE}
-  update      全局升级后自动迁移数据库，并保持原运行状态
+  install-canary  pnpm 全局安装 ${PAPERCLIP_NPM_PACKAGE_CANARY}（最新开发版）
+  install-prod    pnpm 全局安装 ${PAPERCLIP_NPM_PACKAGE_PROD}（正式版）
+  update [canary|prod]  全局升级后自动迁移数据库，并保持原运行状态（默认 canary）
   onboard     首次配置；NONINTERACTIVE=1 时默认追加 --yes
   plugin list                  列出 awesome-paperclip 收录的插件
   plugin install [npm-package] 安装插件；不指定包名时从清单选择
@@ -94,7 +100,7 @@ usage() {
   - 默认导出 DATABASE_URL=${PAPERCLIP_DATABASE_URL}
   - 默认导出 PAPERCLIP_AUTH_DISABLE_SIGN_UP=${PAPERCLIP_AUTH_DISABLE_SIGN_UP}
   - 健康检查: /api/health
-  - 若 ~/.npmrc 的 registry 指向私有源，会同时查询它和公共源并安装较新版本。
+  - 安装固定使用 PAPERCLIP_NPM_REGISTRY（默认官方公共源），忽略 ~/.npmrc 里配置的私有源。
 USAGE
 }
 
@@ -357,37 +363,25 @@ paperclip_start_failure_hints() {
 }
 
 paperclip_select_npm_package() {
+  local requested="$1"
   PAPERCLIP_INSTALL_REGISTRY="${PAPERCLIP_NPM_REGISTRY}"
-  PAPERCLIP_INSTALL_PACKAGE="${PAPERCLIP_NPM_PACKAGE}"
 
-  local private_registry
-  private_registry="$(pnpm config get registry 2>/dev/null || true)"
-  [[ -n "${private_registry}" && "${private_registry}" != "null" ]] || return 0
-  [[ "${private_registry%/}" != "${PAPERCLIP_NPM_REGISTRY%/}" ]] || return 0
-
-  local package_name="${PAPERCLIP_NPM_PACKAGE}"
+  local package_name="${requested}"
   if [[ "${package_name}" == @*/*@* || "${package_name}" != @* && "${package_name}" == *@* ]]; then
     package_name="${package_name%@*}"
   fi
 
-  local public_version private_version
-  public_version="$(pnpm view "${PAPERCLIP_NPM_PACKAGE}" version --registry "${PAPERCLIP_NPM_REGISTRY}" 2>/dev/null || true)"
-  private_version="$(pnpm view "${PAPERCLIP_NPM_PACKAGE}" version --registry "${private_registry}" 2>/dev/null || true)"
-  [[ -n "${public_version}" ]] || echo "[WARN] 公共 npm 源查询失败: ${PAPERCLIP_NPM_REGISTRY}" >&2
-  [[ -n "${private_version}" ]] || echo "[WARN] .npmrc 私有源查询失败: ${private_registry}" >&2
-  [[ -n "${public_version}${private_version}" ]] || die "公共源和私有源均无法查询 ${PAPERCLIP_NPM_PACKAGE}"
+  local resolved_version
+  resolved_version="$(pnpm view "${requested}" version --registry "${PAPERCLIP_INSTALL_REGISTRY}" 2>/dev/null || true)"
+  [[ -n "${resolved_version}" ]] || die "无法从 ${PAPERCLIP_INSTALL_REGISTRY} 查询 ${requested}"
 
-  if [[ -n "${private_version}" ]] && { [[ -z "${public_version}" ]] || pnpm view "${package_name}@>${public_version} <=${private_version}" version --registry "${private_registry}" >/dev/null 2>&1; }; then
-    PAPERCLIP_INSTALL_REGISTRY="${private_registry}"
-    PAPERCLIP_INSTALL_PACKAGE="${package_name}@${private_version}"
-  else
-    PAPERCLIP_INSTALL_PACKAGE="${package_name}@${public_version}"
-  fi
-
-  echo "==> Paperclip 版本：公共源 ${public_version:--}，私有源 ${private_version:--}；选择 ${PAPERCLIP_INSTALL_PACKAGE}" >&2
+  PAPERCLIP_INSTALL_PACKAGE="${package_name}@${resolved_version}"
+  echo "==> Paperclip 版本: ${requested} -> ${resolved_version}（源: ${PAPERCLIP_INSTALL_REGISTRY}）" >&2
 }
 
+# cmd_install <npm-package-spec>
 cmd_install() {
+  local package_spec="$1"
   require_node
   ensure_dirs
   command -v pnpm >/dev/null 2>&1 || die "未找到 pnpm"
@@ -401,18 +395,34 @@ cmd_install() {
     command -v npm >/dev/null 2>&1 && npm uninstall -g paperclipai
   fi
 
-  paperclip_select_npm_package
+  paperclip_select_npm_package "${package_spec}"
   echo "==> pnpm 全局安装 Paperclip CLI（${PAPERCLIP_INSTALL_PACKAGE}）…" >&2
   pnpm add -g --registry "${PAPERCLIP_INSTALL_REGISTRY}" "${PAPERCLIP_INSTALL_PACKAGE}"
   paperclip_cli --version
   echo "安装完成。首次使用可执行: $0 onboard"
 }
 
+cmd_install_canary() {
+  cmd_install "${PAPERCLIP_NPM_PACKAGE_CANARY}"
+}
+
+cmd_install_prod() {
+  cmd_install "${PAPERCLIP_NPM_PACKAGE_PROD}"
+}
+
+# cmd_update [canary|prod]
 cmd_update() {
+  local channel="${1:-canary}" install_fn
+  case "$channel" in
+    canary) install_fn=cmd_install_canary ;;
+    prod) install_fn=cmd_install_prod ;;
+    *) die "未知更新渠道: ${channel}（支持 canary / prod）" ;;
+  esac
+
   local pid was_running=0
   pid="$(read_pid)"
   [[ -n "${pid}" ]] && process_alive "${pid}" && was_running=1
-  cmd_install
+  "$install_fn"
 
   if (( was_running == 0 )) && [[ ! -f "${PAPERCLIP_HOME}/instances/default/config.json" && ! -f "${PAPERCLIP_HOME}/config.json" ]]; then
     echo "尚未完成 onboard，跳过数据库迁移。"
@@ -566,7 +576,8 @@ cmd_status() {
   echo "PAPERCLIP_HOST=${PAPERCLIP_HOST}"
   echo "PAPERCLIP_DATABASE_URL=${PAPERCLIP_DATABASE_URL}"
   echo "PAPERCLIP_AUTH_DISABLE_SIGN_UP=${PAPERCLIP_AUTH_DISABLE_SIGN_UP}"
-  echo "PAPERCLIP_NPM_PACKAGE=${PAPERCLIP_NPM_PACKAGE}"
+  echo "PAPERCLIP_NPM_PACKAGE_CANARY=${PAPERCLIP_NPM_PACKAGE_CANARY}"
+  echo "PAPERCLIP_NPM_PACKAGE_PROD=${PAPERCLIP_NPM_PACKAGE_PROD}"
   echo "PAPERCLIP_NPM_REGISTRY=${PAPERCLIP_NPM_REGISTRY}"
   echo "LOG_FILE=${LOG_FILE}"
   local server_pid
@@ -612,8 +623,9 @@ dispatch() {
   local cmd="${1:-}"
   shift || true
   case "$cmd" in
-    install) cmd_install ;;
-    update) cmd_update ;;
+    install-canary) cmd_install_canary ;;
+    install-prod) cmd_install_prod ;;
+    update) cmd_update "$@" ;;
     onboard) cmd_onboard "$@" ;;
     plugin) cmd_plugin "$@" ;;
     start) cmd_start ;;
@@ -634,18 +646,18 @@ dispatch() {
 interactive_main() {
   declare -F fundeploy_ui_apply_theme >/dev/null 2>&1 && fundeploy_ui_apply_theme
   if declare -F fundeploy_ui_banner >/dev/null 2>&1; then
-    fundeploy_ui_banner "Paperclip 本地服务（pnpm 全局安装）" "PAPERCLIP_HOME=${PAPERCLIP_HOME}" "PAPERCLIP_NPM_PACKAGE=${PAPERCLIP_NPM_PACKAGE}"
+    fundeploy_ui_banner "Paperclip 本地服务（pnpm 全局安装）" "PAPERCLIP_HOME=${PAPERCLIP_HOME}" "canary=${PAPERCLIP_NPM_PACKAGE_CANARY} prod=${PAPERCLIP_NPM_PACKAGE_PROD}"
   else
     gum style --bold --foreground 212 "Paperclip 本地服务（pnpm 全局安装）"
     gum style "PAPERCLIP_HOME=${PAPERCLIP_HOME}"
-    gum style "PAPERCLIP_NPM_PACKAGE=${PAPERCLIP_NPM_PACKAGE}"
+    gum style "canary=${PAPERCLIP_NPM_PACKAGE_CANARY} prod=${PAPERCLIP_NPM_PACKAGE_PROD}"
   fi
   echo ""
   set +e
   while true; do
     local pick
     pick="$(fundeploy_ui_choose "fundeploy / service / paperclip / 选择动作" \
-      "install" "update" "onboard" "plugin install" "start" "run" "stop" "restart" "status" "uninstall" "help" "quit")" || break
+      "install-canary" "install-prod" "update" "onboard" "plugin install" "start" "run" "stop" "restart" "status" "uninstall" "help" "quit")" || break
     [[ -z "$pick" ]] && break
     case "$pick" in
       quit) break ;;
