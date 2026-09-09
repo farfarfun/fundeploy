@@ -121,17 +121,38 @@ export -f curl
 "${FUNDEPLOY_ROOT}/bin/fundeploy" service code-server install --version 4.112.0 | grep -q "official-code-server-installer-ran:--version 4.112.0" || exit 1
 "${FUNDEPLOY_ROOT}/bin/fundeploy" service install add code-server | grep -q "official-code-server-installer-ran:" || exit 1
 unset -f curl
-node() { [[ "${1:-}" == "-p" ]] && echo 20; }
-pnpm() {
-  [[ "$*" == "config get registry" ]] && { echo "https://registry.npmjs.org/"; return; }
-  [[ "$*" == "add -g --registry https://registry.npmjs.org paperclipai@latest" ]]
-}
-paperclipai() { [[ "${1:-}" == "--version" ]]; }
-export -f node pnpm paperclipai
-bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/paperclip/setup.sh" install >/dev/null || exit 1
-unset -f node pnpm paperclipai
+PAPERCLIP_NPX_MARKER="${TMP}/paperclip-npx"
+PAPERCLIP_CLI_MARKER="${TMP}/paperclip-cli"
+node() { return 0; }
+npx() { printf '%s\n' "$*" >"${PAPERCLIP_NPX_MARKER}"; }
+paperclipai() { printf '%s\n' "$*" >>"${PAPERCLIP_CLI_MARKER}"; }
+export PAPERCLIP_NPX_MARKER PAPERCLIP_CLI_MARKER
+export -f node npx paperclipai
+PAPERCLIP_NODE_MIN_VERSION=0 bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/paperclip/setup.sh" install-canary >/dev/null || exit 1
+[[ "$(<"${PAPERCLIP_NPX_MARKER}")" == "--yes --registry https://registry.npmjs.org paperclipai@latest install --yes --canary" ]] || exit 1
+grep -Fxq -- '--version' "${PAPERCLIP_CLI_MARKER}" || exit 1
+
+PAPERCLIP_TEST_HOME="${TMP}/paperclip-home"
+: >"${PAPERCLIP_CLI_MARKER}"
+for command in start stop; do
+  PAPERCLIP_HOME="${PAPERCLIP_TEST_HOME}" PAPERCLIP_NODE_MIN_VERSION=0 \
+    bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/paperclip/setup.sh" "$command" >/dev/null || exit 1
+done
+PAPERCLIP_HOME="${PAPERCLIP_TEST_HOME}" PAPERCLIP_NODE_MIN_VERSION=0 \
+  bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/paperclip/setup.sh" restart --wait >/dev/null || exit 1
+PAPERCLIP_HOME="${PAPERCLIP_TEST_HOME}" PAPERCLIP_NODE_MIN_VERSION=0 \
+  bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/paperclip/setup.sh" status --json >/dev/null || exit 1
+PAPERCLIP_HOME="${PAPERCLIP_TEST_HOME}" PAPERCLIP_NODE_MIN_VERSION=0 \
+  bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/paperclip/setup.sh" logs -f >/dev/null || exit 1
+PAPERCLIP_HOME="${PAPERCLIP_TEST_HOME}" PAPERCLIP_NODE_MIN_VERSION=0 \
+  bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/paperclip/setup.sh" update prod >/dev/null || exit 1
+PAPERCLIP_HOME="${PAPERCLIP_TEST_HOME}" PAPERCLIP_NODE_MIN_VERSION=0 PAPERCLIP_UNINSTALL_YES=1 \
+  bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/paperclip/setup.sh" uninstall >/dev/null || exit 1
+for expected in "service start" "service stop" "service restart --wait" "service status --json" "service logs -f" "update --latest" "service uninstall" "uninstall"; do
+  grep -Fxq -- "$expected" "${PAPERCLIP_CLI_MARKER}" || exit 1
+done
+
 PAPERCLIP_PLUGIN_MARKER="${TMP}/paperclip-plugin-installed"
-curl() { return 99; }
 gum() {
   local line pick=""
   while IFS= read -r line; do
@@ -141,97 +162,11 @@ gum() {
 }
 paperclipai() { printf '%s\n' "$*" >"${PAPERCLIP_PLUGIN_MARKER}"; }
 export PAPERCLIP_PLUGIN_MARKER
-export -f curl gum paperclipai
+export -f gum paperclipai
 bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/paperclip/setup.sh" plugin list | grep -q '^paperclip-aperture (@tomismeta/paperclip-aperture)$' || exit 1
-bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/paperclip/setup.sh" plugin install >/dev/null || exit 1
+PAPERCLIP_NODE_MIN_VERSION=0 bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/paperclip/setup.sh" plugin install >/dev/null || exit 1
 [[ "$(<"${PAPERCLIP_PLUGIN_MARKER}")" == "plugin install @tomismeta/paperclip-aperture" ]] || exit 1
-unset -f curl gum paperclipai
-node() { [[ "${1:-}" == "-p" ]] && echo 20; }
-pnpm() {
-  case "$*" in
-    "config get registry") echo "https://packages.example.com/npm/" ;;
-    "view paperclipai@latest version --registry https://registry.npmjs.org") echo "2026.810.0" ;;
-    "view paperclipai@latest version --registry https://packages.example.com/npm/") echo "2026.811.0" ;;
-    "view paperclipai@>2026.810.0 <=2026.811.0 version --registry https://packages.example.com/npm/") echo "2026.811.0" ;;
-    "add -g --registry https://packages.example.com/npm/ paperclipai@2026.811.0") ;;
-    *) return 1 ;;
-  esac
-}
-paperclipai() { [[ "${1:-}" == "--version" ]]; }
-export -f node pnpm paperclipai
-bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/paperclip/setup.sh" install >/dev/null || exit 1
-unset -f node pnpm paperclipai
-PAPERCLIP_MIGRATION_MARKER="${TMP}/paperclip-migrated"
-PAPERCLIP_MANAGED_ENTRYPOINT="${TMP}/paperclip-home/cli/current/node_modules/paperclipai/dist/index.js"
-PAPERCLIP_PNPM_BIN="${TMP}/paperclip-pnpm-bin"
-mkdir -p "${PAPERCLIP_PNPM_BIN}" "${TMP}/paperclip-home/instances/default" "$(dirname "${PAPERCLIP_MANAGED_ENTRYPOINT}")"
-printf '{}\n' >"${TMP}/paperclip-home/instances/default/config.json"
-printf '%s\n' 'paperclipai managed install store v1' >"${TMP}/paperclip-home/cli/.managed-install"
-mkdir -p "${HOME}/.local/bin"
-ln -s "${PAPERCLIP_MANAGED_ENTRYPOINT}" "${HOME}/.local/bin/paperclipai"
-{
-  printf '%s\n' '#!/usr/bin/env bash'
-  printf '%s\n' 'case "${1:-}" in'
-  printf '%s\n' '  uninstall) rm -rf "${PAPERCLIP_HOME}/cli" ;;'
-  printf '%s\n' '  *) exit 1 ;;'
-  printf '%s\n' 'esac'
-} >"${PAPERCLIP_MANAGED_ENTRYPOINT}"
-chmod +x "${PAPERCLIP_MANAGED_ENTRYPOINT}"
-{
-  printf '%s\n' '#!/usr/bin/env bash'
-  printf '%s\n' 'case "${1:-}" in'
-  printf '%s\n' '  --version) echo test ;;'
-  printf '%s\n' '  run) printf "%s\n" "${PAPERCLIP_MIGRATION_AUTO_APPLY:-}" >"${PAPERCLIP_MIGRATION_MARKER}"; trap "exit 0" TERM INT; while :; do sleep 1; done ;;'
-  printf '%s\n' '  *) exit 1 ;;'
-  printf '%s\n' 'esac'
-} >"${PAPERCLIP_PNPM_BIN}/paperclipai"
-chmod +x "${PAPERCLIP_PNPM_BIN}/paperclipai"
-node() {
-  [[ "${1:-}" == "-p" ]] && { echo 20; return; }
-  if [[ "${1:-}" == "-e" ]]; then
-    local last
-    for last in "$@"; do :; done
-    printf 'file://%s' "$last"
-    return
-  fi
-  [[ "${1:-}" == "${PAPERCLIP_MANAGED_ENTRYPOINT}" ]] && { shift; bash "${PAPERCLIP_MANAGED_ENTRYPOINT}" "$@"; }
-}
-npm() {
-  [[ "$*" == "uninstall -g paperclipai" ]] || return 1
-  rm -f "${HOME}/.local/bin/paperclipai"
-}
-pnpm() {
-  [[ "$*" == "config get registry" ]] && { echo "https://registry.npmjs.org/"; return; }
-  [[ "$*" == "add -g --registry https://registry.npmjs.org paperclipai@latest" ]]
-}
-curl() { [[ "$*" == *"/api/health"* ]] && printf 200; }
-export -f node npm pnpm curl
-PATH="${PAPERCLIP_PNPM_BIN}:${PATH}" \
-  PAPERCLIP_MANAGED_ENTRYPOINT="${PAPERCLIP_MANAGED_ENTRYPOINT}" \
-  PAPERCLIP_MIGRATION_MARKER="${PAPERCLIP_MIGRATION_MARKER}" \
-  PAPERCLIP_SERVICE_HOME="${TMP}/paperclip-service" \
-  PAPERCLIP_HOME="${TMP}/paperclip-home" \
-  PAPERCLIP_PORT=18884 \
-  bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/paperclip/setup.sh" update >/dev/null || exit 1
-[[ "$(<"${PAPERCLIP_MIGRATION_MARKER}")" == true ]] || exit 1
-[[ ! -e "${TMP}/paperclip-home/cli" ]] || exit 1
-[[ ! -e "${HOME}/.local/bin/paperclipai" ]] || exit 1
-[[ ! -e "${TMP}/paperclip-service/run/paperclip.pid" ]] || exit 1
-unset -f node npm pnpm curl
-PAPERCLIP_LOADER_FIXTURE="${TMP}/paperclip-loader-fixture"
-mkdir -p "${PAPERCLIP_LOADER_FIXTURE}/node_modules/@paperclipai/server/dist"
-printf '%s\n' '{"type":"module"}' >"${PAPERCLIP_LOADER_FIXTURE}/node_modules/@paperclipai/server/package.json"
-printf '%s\n' \
-  'export function getHostVersion(opts = {}) {' \
-  '  return ({ hostVersion: opts.hostVersion ?? "0.0.0" }).hostVersion;' \
-  '}' >"${PAPERCLIP_LOADER_FIXTURE}/node_modules/@paperclipai/server/dist/app.js"
-printf '%s\n' \
-  'import { getHostVersion } from "./node_modules/@paperclipai/server/dist/app.js";' \
-  'if (getHostVersion() !== process.env.PAPERCLIP_BUILD_VERSION) process.exit(1);' \
-  >"${PAPERCLIP_LOADER_FIXTURE}/check.mjs"
-PAPERCLIP_BUILD_VERSION=2026.811.0-nightly.1 \
-  node --import="${TMP}/paperclip-service/paperclip-host-version-register.mjs" \
-  "${PAPERCLIP_LOADER_FIXTURE}/check.mjs" || exit 1
+unset -f node npx gum paperclipai
 bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/fundeploy-services.sh" || exit 1
 bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/port-kill/setup.sh" || exit 1
 bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/brew/setup.sh" || exit 1
@@ -322,8 +257,11 @@ out="$(NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" tool list)"
 grep -q "github-net" <<<"${out}" || exit 1
 grep -q "brew" <<<"${out}" || exit 1
 NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" dev --help >/dev/null || exit 1
+mkdir -p "${TMP}/status-home/.paperclip/instances/default"
+printf '%s\n' '{"server":{"host":"127.0.0.2","port":43100}}' >"${TMP}/status-home/.paperclip/instances/default/config.json"
 out="$(HOME="${TMP}/status-home" PATH=/usr/bin:/bin NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" service status --no-http)"
 grep -q '^服务,状态,PID,端口/访问,HTTP$' <<<"${out}" || exit 1
+grep -q '127.0.0.2:43100' <<<"${out}" || exit 1
 NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" dev --help >/dev/null || exit 1
 NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" dev uv --help >/dev/null || exit 1
 NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" ai --help >/dev/null || exit 1

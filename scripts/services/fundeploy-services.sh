@@ -224,10 +224,22 @@ cmd_status() {
   pid_cel_b="$(read_pid_file "${CELERY_RUN}/beat.pid")"
   pid_cel_f="$(read_pid_file "${CELERY_RUN}/flower.pid")"
 
-  PAPERCLIP_SERVICE_HOME="${PAPERCLIP_SERVICE_HOME:-${HOME}/opt/paperclip}"
-  PAPERCLIP_PORT="${PAPERCLIP_PORT:-8804}"
-  PAPERCLIP_HOST="${PAPERCLIP_HOST:-0.0.0.0}"
-  pid_pc="$(read_pid_file "${PAPERCLIP_SERVICE_HOME}/run/paperclip.pid")"
+  PAPERCLIP_HOME="${PAPERCLIP_HOME:-${HOME}/.paperclip}"
+  PAPERCLIP_INSTANCE_ID="${PAPERCLIP_INSTANCE_ID:-default}"
+  local paperclip_config paperclip_config_values="" paperclip_config_host="" paperclip_config_port=""
+  paperclip_config="${PAPERCLIP_HOME}/instances/${PAPERCLIP_INSTANCE_ID}/config.json"
+  if [[ -f "$paperclip_config" ]] && command -v node >/dev/null 2>&1; then
+    paperclip_config_values="$(node -e '
+      try {
+        const config = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+        process.stdout.write(`${config.server?.host ?? ""}\t${config.server?.port ?? ""}`);
+      } catch {}
+    ' "$paperclip_config" 2>/dev/null || true)"
+    IFS=$'\t' read -r paperclip_config_host paperclip_config_port <<<"$paperclip_config_values"
+  fi
+  PAPERCLIP_PORT="${PAPERCLIP_PORT:-${paperclip_config_port:-3100}}"
+  PAPERCLIP_HOST="${PAPERCLIP_HOST:-${paperclip_config_host:-127.0.0.1}}"
+  pid_pc=""
   pc_listener_pid="$(listener_pid_for_port "${PAPERCLIP_PORT}")"
 
   CODE_SERVER_SERVICE_HOME="${CODE_SERVER_SERVICE_HOME:-${HOME}/opt/code-server}"
@@ -327,7 +339,7 @@ cmd_status() {
   echo "说明:"
   echo "  • celery 状态列 wbf 为 worker / beat / flower：√ 运行中，× 未运行；与 Airflow 同机时请区分 FLOWER_PORT。"
   echo "  • funflix / funflix-web 各自管理自己的 PID/日志，此表仅按端口探测判断存活；一起装/起/停请用 fundeploy service funflix-web。"
-  echo "  • 安装路径: airflow ${AIRFLOW_HOME} | celery ${CELERY_HOME} | paperclip ${PAPERCLIP_SERVICE_HOME} | code-server ${CODE_SERVER_SERVICE_HOME} | new-api ${NEW_API_SERVICE_HOME} | sub2api ${SUB2API_SERVICE_HOME}"
+  echo "  • 安装路径: airflow ${AIRFLOW_HOME} | celery ${CELERY_HOME} | paperclip ${PAPERCLIP_HOME} | code-server ${CODE_SERVER_SERVICE_HOME} | new-api ${NEW_API_SERVICE_HOME} | sub2api ${SUB2API_SERVICE_HOME}"
   echo "  • 详情: fundeploy service <服务> status"
   echo ""
   echo "工具（无统一守护进程）: fundeploy dev / fundeploy tool"
