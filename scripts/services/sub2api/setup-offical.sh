@@ -4,16 +4,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -f "${SCRIPT_DIR}/../lib/fundeploy-common.sh" ]]; then
-  # shellcheck source=../lib/fundeploy-common.sh
-  source "${SCRIPT_DIR}/../lib/fundeploy-common.sh"
-elif [[ -f "${SCRIPT_DIR}/../../lib/fundeploy-common.sh" ]]; then
-  # shellcheck source=../../lib/fundeploy-common.sh
-  source "${SCRIPT_DIR}/../../lib/fundeploy-common.sh"
-else
-  echo "错误: 找不到 lib/fundeploy-common.sh" >&2
-  exit 1
-fi
+# shellcheck source=../../lib/fundeploy-common.sh
+source "${SCRIPT_DIR}/../../lib/fundeploy-common.sh"
 
 # 上游安装脚本以 root 执行，因此必须锁定到不可变的 commit SHA，而不是可变的
 # main 分支。raw.githubusercontent.com/<repo>/<sha>/<path> 是内容寻址的：给定

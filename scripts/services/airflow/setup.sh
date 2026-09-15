@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 本机 Apache Airflow 3.x：安装、启停、DAG 脚手架与常用 CLI 封装（仅 3.x，不兼容 2.x）。
-# 与脚本所在仓库/业务无关，可置于任意目录单独使用。
+# 依赖同一 fundeploy 脚本树中的共享库。
 # 约定与 .cursor/agents/software-ops.md 对齐：默认 AIRFLOW_HOME=~/opt/airflow，并创建 {bin,etc,data,log}；
 # 依赖 gum：缺省时按 README 同款「curl -LsSf <…/scripts/tools/utils/setup.sh> | bash」安装（不经本地路径调用其它脚本）。
 # 默认将 AIRFLOW_HOME 固定为 ~/opt/airflow（不再支持改到其它目录）。
@@ -65,16 +65,8 @@ FAB_AUTH_MANAGER_CLASS="airflow.providers.fab.auth_manager.fab_auth_manager.FabA
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
 
-if [[ -f "${SCRIPT_DIR}/../lib/fundeploy-common.sh" ]]; then
-  # shellcheck source=../lib/fundeploy-common.sh
-  source "${SCRIPT_DIR}/../lib/fundeploy-common.sh"
-elif [[ -f "${SCRIPT_DIR}/../../lib/fundeploy-common.sh" ]]; then
-  # shellcheck source=../../lib/fundeploy-common.sh
-  source "${SCRIPT_DIR}/../../lib/fundeploy-common.sh"
-else
-  echo "错误: 找不到 lib/fundeploy-common.sh（已检查 ${SCRIPT_DIR}/../lib 与 ${SCRIPT_DIR}/../../lib）" >&2
-  exit 1
-fi
+# shellcheck source=../../lib/fundeploy-common.sh
+source "${SCRIPT_DIR}/../../lib/fundeploy-common.sh"
 
 # 复用 lib/fundeploy-ui.sh 的统一输出层：原实现直接调 `gum style`，
 # 缺 gum 时整条日志语句返回 127，在 set -e 下把脚本打断在无关位置。
@@ -320,21 +312,8 @@ cmd_update() {
   say_info "更新完成。"
 }
 
-process_alive() {
-  local pid="$1"
-  kill -0 "$pid" 2>/dev/null
-}
-
-listener_pid_for_port() {
-  _fundeploy_listener_pid_for_port "$1"
-}
-
 read_pid() {
-  if [[ ! -f "$PID_FILE" ]]; then
-    echo ""
-    return
-  fi
-  tr -d '[:space:]' <"$PID_FILE" || true
+  _fundeploy_read_pid_file "$PID_FILE"
 }
 
 cmd_start() {
@@ -343,12 +322,12 @@ cmd_start() {
   export AIRFLOW__WEBSERVER__WEB_SERVER_PORT="${AIRFLOW__WEBSERVER__WEB_SERVER_PORT:-$DEFAULT_AIRFLOW_PORT}"
   local existing
   existing="$(read_pid)"
-  if [[ -n "$existing" ]] && process_alive "$existing"; then
+  if [[ -n "$existing" ]] && _fundeploy_process_alive "$existing"; then
     echo "standalone 已在运行（PID ${existing}）。如需重启请执行: $0 restart" >&2
     exit 1
   fi
   local listener_pid
-  listener_pid="$(listener_pid_for_port "${AIRFLOW__WEBSERVER__WEB_SERVER_PORT}")"
+  listener_pid="$(_fundeploy_listener_pid_for_port "${AIRFLOW__WEBSERVER__WEB_SERVER_PORT}")"
   if [[ -n "$listener_pid" ]]; then
     die "端口 ${AIRFLOW__WEBSERVER__WEB_SERVER_PORT} 已被 PID ${listener_pid} 占用，请先执行 $0 stop 或手动清理。"
   fi
@@ -379,7 +358,7 @@ cmd_run() {
   ensure_dirs
   local existing
   existing="$(read_pid)"
-  if [[ -n "$existing" ]] && process_alive "$existing"; then
+  if [[ -n "$existing" ]] && _fundeploy_process_alive "$existing"; then
     echo "standalone 已在后台运行（PID ${existing}）。请先 $0 stop，再使用 run。" >&2
     exit 1
   fi
@@ -406,11 +385,11 @@ _stop_standalone_impl() {
   local pid
   pid="$(read_pid)"
   local listener_pid
-  listener_pid="$(listener_pid_for_port "${AIRFLOW__WEBSERVER__WEB_SERVER_PORT}")"
+  listener_pid="$(_fundeploy_listener_pid_for_port "${AIRFLOW__WEBSERVER__WEB_SERVER_PORT}")"
   if [[ -z "$pid" ]]; then
     echo "未找到 PID 文件（${PID_FILE}），视为未启动。" >&2
     rm -f "$PID_FILE"
-  elif ! process_alive "$pid"; then
+  elif ! _fundeploy_process_alive "$pid"; then
     echo "PID ${pid} 不存在，清理 PID 文件。"
     rm -f "$PID_FILE"
   fi
@@ -420,28 +399,9 @@ _stop_standalone_impl() {
       return 0
     fi
   fi
-  if [[ -n "$pid" ]] && process_alive "$pid"; then
-    local pgid
-    pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ' || true)"
-    say_info "==> 停止 standalone（PID ${pid}, PGID ${pgid:-n/a}）..."
-    if [[ -n "$pgid" ]] && [[ "$pgid" =~ ^[0-9]+$ ]]; then
-      kill -TERM "-${pgid}" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
-    else
-      kill -TERM "$pid" 2>/dev/null || true
-    fi
-    local waited=0
-    while process_alive "$pid" && (( waited < 30 )); do
-      sleep 1
-      waited=$((waited + 1))
-    done
-    if process_alive "$pid"; then
-      echo "优雅停止超时，发送 KILL..."
-      if [[ -n "$pgid" ]] && [[ "$pgid" =~ ^[0-9]+$ ]]; then
-        kill -KILL "-${pgid}" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
-      else
-        kill -KILL "$pid" 2>/dev/null || true
-      fi
-    fi
+  if [[ -n "$pid" ]] && _fundeploy_process_alive "$pid"; then
+    say_info "==> 停止 standalone（PID ${pid}）..."
+    _fundeploy_stop_pid "$pid" 30 1
   fi
   if [[ -n "$listener_pid" ]] && { [[ -z "$pid" ]] || [[ "$listener_pid" != "$pid" ]]; }; then
     kill -TERM "$listener_pid" 2>/dev/null || true
@@ -519,7 +479,7 @@ cmd_status() {
   local pid
   pid="$(read_pid)"
   local listener_pid
-  listener_pid="$(listener_pid_for_port "${AIRFLOW__WEBSERVER__WEB_SERVER_PORT}")"
+  listener_pid="$(_fundeploy_listener_pid_for_port "${AIRFLOW__WEBSERVER__WEB_SERVER_PORT}")"
   if [[ -z "$pid" ]]; then
     if [[ -n "$listener_pid" ]]; then
       echo "PID 文件: 无（监听进程 PID ${listener_pid}）"
@@ -527,7 +487,7 @@ cmd_status() {
       echo "PID 文件: 无"
     fi
   else
-    if process_alive "$pid"; then
+    if _fundeploy_process_alive "$pid"; then
       if [[ -n "$listener_pid" && "$listener_pid" != "$pid" ]]; then
         echo "PID 文件: ${pid}（运行中；监听进程 PID ${listener_pid}）"
       else

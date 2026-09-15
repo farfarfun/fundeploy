@@ -38,18 +38,38 @@ _fundeploy_listener_pid_for_port() {
   echo ""
 }
 
+_fundeploy_read_pid_file() {
+  [[ -f "$1" ]] && tr -d '[:space:]' <"$1" || true
+}
+
+_fundeploy_process_alive() {
+  [[ -n "${1:-}" ]] && kill -0 "$1" 2>/dev/null
+}
+
+# 停止单个 PID；第三个参数为 1 时连同其进程组一起停止。
+_fundeploy_stop_pid() {
+  local pid="$1" timeout="${2:-20}" process_group="${3:-0}" target="$1" waited=0 pgid
+  _fundeploy_process_alive "$pid" || return 0
+  if [[ "$process_group" == "1" ]]; then
+    pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ' || true)"
+    # 只有进程组 leader 才能安全整组停止；普通 nohup 子进程会继承调用者的组。
+    [[ "$pgid" =~ ^[0-9]+$ && "$pgid" == "$pid" ]] && target="-${pgid}"
+  fi
+  kill -TERM "$target" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+  while _fundeploy_process_alive "$pid" && (( waited < timeout )); do
+    sleep 1
+    waited=$((waited + 1))
+  done
+  if _fundeploy_process_alive "$pid"; then
+    kill -KILL "$target" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+  fi
+}
+
 # 解析内部工具路由脚本；找不到返回非 0。
 _fundeploy_resolve_fundeploy_tools() {
-  local _cand
-  for _cand in \
-    "${_FUNDEPLOY_COMMON_LIB_DIR}/../../tools/fundeploy-tools.sh" \
-    "${_FUNDEPLOY_COMMON_LIB_DIR}/../tools/fundeploy-tools.sh"; do
-    if [[ -f "${_cand}" || -x "${_cand}" ]]; then
-      printf '%s\n' "${_cand}"
-      return 0
-    fi
-  done
-  return 1
+  local _entry="${_FUNDEPLOY_COMMON_LIB_DIR}/../tools/fundeploy-tools.sh"
+  [[ -f "${_entry}" ]] || return 1
+  printf '%s\n' "${_entry}"
 }
 
 # 确保 gum 可用（WAR-402）：

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Celery 安装、启停、状态管理工具。
-# 与脚本所在仓库/业务无关，可置于任意目录单独使用。
+# 依赖同一 fundeploy 脚本树中的共享库。
 # 默认安装路径 ~/opt/celery/（bin、etc、data、log 子目录）。
 #
 # 用法：
@@ -33,16 +33,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -f "${SCRIPT_DIR}/../lib/fundeploy-common.sh" ]]; then
-  # shellcheck source=../lib/fundeploy-common.sh
-  source "${SCRIPT_DIR}/../lib/fundeploy-common.sh"
-elif [[ -f "${SCRIPT_DIR}/../../lib/fundeploy-common.sh" ]]; then
-  # shellcheck source=../../lib/fundeploy-common.sh
-  source "${SCRIPT_DIR}/../../lib/fundeploy-common.sh"
-else
-  echo "错误: 找不到 lib/fundeploy-common.sh（已检查 ${SCRIPT_DIR}/../lib 与 ${SCRIPT_DIR}/../../lib）" >&2
-  exit 1
-fi
+# shellcheck source=../../lib/fundeploy-common.sh
+source "${SCRIPT_DIR}/../../lib/fundeploy-common.sh"
 
 usage() {
   cat <<'USAGE'
@@ -167,17 +159,11 @@ PY
 }
 
 process_alive() {
-  local pid="$1"
-  kill -0 "$pid" 2>/dev/null
+  _fundeploy_process_alive "$1"
 }
 
 read_pid() {
-  local f="$1"
-  if [[ ! -f "$f" ]]; then
-    echo ""
-    return
-  fi
-  tr -d '[:space:]' <"$f" || true
+  _fundeploy_read_pid_file "$1"
 }
 
 status_show_one() {
@@ -207,27 +193,8 @@ stop_by_pid_file() {
     rm -f "$pid_file"
     return 0
   fi
-  local pgid
-  pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ' || true)"
-  echo "  -> 停止 ${name}（PID ${pid}, PGID ${pgid:-n/a}）..."
-  if [[ -n "$pgid" ]] && [[ "$pgid" =~ ^[0-9]+$ ]]; then
-    kill -TERM "-${pgid}" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
-  else
-    kill -TERM "$pid" 2>/dev/null || true
-  fi
-  local waited=0
-  while process_alive "$pid" && (( waited < 30 )); do
-    sleep 1
-    waited=$((waited + 1))
-  done
-  if process_alive "$pid"; then
-    echo "  优雅停止超时，发送 KILL..."
-    if [[ -n "$pgid" ]] && [[ "$pgid" =~ ^[0-9]+$ ]]; then
-      kill -KILL "-${pgid}" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
-    else
-      kill -KILL "$pid" 2>/dev/null || true
-    fi
-  fi
+  echo "  -> 停止 ${name}（PID ${pid}）..."
+  _fundeploy_stop_pid "$pid" 30 1
   rm -f "$pid_file"
 }
 

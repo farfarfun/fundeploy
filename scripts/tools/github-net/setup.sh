@@ -18,16 +18,8 @@
 set -euo pipefail
 
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -f "${_SCRIPT_DIR}/../lib/fundeploy-common.sh" ]]; then
-  # shellcheck source=../lib/fundeploy-common.sh
-  source "${_SCRIPT_DIR}/../lib/fundeploy-common.sh"
-elif [[ -f "${_SCRIPT_DIR}/../../lib/fundeploy-common.sh" ]]; then
-  # shellcheck source=../../lib/fundeploy-common.sh
-  source "${_SCRIPT_DIR}/../../lib/fundeploy-common.sh"
-else
-  echo "错误: 找不到 lib/fundeploy-common.sh（已检查 ${_SCRIPT_DIR}/../lib 与 ${_SCRIPT_DIR}/../../lib）" >&2
-  exit 1
-fi
+# shellcheck source=../../lib/fundeploy-common.sh
+source "${_SCRIPT_DIR}/../../lib/fundeploy-common.sh"
 
 SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
 SSH_CONFIG_PATH="${HOME}/.ssh/config"

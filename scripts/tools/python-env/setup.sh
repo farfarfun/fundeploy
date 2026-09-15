@@ -8,16 +8,8 @@
 set -euo pipefail
 
 _PSDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -f "${_PSDIR}/../lib/fundeploy-common.sh" ]]; then
-  _FUNDEPLOY_LIB="$(cd "${_PSDIR}/../lib" && pwd)"
-elif [[ -f "${_PSDIR}/../../lib/fundeploy-common.sh" ]]; then
-  _FUNDEPLOY_LIB="$(cd "${_PSDIR}/../../lib" && pwd)"
-else
-  echo "错误: 找不到 lib/fundeploy-common.sh（已检查 ${_PSDIR}/../lib 与 ${_PSDIR}/../../lib）" >&2
-  exit 1
-fi
-# shellcheck source=../lib/fundeploy-common.sh
-source "${_FUNDEPLOY_LIB}/fundeploy-common.sh"
+# shellcheck source=../../lib/fundeploy-common.sh
+source "${_PSDIR}/../../lib/fundeploy-common.sh"
 
 # 颜色输出
 RED='\033[0;31m'

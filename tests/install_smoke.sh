@@ -64,22 +64,23 @@ done
 bash "${ROOT}/install.sh" update
 [[ -x "${FUNDEPLOY_ROOT}/bin/fundeploy" ]] || { echo "missing: bin/fundeploy" >&2; exit 1; }
 bash -n "${FUNDEPLOY_ROOT}/bin/fundeploy" || exit 1
-[[ -x "${FUNDEPLOY_ROOT}/libexec/fundeploy/skills-sync/setup.sh" ]] || { echo "missing: skills-sync/setup.sh" >&2; exit 1; }
+[[ -x "${FUNDEPLOY_ROOT}/libexec/fundeploy/tools/skills-sync/setup.sh" ]] || { echo "missing: skills-sync/setup.sh" >&2; exit 1; }
 NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" tool skills-sync --help >/dev/null || exit 1
 for f in "${FUNDEPLOY_ROOT}/bin/"*; do
   [[ "$(basename "$f")" == "fundeploy" ]] || { echo "unexpected command entry: bin/$(basename "$f")" >&2; exit 1; }
 done
-bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/airflow/setup.sh" || exit 1
-bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/code-server/setup.sh" || exit 1
-bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/code-server/setup-manual.sh" || exit 1
-bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/code-server/setup-offical.sh" || exit 1
-bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/new-api/setup.sh" || exit 1
-bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/open-pencil/setup.sh" || exit 1
-bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/paperclip/setup.sh" || exit 1
-bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/sub2api/setup.sh" || exit 1
-bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/sub2api/setup-manual.sh" || exit 1
-bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/sub2api/setup-offical.sh" || exit 1
-bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/funflix-web/setup.sh" || exit 1
+bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/airflow/setup.sh" || exit 1
+bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/code-server/setup.sh" || exit 1
+bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/code-server/setup-manual.sh" || exit 1
+bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/code-server/setup-offical.sh" || exit 1
+bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/new-api/setup.sh" || exit 1
+bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/open-pencil/setup.sh" || exit 1
+bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/paperclip/setup.sh" || exit 1
+bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/sub2api/setup.sh" || exit 1
+bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/sub2api/setup-manual.sh" || exit 1
+bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/sub2api/setup-offical.sh" || exit 1
+bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/funflix-web/setup.sh" || exit 1
+bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/funread-web/setup.sh" || exit 1
 curl() {
   [[ "$*" == "--proto =https --proto-redir =https --tlsv1.2 -LsSf https://example.invalid/install.sh" ]] || return 64
   printf '%s\n' '[[ "$*" == "update --source github" ]]'
@@ -123,32 +124,73 @@ export -f curl
 unset -f curl
 PAPERCLIP_NPX_MARKER="${TMP}/paperclip-npx"
 PAPERCLIP_CLI_MARKER="${TMP}/paperclip-cli"
-node() { return 0; }
 npx() { printf '%s\n' "$*" >"${PAPERCLIP_NPX_MARKER}"; }
-paperclipai() { printf '%s\n' "$*" >>"${PAPERCLIP_CLI_MARKER}"; }
-export PAPERCLIP_NPX_MARKER PAPERCLIP_CLI_MARKER
-export -f node npx paperclipai
-PAPERCLIP_NODE_MIN_VERSION=0 bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/paperclip/setup.sh" install-canary >/dev/null || exit 1
+paperclipai() {
+  printf '%s\n' "$*" >>"${PAPERCLIP_CLI_MARKER}"
+  printf '%s|%s\n' "${DATABASE_URL-unset}" "$*" >>"${PAPERCLIP_ENV_MARKER}"
+}
+PAPERCLIP_ENV_MARKER="${TMP}/paperclip-env"
+export PAPERCLIP_NPX_MARKER PAPERCLIP_CLI_MARKER PAPERCLIP_ENV_MARKER
+export -f npx paperclipai
+PAPERCLIP_NODE_MIN_VERSION=0 bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/paperclip/setup.sh" install-canary >/dev/null || exit 1
 [[ "$(<"${PAPERCLIP_NPX_MARKER}")" == "--yes --registry https://registry.npmjs.org paperclipai@latest install --yes --canary" ]] || exit 1
 grep -Fxq -- '--version' "${PAPERCLIP_CLI_MARKER}" || exit 1
 
 PAPERCLIP_TEST_HOME="${TMP}/paperclip-home"
+PAPERCLIP_TEST_DB="${PAPERCLIP_TEST_HOME}/instances/default/db"
+mkdir -p "${PAPERCLIP_TEST_DB}"
+printf '%s\n' "{\"database\":{\"mode\":\"embedded-postgres\",\"embeddedPostgresDataDir\":\"${PAPERCLIP_TEST_DB}\",\"embeddedPostgresPort\":5432},\"server\":{\"port\":8804}}" >"${PAPERCLIP_TEST_HOME}/instances/default/config.json"
 : >"${PAPERCLIP_CLI_MARKER}"
 for command in start stop; do
-  PAPERCLIP_HOME="${PAPERCLIP_TEST_HOME}" PAPERCLIP_NODE_MIN_VERSION=0 \
-    bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/paperclip/setup.sh" "$command" >/dev/null || exit 1
+  DATABASE_URL=must-not-leak PAPERCLIP_HOME="${PAPERCLIP_TEST_HOME}" PAPERCLIP_NODE_MIN_VERSION=0 \
+    bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/paperclip/setup.sh" "$command" >/dev/null || exit 1
 done
 PAPERCLIP_HOME="${PAPERCLIP_TEST_HOME}" PAPERCLIP_NODE_MIN_VERSION=0 \
-  bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/paperclip/setup.sh" restart --wait >/dev/null || exit 1
+  bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/paperclip/setup.sh" restart --wait >/dev/null || exit 1
 PAPERCLIP_HOME="${PAPERCLIP_TEST_HOME}" PAPERCLIP_NODE_MIN_VERSION=0 \
-  bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/paperclip/setup.sh" status --json >/dev/null || exit 1
+  bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/paperclip/setup.sh" status --json >/dev/null || exit 1
 PAPERCLIP_HOME="${PAPERCLIP_TEST_HOME}" PAPERCLIP_NODE_MIN_VERSION=0 \
-  bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/paperclip/setup.sh" logs -f >/dev/null || exit 1
+  bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/paperclip/setup.sh" logs -f >/dev/null || exit 1
+
+PAPERCLIP_FAKE_GLOBAL="${TMP}/paperclip-pnpm/project"
+PAPERCLIP_NATIVE="${PAPERCLIP_FAKE_GLOBAL}/node_modules/.pnpm/native/node_modules/@embedded-postgres/darwin-arm64"
+mkdir -p "${PAPERCLIP_NATIVE}/native/lib" "${PAPERCLIP_NATIVE}/scripts"
+touch "${PAPERCLIP_NATIVE}/native/lib/libreal.dylib"
+printf '%s\n' '[{"source":"native/lib/libreal.dylib","target":"native/lib/libalias.dylib"}]' >"${PAPERCLIP_NATIVE}/native/pg-symlinks.json"
+cat >"${PAPERCLIP_NATIVE}/scripts/hydrate-symlinks.js" <<'EOF'
+const fs = require('node:fs');
+try { fs.symlinkSync('libreal.dylib', 'native/lib/libalias.dylib'); } catch {}
+EOF
+uname() { [[ "${1:-}" == "-m" ]] && printf '%s\n' arm64 || printf '%s\n' Darwin; }
+pnpm() {
+  case "$*" in
+    'list -g --depth=-1 --json') printf '[{"dependencies":{"paperclipai":{"path":"%s/node_modules/paperclipai"}}}]\n' "${PAPERCLIP_FAKE_GLOBAL}" ;;
+    '--version') printf '%s\n' 12.1.0 ;;
+    *'config get allowBuilds --json') printf '%s\n' '{}' ;;
+    *'config set --location=project --json allowBuilds'*) printf '%s\n' "$*" >"${PAPERCLIP_PNPM_MARKER}" ;;
+    'root -g') printf '%s\n' "${PAPERCLIP_FAKE_GLOBAL}/node_modules" ;;
+    *) return 64 ;;
+  esac
+}
+nc() { printf '%s\n' "$*" >>"${PAPERCLIP_PORT_MARKER}"; }
+curl() { printf '%s\n' "$*" >"${PAPERCLIP_HEALTH_MARKER}"; }
+PAPERCLIP_PNPM_MARKER="${TMP}/paperclip-pnpm-config"
+PAPERCLIP_PORT_MARKER="${TMP}/paperclip-ports"
+PAPERCLIP_HEALTH_MARKER="${TMP}/paperclip-health"
+export DATABASE_URL=must-not-leak PAPERCLIP_FAKE_GLOBAL PAPERCLIP_PNPM_MARKER PAPERCLIP_PORT_MARKER PAPERCLIP_HEALTH_MARKER
+export -f uname pnpm nc curl
 PAPERCLIP_HOME="${PAPERCLIP_TEST_HOME}" PAPERCLIP_NODE_MIN_VERSION=0 \
-  bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/paperclip/setup.sh" update prod >/dev/null || exit 1
+  bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/paperclip/setup.sh" update prod >/dev/null || exit 1
+[[ "$(tail -n 4 "${PAPERCLIP_CLI_MARKER}")" == $'db:backup\nservice stop\nupdate --latest --no-backup\nservice start' ]] || exit 1
+grep -Fq 'allowBuilds {"@embedded-postgres/darwin-arm64":true}' "${PAPERCLIP_PNPM_MARKER}" || exit 1
+[[ -L "${PAPERCLIP_NATIVE}/native/lib/libalias.dylib" ]] || exit 1
+grep -Fxq -- '-z 127.0.0.1 5432' "${PAPERCLIP_PORT_MARKER}" || exit 1
+grep -Fxq -- '-z 127.0.0.1 8804' "${PAPERCLIP_PORT_MARKER}" || exit 1
+grep -Fq -- 'http://127.0.0.1:8804/api/health' "${PAPERCLIP_HEALTH_MARKER}" || exit 1
+! grep -Fq 'must-not-leak|' "${PAPERCLIP_ENV_MARKER}" || exit 1
 PAPERCLIP_HOME="${PAPERCLIP_TEST_HOME}" PAPERCLIP_NODE_MIN_VERSION=0 PAPERCLIP_UNINSTALL_YES=1 \
-  bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/paperclip/setup.sh" uninstall >/dev/null || exit 1
-for expected in "service start" "service stop" "service restart --wait" "service status --json" "service logs -f" "update --latest" "service uninstall" "uninstall"; do
+  bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/paperclip/setup.sh" uninstall >/dev/null || exit 1
+for expected in "service start" "service stop" "service restart --wait" "service status --json" "service logs -f" "db:backup" "update --latest --no-backup" "service uninstall" "uninstall"; do
   grep -Fxq -- "$expected" "${PAPERCLIP_CLI_MARKER}" || exit 1
 done
 
@@ -163,20 +205,21 @@ gum() {
 paperclipai() { printf '%s\n' "$*" >"${PAPERCLIP_PLUGIN_MARKER}"; }
 export PAPERCLIP_PLUGIN_MARKER
 export -f gum paperclipai
-bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/paperclip/setup.sh" plugin list | grep -q '^paperclip-aperture (@tomismeta/paperclip-aperture)$' || exit 1
-PAPERCLIP_NODE_MIN_VERSION=0 bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/paperclip/setup.sh" plugin install >/dev/null || exit 1
+bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/paperclip/setup.sh" plugin list | grep -q '^paperclip-aperture (@tomismeta/paperclip-aperture)$' || exit 1
+PAPERCLIP_NODE_MIN_VERSION=0 bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/paperclip/setup.sh" plugin install >/dev/null || exit 1
 [[ "$(<"${PAPERCLIP_PLUGIN_MARKER}")" == "plugin install @tomismeta/paperclip-aperture" ]] || exit 1
-unset -f node npx gum paperclipai
+unset DATABASE_URL
+unset -f npx gum paperclipai uname pnpm nc curl
 bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/fundeploy-services.sh" || exit 1
-bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/port-kill/setup.sh" || exit 1
-bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/brew/setup.sh" || exit 1
-bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/brew/setup.sh" --help >/dev/null || exit 1
+bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/tools/port-kill/setup.sh" || exit 1
+bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/tools/brew/setup.sh" || exit 1
+bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/tools/brew/setup.sh" --help >/dev/null || exit 1
 brew() { [[ "${1:-}" == "--version" || "${1:-}" == "update" ]]; }
 export -f brew
-bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/brew/setup.sh" install >/dev/null || exit 1
-bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/brew/setup.sh" update || exit 1
+bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/tools/brew/setup.sh" install >/dev/null || exit 1
+bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/tools/brew/setup.sh" update || exit 1
 unset -f brew
-bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/download/setup.sh" || exit 1
+bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/tools/download/setup.sh" || exit 1
 bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/dev/setup.sh" || exit 1
 bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/ai-cli/setup.sh" || exit 1
 for tool in claude codex cursor; do
@@ -214,6 +257,7 @@ grep -q "service" <<<"${out}" || exit 1
 out="$(NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" service list)"
 grep -q "sub2api" <<<"${out}" || exit 1
 grep -q "funflix-web" <<<"${out}" || exit 1
+grep -q "funread-web" <<<"${out}" || exit 1
 NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" dev --help >/dev/null || exit 1
 out="$(NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" tool list)"
 grep -q "brew" <<<"${out}" || exit 1
@@ -268,9 +312,6 @@ NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" ai --help >/dev/null || exit 
 NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" ai list | grep -q "claude" || exit 1
 NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" tool download resolve-url "https://github.com/foo/bar" | grep -q "https://github.com/foo/bar" || exit 1
 NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" tool port-kill list 59999 >/dev/null || exit 1
-mkdir -p "${TMP}/legacy-bin"
-touch "${TMP}/legacy-bin/fundeploy-port-kill"
-FUNDEPLOY_BIN_DIR="${TMP}/legacy-bin" NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" tool port-kill install >/dev/null || exit 1
-[[ ! -e "${TMP}/legacy-bin/fundeploy-port-kill" ]] || exit 1
+NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" tool port-kill install >/dev/null || exit 1
 "${FUNDEPLOY_ROOT}/bin/fundeploy" service status --no-http >/dev/null || exit 1
 echo "install_smoke OK"

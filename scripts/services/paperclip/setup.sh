@@ -5,22 +5,16 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -f "${SCRIPT_DIR}/../lib/fundeploy-common.sh" ]]; then
-  # shellcheck source=../lib/fundeploy-common.sh
-  source "${SCRIPT_DIR}/../lib/fundeploy-common.sh"
-elif [[ -f "${SCRIPT_DIR}/../../lib/fundeploy-common.sh" ]]; then
-  # shellcheck source=../../lib/fundeploy-common.sh
-  source "${SCRIPT_DIR}/../../lib/fundeploy-common.sh"
-else
-  echo "错误: 找不到 lib/fundeploy-common.sh（已检查 ${SCRIPT_DIR}/../lib 与 ${SCRIPT_DIR}/../../lib）" >&2
-  exit 1
-fi
+# shellcheck source=../../lib/fundeploy-common.sh
+source "${SCRIPT_DIR}/../../lib/fundeploy-common.sh"
 
 PAPERCLIP_HOME="${PAPERCLIP_HOME:-${HOME}/.paperclip}"
 PAPERCLIP_INSTANCE_ID="${PAPERCLIP_INSTANCE_ID:-default}"
 PAPERCLIP_NPM_REGISTRY="${PAPERCLIP_NPM_REGISTRY:-https://registry.npmjs.org}"
 PAPERCLIP_NODE_MIN_VERSION="${PAPERCLIP_NODE_MIN_VERSION:-24.11.0}"
 PAPERCLIP_NODE_MIN_MAJOR="${PAPERCLIP_NODE_MIN_MAJOR:-24}"
+PAPERCLIP_UPDATE_HEALTH_TIMEOUT_SEC="${PAPERCLIP_UPDATE_HEALTH_TIMEOUT_SEC:-60}"
+PAPERCLIP_CONFIG_PATH="${PAPERCLIP_HOME}/instances/${PAPERCLIP_INSTANCE_ID}/config.json"
 
 usage() {
   cat <<USAGE
@@ -47,6 +41,7 @@ usage() {
   - Linux 使用 systemd --user，macOS 使用 LaunchAgent。
   - 配置由 paperclipai onboard / configure 管理。
   - PAPERCLIP_INSTANCE_ID 默认为 ${PAPERCLIP_INSTANCE_ID}。
+  - update 完成后检查 PostgreSQL、Paperclip 端口及 /api/health。
 USAGE
 }
 
@@ -82,6 +77,28 @@ require_node() {
   node_version_meets "${PAPERCLIP_NODE_MIN_VERSION}" || die "需要 Node.js ${PAPERCLIP_NODE_MIN_VERSION}+，当前: $(node --version)。可执行: nvm install ${PAPERCLIP_NODE_MIN_MAJOR}"
 }
 
+paperclip_load_config() {
+  PAPERCLIP_DATABASE_MODE=""
+  PAPERCLIP_DATABASE_DIR="${PAPERCLIP_HOME}/instances/${PAPERCLIP_INSTANCE_ID}/db"
+  PAPERCLIP_DATABASE_PORT=5432
+  PAPERCLIP_SERVER_PORT=8804
+  [[ -f "${PAPERCLIP_CONFIG_PATH}" ]] || return 0
+
+  local values
+  values="$(node -e '
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const config = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+    const db = config.database || {};
+    const server = config.server || {};
+    const dataDir = db.embeddedPostgresDataDir
+      ? path.resolve(db.embeddedPostgresDataDir.replace(/^~(?=\/)/, process.env.HOME || ""))
+      : process.argv[2];
+    console.log([db.mode || "", dataDir, db.embeddedPostgresPort || 5432, server.port || 8804].join("\t"));
+  ' "${PAPERCLIP_CONFIG_PATH}" "${PAPERCLIP_DATABASE_DIR}")" || die "无法读取 Paperclip 配置: ${PAPERCLIP_CONFIG_PATH}"
+  IFS=$'\t' read -r PAPERCLIP_DATABASE_MODE PAPERCLIP_DATABASE_DIR PAPERCLIP_DATABASE_PORT PAPERCLIP_SERVER_PORT <<<"$values"
+}
+
 paperclip_executable() {
   if [[ -x "${HOME}/.local/bin/paperclipai" ]]; then
     printf '%s\n' "${HOME}/.local/bin/paperclipai"
@@ -94,7 +111,12 @@ paperclip_cli() {
   require_node
   local executable
   executable="$(paperclip_executable)" || die "未找到 paperclipai，请先执行: $0 install"
-  PAPERCLIP_HOME="${PAPERCLIP_HOME}" PAPERCLIP_INSTANCE_ID="${PAPERCLIP_INSTANCE_ID}" "$executable" "$@"
+  paperclip_load_config
+  if [[ "${PAPERCLIP_DATABASE_MODE}" == "embedded-postgres" ]]; then
+    (unset DATABASE_URL; PAPERCLIP_HOME="${PAPERCLIP_HOME}" PAPERCLIP_INSTANCE_ID="${PAPERCLIP_INSTANCE_ID}" "$executable" "$@")
+  else
+    PAPERCLIP_HOME="${PAPERCLIP_HOME}" PAPERCLIP_INSTANCE_ID="${PAPERCLIP_INSTANCE_ID}" "$executable" "$@"
+  fi
 }
 
 cmd_install() {
@@ -102,6 +124,136 @@ cmd_install() {
   command -v npx >/dev/null 2>&1 || die "未找到 npx（Node.js 自带）"
   PAPERCLIP_HOME="${PAPERCLIP_HOME}" npx --yes --registry "${PAPERCLIP_NPM_REGISTRY}" paperclipai@latest install --yes "$@"
   paperclip_cli --version
+}
+
+paperclip_port_open() {
+  local port="$1"
+  if command -v nc >/dev/null 2>&1; then
+    nc -z 127.0.0.1 "$port" >/dev/null 2>&1
+  else
+    (exec 3<>"/dev/tcp/127.0.0.1/${port}") 2>/dev/null
+  fi
+}
+
+paperclip_stop_embedded_postgres() {
+  local pid_file="${PAPERCLIP_DATABASE_DIR}/postmaster.pid"
+  [[ -f "$pid_file" ]] || return 0
+
+  local pid command_line i
+  pid="$(sed -n '1{s/[[:space:]]//g;p;}' "$pid_file")"
+  [[ "$pid" =~ ^[0-9]+$ ]] || die "无效的 PostgreSQL PID 文件: ${pid_file}"
+  kill -0 "$pid" 2>/dev/null || return 0
+  command_line="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+  [[ "$command_line" == *postgres* && "$command_line" == *"${PAPERCLIP_DATABASE_DIR}"* ]] || die "PID ${pid} 不是 ${PAPERCLIP_DATABASE_DIR} 的 PostgreSQL，拒绝停止"
+
+  echo "==> 停止 embedded PostgreSQL（PID ${pid}）" >&2
+  kill -TERM "$pid"
+  for ((i = 0; i < 30; i++)); do
+    kill -0 "$pid" 2>/dev/null || return 0
+    sleep 1
+  done
+  die "embedded PostgreSQL 在 30 秒内未停止，已中止升级"
+}
+
+paperclip_allow_embedded_postgres_build() {
+  [[ "${PAPERCLIP_DATABASE_MODE}" == "embedded-postgres" ]] || return 0
+  [[ "$(uname -s)" == "Darwin" && "$(uname -m)" == "arm64" ]] || return 0
+  command -v pnpm >/dev/null 2>&1 || return 0
+
+  local package="@embedded-postgres/darwin-arm64" package_path project_dir major key current merged
+  package_path="$(pnpm list -g --depth=-1 --json 2>/dev/null | node -e '
+    const fs = require("node:fs");
+    const rows = JSON.parse(fs.readFileSync(0, "utf8"));
+    const hit = rows.find((row) => row.dependencies?.paperclipai?.path);
+    if (hit) process.stdout.write(hit.dependencies.paperclipai.path);
+  ' 2>/dev/null || true)"
+  [[ -n "$package_path" ]] || return 0
+  project_dir="$(dirname "$(dirname "$package_path")")"
+  major="$(pnpm --version | cut -d. -f1)"
+
+  if ((major >= 11)); then
+    key=allowBuilds
+    current="$(pnpm --dir "$project_dir" config get "$key" --json 2>/dev/null || true)"
+    merged="$(printf '%s' "$current" | node -e '
+      const fs = require("node:fs");
+      let value = {};
+      try { value = JSON.parse(fs.readFileSync(0, "utf8")); } catch {}
+      value[process.argv[1]] = true;
+      process.stdout.write(JSON.stringify(value));
+    ' "$package")"
+  else
+    key=onlyBuiltDependencies
+    current="$(pnpm --dir "$project_dir" config get "$key" --json 2>/dev/null || true)"
+    merged="$(printf '%s' "$current" | node -e '
+      const fs = require("node:fs");
+      let value = [];
+      try { value = JSON.parse(fs.readFileSync(0, "utf8")); } catch {}
+      if (!value.includes(process.argv[1])) value.push(process.argv[1]);
+      process.stdout.write(JSON.stringify(value));
+    ' "$package")"
+  fi
+
+  pnpm --dir "$project_dir" config set --location=project --json "$key" "$merged"
+}
+
+paperclip_hydrate_embedded_postgres() {
+  [[ "${PAPERCLIP_DATABASE_MODE}" == "embedded-postgres" ]] || return 0
+  [[ "$(uname -s)" == "Darwin" && "$(uname -m)" == "arm64" ]] || return 0
+
+  local -a roots=()
+  local root scripts script package_root
+  [[ -d "${PAPERCLIP_HOME}/cli" ]] && roots+=("${PAPERCLIP_HOME}/cli")
+  if command -v pnpm >/dev/null 2>&1; then
+    root="$(pnpm root -g 2>/dev/null || true)"
+    [[ -d "$root" ]] && roots+=("$root")
+  fi
+  if command -v npm >/dev/null 2>&1; then
+    root="$(npm root -g 2>/dev/null || true)"
+    [[ -d "$root" ]] && roots+=("$root")
+  fi
+  ((${#roots[@]} > 0)) || die "找不到 Paperclip 安装目录，无法修复 embedded PostgreSQL 软链接"
+
+  scripts="$(find "${roots[@]}" -type f -path '*/@embedded-postgres/darwin-arm64/scripts/hydrate-symlinks.js' 2>/dev/null)"
+  [[ -n "$scripts" ]] || die "找不到 @embedded-postgres/darwin-arm64/scripts/hydrate-symlinks.js"
+  while IFS= read -r script; do
+    package_root="${script%/scripts/hydrate-symlinks.js}"
+    (cd "$package_root" && node scripts/hydrate-symlinks.js)
+    node -e '
+      const fs = require("node:fs");
+      const path = require("node:path");
+      const root = process.argv[1];
+      const rows = JSON.parse(fs.readFileSync(path.join(root, "native/pg-symlinks.json"), "utf8"));
+      if (!rows.length || rows.some(({target}) => !fs.lstatSync(path.join(root, target)).isSymbolicLink())) process.exit(1);
+    ' "$package_root" || die "embedded PostgreSQL 动态库软链接修复失败: ${package_root}"
+  done <<<"$scripts"
+}
+
+paperclip_remove_launchd_database_url() {
+  [[ "${PAPERCLIP_DATABASE_MODE}" == "embedded-postgres" && "$(uname -s)" == "Darwin" ]] || return 0
+  local label="ing.paperclip.paperclipai.${PAPERCLIP_INSTANCE_ID}"
+  [[ "${PAPERCLIP_INSTANCE_ID}" != "default" ]] || label="ing.paperclip.paperclipai"
+  local plist="${HOME}/Library/LaunchAgents/${label}.plist"
+  [[ -f "$plist" ]] || return 0
+  if /usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:DATABASE_URL' "$plist" >/dev/null 2>&1; then
+    /usr/libexec/PlistBuddy -c 'Delete :EnvironmentVariables:DATABASE_URL' "$plist" || die "无法从 ${plist} 删除 DATABASE_URL"
+  fi
+}
+
+paperclip_wait_for_update_health() {
+  paperclip_load_config
+  local deadline=$((SECONDS + PAPERCLIP_UPDATE_HEALTH_TIMEOUT_SEC)) targets="Paperclip ${PAPERCLIP_SERVER_PORT} 和 /api/health"
+  [[ "${PAPERCLIP_DATABASE_MODE}" != "embedded-postgres" ]] || targets="PostgreSQL ${PAPERCLIP_DATABASE_PORT}、${targets}"
+  echo "==> 检查 ${targets}" >&2
+  while ((SECONDS <= deadline)); do
+    if { [[ "${PAPERCLIP_DATABASE_MODE}" != "embedded-postgres" ]] || paperclip_port_open "${PAPERCLIP_DATABASE_PORT}"; } &&
+      paperclip_port_open "${PAPERCLIP_SERVER_PORT}" &&
+      curl --fail --silent --show-error --max-time 3 "http://127.0.0.1:${PAPERCLIP_SERVER_PORT}/api/health" >/dev/null; then
+      echo "Paperclip 升级完成，健康检查通过。"
+      return 0
+    fi
+    sleep 1
+  done
+  die "Paperclip 升级后未在 ${PAPERCLIP_UPDATE_HEALTH_TIMEOUT_SEC} 秒内通过健康检查"
 }
 
 cmd_update() {
@@ -112,7 +264,23 @@ cmd_update() {
     *) die "未知更新渠道: ${channel}（支持 canary / prod）" ;;
   esac
 
-  paperclip_cli update "$option"
+  paperclip_load_config
+  [[ ! -f "${PAPERCLIP_CONFIG_PATH}" ]] || paperclip_cli db:backup
+
+  if ! paperclip_cli service stop; then
+    paperclip_port_open "${PAPERCLIP_SERVER_PORT}" && die "Paperclip 仍在监听 ${PAPERCLIP_SERVER_PORT}，中止升级"
+  fi
+  [[ "${PAPERCLIP_DATABASE_MODE}" != "embedded-postgres" ]] || paperclip_stop_embedded_postgres
+  paperclip_allow_embedded_postgres_build
+
+  if ! paperclip_cli update "$option" --no-backup; then
+    paperclip_cli service start || true
+    return 1
+  fi
+  paperclip_hydrate_embedded_postgres
+  paperclip_remove_launchd_database_url
+  paperclip_cli service start
+  paperclip_wait_for_update_health
 }
 
 cmd_onboard() {
@@ -192,6 +360,8 @@ cmd_run() {
   require_node
   local executable
   executable="$(paperclip_executable)" || die "未找到 paperclipai，请先执行: $0 install"
+  paperclip_load_config
+  [[ "${PAPERCLIP_DATABASE_MODE}" != "embedded-postgres" ]] || unset DATABASE_URL
   exec env PAPERCLIP_HOME="${PAPERCLIP_HOME}" PAPERCLIP_INSTANCE_ID="${PAPERCLIP_INSTANCE_ID}" "$executable" run "$@"
 }
 

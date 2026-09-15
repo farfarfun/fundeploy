@@ -3,17 +3,8 @@
 set -euo pipefail
 
 _DEV_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-_FUNDEPLOY_LIB=""
-for _c in "${_DEV_ROOT}/../lib" "${_DEV_ROOT}/../../lib"; do
-  if [[ -f "${_c}/fundeploy-common.sh" ]]; then
-    _FUNDEPLOY_LIB="$(cd "${_c}" && pwd)"
-    break
-  fi
-done
-if [[ -n "${_FUNDEPLOY_LIB}" ]]; then
-  # shellcheck source=../lib/fundeploy-common.sh
-  source "${_FUNDEPLOY_LIB}/fundeploy-common.sh"
-fi
+# shellcheck source=../lib/fundeploy-common.sh
+source "${_DEV_ROOT}/../lib/fundeploy-common.sh"
 
 die() { echo "错误: $*" >&2; exit 1; }
 
@@ -36,14 +27,8 @@ usage() {
 EOF
 }
 
-# 已安装布局: libexec/fundeploy/{dev,pip-sources,...}
-# 仓库布局: scripts/dev 与 scripts/tools/{pip-sources,python-env}
 _resolve_tool_setup() {
   local name="$1"
-  if [[ -f "${_DEV_ROOT}/../${name}/setup.sh" ]]; then
-    echo "${_DEV_ROOT}/../${name}/setup.sh"
-    return 0
-  fi
   if [[ -f "${_DEV_ROOT}/../tools/${name}/setup.sh" ]]; then
     echo "${_DEV_ROOT}/../tools/${name}/setup.sh"
     return 0
@@ -60,7 +45,7 @@ _dispatch_child() {
 _pick_menu() {
   if command -v gum >/dev/null 2>&1; then
     :
-  elif [[ -n "${_FUNDEPLOY_LIB:-}" ]] && declare -F _fundeploy_ensure_gum >/dev/null 2>&1; then
+  elif declare -F _fundeploy_ensure_gum >/dev/null 2>&1; then
     _fundeploy_ensure_gum || return 1
   else
     return 1

@@ -1,46 +1,17 @@
 #!/usr/bin/env bash
-# port-kill — 根据端口号查找并终止进程的工具，可被其他服务脚本 source 使用。
+# port-kill — 根据端口号查找并终止进程。
 #
 # 用法（直接执行）：
 #   ./setup.sh                        # 无参：gum 交互模式
 #   ./setup.sh kill <port> [port…]    # 杀掉占用指定端口的进程（SIGTERM → SIGKILL）
 #   ./setup.sh list [port]            # 列出占用端口的进程（不杀）
-#   ./setup.sh install                # 无需单独安装，清理历史包装脚本
-#   ./setup.sh uninstall              # 清理历史包装脚本
 #   NONINTERACTIVE=1 ./setup.sh kill 8080   # 非交互，无需确认直接杀
-#
-# 作为库使用（source）：
-#   source /path/to/port-kill/setup.sh --lib
-#   fundeploy_kill_port 8080          # 终止占用 8080 的进程
-#   fundeploy_list_port 8080          # 列出占用 8080 的进程信息
-#   fundeploy_kill_ports 8080 8443    # 批量终止
-
-# 本文件同时用作可 source 的库（见头部 `--lib` 用法）。直接执行时才收紧 shell 选项——
-# 原先无条件 `set -euo pipefail` 会把 nounset/pipefail 泄漏进调用方 shell，
-# 让未按 set -u 编写的宿主脚本在无关位置崩溃。
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-  set -euo pipefail
-else
-  set -o pipefail
-fi
+set -euo pipefail
 
 # ── 路径解析 & 公共库 ────────────────────────────────────────────────────────
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-_FUNDEPLOY_LIB=""
-if [[ -f "${_SCRIPT_DIR}/../lib/fundeploy-common.sh" ]]; then
-  _FUNDEPLOY_LIB="$(cd "${_SCRIPT_DIR}/../lib" && pwd)"
-elif [[ -f "${_SCRIPT_DIR}/../../lib/fundeploy-common.sh" ]]; then
-  _FUNDEPLOY_LIB="$(cd "${_SCRIPT_DIR}/../../lib" && pwd)"
-fi
-
-if [[ -n "${_FUNDEPLOY_LIB}" ]]; then
-  # shellcheck source=../../lib/fundeploy-common.sh
-  source "${_FUNDEPLOY_LIB}/fundeploy-common.sh"
-fi
-
-# ── 历史独立入口（仅用于清理）─────────────────────────────────────────────────
-FUNDEPLOY_BIN_DIR="${FUNDEPLOY_BIN_DIR:-${HOME}/opt/nlt/bin}"
-INSTALL_NAME="fundeploy-port-kill"
+# shellcheck source=../../lib/fundeploy-common.sh
+source "${_SCRIPT_DIR}/../../lib/fundeploy-common.sh"
 
 # ── 基础输出工具 ──────────────────────────────────────────────────────────────
 _pk_say()  { printf '%s\n' "$*"; }
@@ -82,7 +53,7 @@ _pk_header() {
   fi
 }
 
-# ── 核心库函数（可被其他脚本 source 使用）────────────────────────────────────
+# ── 端口进程操作 ─────────────────────────────────────────────────────────────
 
 # fundeploy_list_port <port>
 # 列出占用指定端口的进程，返回 "pid:comm" 行列表；没有进程时返回空。
@@ -221,16 +192,6 @@ fundeploy_kill_ports() {
   return 0
 }
 
-_pk_uninstall_wrapper() {
-  local target="${FUNDEPLOY_BIN_DIR}/${INSTALL_NAME}"
-  if [[ -f "${target}" ]]; then
-    rm -f "${target}"
-    _pk_info "已移除: ${target}"
-  else
-    _pk_warn "未找到已安装的 ${target}，无需卸载。"
-  fi
-}
-
 # ── 子命令：list ──────────────────────────────────────────────────────────────
 
 cmd_list() {
@@ -286,39 +247,16 @@ cmd_kill() {
   fi
 }
 
-# ── Tool 标准子命令 ───────────────────────────────────────────────────────────
-
-cmd_install() {
-  _pk_uninstall_wrapper
+cmd_managed() {
   _pk_info "port-kill 已由 fundeploy 提供，无需单独安装。"
   _pk_say "  用法: fundeploy tool port-kill kill <port> [port…]"
   _pk_say "  用法: fundeploy tool port-kill list [port]"
 }
 
-cmd_update() {
-  cmd_install
-}
-
-cmd_reinstall() {
-  cmd_install
-}
-
-cmd_uninstall() {
-  _pk_header "卸载 ${INSTALL_NAME}"
-  if [[ "${NONINTERACTIVE:-0}" != "1" ]] && [[ -t 0 ]]; then
-    _pk_confirm "将移除 ${FUNDEPLOY_BIN_DIR}/${INSTALL_NAME}，继续？" || {
-      _pk_warn "已取消。"; return 0
-    }
-  fi
-  _pk_uninstall_wrapper
-}
-
 # ── 无参交互主菜单 ────────────────────────────────────────────────────────────
 
 _interactive_main() {
-  if [[ -n "${_FUNDEPLOY_LIB}" ]]; then
-    _fundeploy_ensure_gum || true
-  fi
+  _fundeploy_ensure_gum || true
   command -v gum >/dev/null 2>&1 || {
     _pk_err "gum 未安装，无法进入交互模式。请传入子命令，如: $0 kill <port>"
     return 1
@@ -363,29 +301,16 @@ _usage() {
   list [port]           列出占用端口的进程（不终止）
 
 Tool 管理子命令:
-  install/update        无需单独安装；清理旧版 ${INSTALL_NAME} 包装脚本
-  uninstall             清理旧版 ${INSTALL_NAME} 包装脚本
-
-库 source 模式:
-  source setup.sh --lib
-  fundeploy_kill_port <port>        # 终止单个端口
-  fundeploy_kill_ports <port>…      # 批量终止
-  fundeploy_list_port <port>        # 列出进程（返回 "pid:comm" 行）
+  install/update/uninstall  无需单独管理，随 fundeploy 安装
 
 环境变量:
   NONINTERACTIVE=1      跳过所有 gum 确认
-  FUNDEPLOY_BIN_DIR           旧版入口清理目录（默认 ~/opt/nlt/bin）
 EOF
 }
 
 # ── 入口 ──────────────────────────────────────────────────────────────────────
 
 main() {
-  # source 模式：仅导出库函数，不执行任何动作
-  if [[ "${1:-}" == "--lib" ]]; then
-    return 0
-  fi
-
   if [[ $# -eq 0 ]]; then
     _interactive_main
     return 0
@@ -395,10 +320,7 @@ main() {
   case "${cmd}" in
     kill)       cmd_kill "$@" ;;
     list)       cmd_list "$@" ;;
-    install)    cmd_install ;;
-    update|upgrade) cmd_update ;;
-    reinstall)  cmd_reinstall ;;
-    uninstall)  cmd_uninstall ;;
+    install|update|upgrade|reinstall|uninstall) cmd_managed ;;
     help|-h|--help) _usage ;;
     *)
       _pk_err "未知子命令: ${cmd}"

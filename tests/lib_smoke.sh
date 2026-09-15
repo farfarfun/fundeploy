@@ -19,7 +19,7 @@ source "${_REPO_ROOT}/scripts/lib/fundeploy-ui.sh"
 
 # 全程模拟「gum 未安装」——这正是历史缺陷的触发条件。
 _no_gum_path="$(mktemp -d)"
-trap 'rm -rf "${_no_gum_path}" "${_tmp_root:-}"' EXIT
+trap '[[ -z "${_helper_pid:-}" ]] || kill "${_helper_pid}" 2>/dev/null || true; rm -rf "${_no_gum_path}" "${_tmp_root:-}"' EXIT
 export PATH="${_no_gum_path}:/usr/bin:/bin"
 command -v gum >/dev/null 2>&1 && { echo "测试前置失败: PATH 中仍存在 gum" >&2; exit 1; }
 
@@ -72,5 +72,14 @@ assert_eq "fundeploy_ui_warn 不写 stdout" "" "${_stdout}"
 echo "== 非 TTY 时不输出 ANSI 转义 =="
 _out="$(fundeploy_ui_ok "成功" 2>&1)"
 assert_not_contains "管道输出不含 ANSI" "${_out}" $'\033['
+
+echo "== fundeploy-common PID 助手 =="
+# shellcheck source=../scripts/lib/fundeploy-common.sh
+source "${_REPO_ROOT}/scripts/lib/fundeploy-common.sh"
+sleep 30 &
+_helper_pid=$!
+assert_true "停止继承当前进程组的后台进程时不得误伤调用者" _fundeploy_stop_pid "${_helper_pid}" 2 1
+assert_false "目标进程已停止" _fundeploy_process_alive "${_helper_pid}"
+_helper_pid=""
 
 assert_summary

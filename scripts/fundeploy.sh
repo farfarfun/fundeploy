@@ -29,16 +29,8 @@ FUNDEPLOY_SRC_DIR="${FUNDEPLOY_SRC_DIR:-${FUNDEPLOY_ROOT}/src/fundeploy}"
 FUNDEPLOY_GITHUB_RAW="${FUNDEPLOY_GITHUB_RAW:-https://raw.githubusercontent.com/farfarfun/fundeploy/HEAD/install.sh}"
 FUNDEPLOY_GITEE_RAW="${FUNDEPLOY_GITEE_RAW:-https://gitee.com/farfarfun/fundeploy/raw/master/install.sh}"
 
-# 可选加载统一交互主题（banner / 主题化菜单）；缺失不致命，菜单会降级为朴素 gum/文本。
-for _cand in \
-  "${SCRIPT_DIR}/lib/fundeploy-ui.sh" \
-  "${SCRIPT_DIR}/../lib/fundeploy-ui.sh"; do
-  if [[ -f "${_cand}" ]]; then
-    # shellcheck source=/dev/null
-    source "${_cand}"
-    break
-  fi
-done
+# shellcheck source=lib/fundeploy-ui.sh
+source "${SCRIPT_DIR}/lib/fundeploy-ui.sh"
 
 die() { echo "错误: $*" >&2; exit 1; }
 
@@ -75,22 +67,7 @@ _entry_rel() {
     tools)          echo "tools/fundeploy-tools.sh" ;;
     dev)            echo "dev/setup.sh" ;;
     ai-cli)         echo "ai-cli/setup.sh" ;;
-    pip-sources)    echo "pip-sources/setup.sh" ;;
-    python-env)     echo "python-env/setup.sh" ;;
-    utils)          echo "utils/setup.sh" ;;
-    github-net)     echo "github-net/setup.sh" ;;
-    port-kill)      echo "port-kill/setup.sh" ;;
-    download)       echo "download/setup.sh" ;;
-    cockpit-tools)  echo "cockpit-tools/setup.sh" ;;
     services)       echo "services/fundeploy-services.sh" ;;
-    airflow)        echo "airflow/setup.sh" ;;
-    celery)         echo "celery/setup.sh" ;;
-    paperclip)      echo "paperclip/setup.sh" ;;
-    code-server)    echo "code-server/setup.sh" ;;
-    new-api)        echo "new-api/setup.sh" ;;
-    sub2api)        echo "sub2api/setup.sh" ;;
-    open-pencil)    echo "open-pencil/setup.sh" ;;
-    funflix-web)    echo "funflix-web/setup.sh" ;;
     *)              return 1 ;;
   esac
 }
@@ -302,9 +279,6 @@ main() {
     tool|tools) shift; cmd_entry tools "$@" ;;
     ai|ai-cli) shift; cmd_entry ai-cli "$@" ;;
     dev) shift; cmd_entry dev "$@" ;;
-    pip-sources|python-env|utils|github-net|port-kill|download|cockpit-tools|airflow|celery|paperclip|code-server|new-api|sub2api|open-pencil|funflix-web)
-      cmd="$1"; shift; cmd_entry "${cmd}" "$@"
-      ;;
     help|-h|--help) usage ;;
     *) echo "未知命令: $1" >&2; usage >&2; exit 2 ;;
   esac

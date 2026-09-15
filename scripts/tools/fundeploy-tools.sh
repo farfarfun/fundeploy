@@ -12,7 +12,6 @@
 #
 # 供服务脚本调用（服务内部依赖工具时，不自行检测，直接）:
 #   fundeploy tool gum install
-#   fundeploy tool python-env install
 #
 # 设计约定:
 #   - install = 幂等「检测→未装则装」，由各工具 setup.sh 的 install 子命令负责。
@@ -27,77 +26,39 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# 可选加载公共片段（用于 _fundeploy_ensure_gum 驱动菜单）；缺失不致命。
-for _cand in \
-  "${SCRIPT_DIR}/../lib/fundeploy-common.sh" \
-  "${SCRIPT_DIR}/../../lib/fundeploy-common.sh" \
-  "${SCRIPT_DIR}/lib/fundeploy-common.sh"; do
-  if [[ -f "${_cand}" ]]; then
-    # shellcheck source=/dev/null
-    source "${_cand}"
-    break
-  fi
-done
-
-# 可选加载统一交互主题（banner / 主题化菜单）；缺失不致命。
-for _cand in \
-  "${SCRIPT_DIR}/../lib/fundeploy-ui.sh" \
-  "${SCRIPT_DIR}/../../lib/fundeploy-ui.sh" \
-  "${SCRIPT_DIR}/lib/fundeploy-ui.sh"; do
-  if [[ -f "${_cand}" ]]; then
-    # shellcheck source=/dev/null
-    source "${_cand}"
-    break
-  fi
-done
+# shellcheck source=../lib/fundeploy-common.sh
+source "${SCRIPT_DIR}/../lib/fundeploy-common.sh"
 
 die() { echo "错误: $*" >&2; exit 1; }
 
-# 工具注册表：name -> 相对 setup.sh 路径尾部（相对 tools/ 或 libexec 根）。
-# gum 为一等工具，映射到 utils/setup.sh 的 gum 子命令。
-_fundeploy_tools_tail() {
-  case "$1" in
-    brew)          echo "brew/setup.sh" ;;
-    gum)           echo "utils/setup.sh" ;;
-    aliases)       echo "utils/setup.sh" ;;
-    download)      echo "download/setup.sh" ;;
-    pip-sources)   echo "pip-sources/setup.sh" ;;
-    python-env)    echo "python-env/setup.sh" ;;
-    github-net)    echo "github-net/setup.sh" ;;
-    skills-sync)   echo "skills-sync/setup.sh" ;;
-    port-kill)     echo "port-kill/setup.sh" ;;
-    cockpit-tools) echo "cockpit-tools/setup.sh" ;;
-    utils)         echo "utils/setup.sh" ;;
-    go)            echo "dev/go/setup.sh" ;;
-    rust)          echo "dev/rust/setup.sh" ;;
-    nodejs)        echo "dev/nodejs/setup.sh" ;;
-    pnpm)          echo "dev/pnpm/setup.sh" ;;
-    uv)            echo "dev/uv/setup.sh" ;;
-    *)             return 1 ;;
-  esac
-}
-
-# 已知工具名（供 list / 菜单 / 校验），顺序即展示顺序。
 _FUNDEPLOY_TOOLS_NAMES=(
   brew gum download github-net skills-sync port-kill cockpit-tools
 )
 
-# 解析某工具 setup.sh 的绝对路径（自适应仓库内 / libexec 两种布局）。
-_fundeploy_tools_resolve() {
-  local tail="$1" b p
-  tail="$(_fundeploy_tools_tail "$tail")" || return 1
-  for b in "${SCRIPT_DIR}" "${SCRIPT_DIR}/.." "${SCRIPT_DIR}/../.."; do
-    p="${b}/${tail}"
-    if [[ -f "${p}" ]]; then
-      (cd "$(dirname "${p}")" && printf '%s/%s\n' "$(pwd)" "$(basename "${p}")")
-      return 0
-    fi
+_fundeploy_tool_known() {
+  local name
+  for name in "${_FUNDEPLOY_TOOLS_NAMES[@]}"; do
+    [[ "$name" == "$1" ]] && return 0
   done
   return 1
 }
 
+_fundeploy_tools_tail() {
+  _fundeploy_tool_known "$1" || return 1
+  [[ "$1" == "gum" ]] && printf '%s\n' "utils/setup.sh" || printf '%s/setup.sh\n' "$1"
+}
+
+# 解析某工具 setup.sh 的绝对路径；仓库与安装目录使用同一布局。
+_fundeploy_tools_resolve() {
+  local tail="$1" p
+  tail="$(_fundeploy_tools_tail "$tail")" || return 1
+  p="${SCRIPT_DIR}/${tail}"
+  [[ -f "${p}" ]] || return 1
+  printf '%s\n' "${p}"
+}
+
 usage() {
-  cat <<'EOF'
+  cat <<EOF
 用法: fundeploy tool <工具> <install|upgrade|uninstall> [args...]
       fundeploy tool list
       fundeploy tool help
@@ -109,7 +70,7 @@ usage() {
   <其它>      原样透传给该工具 setup.sh（如 reinstall、status 等）。
 
 工具:
-  brew gum download github-net skills-sync port-kill cockpit-tools
+  ${_FUNDEPLOY_TOOLS_NAMES[*]}
 
 示例:
   fundeploy tool brew install
@@ -191,12 +152,7 @@ dispatch() {
       exec bash "${setup}" install "$@"
       ;;
     upgrade)
-      # dev 工具接受 upgrade；tools/* 历史用 update。二者都先试 upgrade 再回退 update 不便，
-      # 这里按类别选择：dev 系列传 upgrade，其余传 update（均与各脚本 case 分支一致）。
-      case "${tool}" in
-        go|rust|nodejs|pnpm|uv) exec bash "${setup}" upgrade "$@" ;;
-        *)                      exec bash "${setup}" update "$@" ;;
-      esac
+      exec bash "${setup}" update "$@"
       ;;
     update|uninstall|reinstall|remove|status|check|doctor)
       exec bash "${setup}" "${verb}" "$@"
@@ -214,17 +170,10 @@ _fundeploy_tool_desc() {
     brew)          echo "Homebrew 包管理器" ;;
     gum)           echo "终端交互 UI（菜单/输入/确认）" ;;
     download)      echo "GitHub 下载加速" ;;
-    pip-sources)   echo "pip 镜像源切换" ;;
-    python-env)    echo "Python 虚拟环境管理" ;;
     github-net)    echo "GitHub 网络诊断" ;;
     skills-sync)   echo "Gitee skills 仓库同步" ;;
     port-kill)     echo "按端口杀进程" ;;
     cockpit-tools) echo "Cockpit 运维面板工具" ;;
-    go)            echo "Go 工具链" ;;
-    rust)          echo "Rust（rustup）" ;;
-    nodejs)        echo "Node.js" ;;
-    pnpm)          echo "pnpm 包管理器" ;;
-    uv)            echo "uv（Astral Python 安装器）" ;;
     *)             echo "" ;;
   esac
 }

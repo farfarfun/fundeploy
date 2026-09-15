@@ -11,20 +11,10 @@
 set -euo pipefail
 
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-_FUNDEPLOY_LIB=""
-if [[ -f "${_SCRIPT_DIR}/../lib/fundeploy-common.sh" ]]; then
-  _FUNDEPLOY_LIB="$(cd "${_SCRIPT_DIR}/../lib" && pwd)"
-elif [[ -f "${_SCRIPT_DIR}/../../lib/fundeploy-common.sh" ]]; then
-  _FUNDEPLOY_LIB="$(cd "${_SCRIPT_DIR}/../../lib" && pwd)"
-else
-  echo "错误: 找不到 lib/fundeploy-common.sh（已检查 ${_SCRIPT_DIR}/../lib 与 ${_SCRIPT_DIR}/../../lib）" >&2
-  exit 1
-fi
-
 # shellcheck source=../../lib/fundeploy-common.sh
-source "${_FUNDEPLOY_LIB}/fundeploy-common.sh"
+source "${_SCRIPT_DIR}/../../lib/fundeploy-common.sh"
 # shellcheck source=../../lib/fundeploy-github-download.sh
-source "${_FUNDEPLOY_LIB}/fundeploy-github-download.sh"
+source "${_SCRIPT_DIR}/../../lib/fundeploy-github-download.sh"
 
 _dl_say() { printf '%s\n' "$*"; }
 _dl_err() { printf '错误: %s\n' "$*" >&2; }

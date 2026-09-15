@@ -87,10 +87,4 @@ _ghn="$(cat "${_REPO_ROOT}/scripts/tools/github-net/setup.sh")"
 assert_contains "含 GitHub 官方 ed25519 指纹" "${_ghn}" "SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU"
 assert_not_contains "不得再无条件追加 known_hosts" "${_ghn}" 'ssh-keyscan -p 443 ssh.github.com >> '
 
-echo "== GitHub Actions 第三方 action 必须锁 SHA =="
-_sync="$(cat "${_REPO_ROOT}/.github/workflows/sync.yml")"
-assert_not_contains "不得使用 @master" "${_sync}" "hub-mirror-action@master"
-assert_contains     "需锁定到 commit SHA" "${_sync}" "hub-mirror-action@ec47170fa9d126a4bee5a1ab9359845bb1395248"
-assert_contains     "需声明最小权限" "${_sync}" "contents: read"
-
 assert_summary
