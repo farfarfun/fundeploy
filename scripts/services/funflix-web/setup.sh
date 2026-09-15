@@ -40,16 +40,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -f "${SCRIPT_DIR}/../lib/fundeploy-common.sh" ]]; then
-  # shellcheck source=../lib/fundeploy-common.sh
-  source "${SCRIPT_DIR}/../lib/fundeploy-common.sh"
-elif [[ -f "${SCRIPT_DIR}/../../lib/fundeploy-common.sh" ]]; then
-  # shellcheck source=../../lib/fundeploy-common.sh
-  source "${SCRIPT_DIR}/../../lib/fundeploy-common.sh"
-else
-  echo "错误: 找不到 lib/fundeploy-common.sh（已检查 ${SCRIPT_DIR}/../lib 与 ${SCRIPT_DIR}/../../lib）" >&2
-  exit 1
-fi
+# shellcheck source=../../lib/fundeploy-common.sh
+source "${SCRIPT_DIR}/../../lib/fundeploy-common.sh"
 
 FUNFLIX_WEB_BACKEND_PACKAGE="${FUNFLIX_WEB_BACKEND_PACKAGE:-funflix}"
 FUNFLIX_WEB_BACKEND_VERSION="${FUNFLIX_WEB_BACKEND_VERSION:-}"

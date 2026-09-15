@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # fundeploy 安装辅助库（WAR-410）：多安装方式 + 包管理器探测 + gum 交互 UI。
-# 由各 dev 工具 setup.sh 以「尽力而为」方式 source（找不到时脚本仍可独立运行）。
+# 由各 dev 工具 setup.sh 直接 source。
 #
 # 提供能力：
 #   1. 安装方式选择：INSTALL_METHOD=pkg|source（默认 pkg；无包管理器时回退 source）。

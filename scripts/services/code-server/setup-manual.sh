@@ -22,21 +22,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -f "${SCRIPT_DIR}/../lib/fundeploy-common.sh" ]]; then
-  # shellcheck source=../lib/fundeploy-common.sh
-  source "${SCRIPT_DIR}/../lib/fundeploy-common.sh"
-elif [[ -f "${SCRIPT_DIR}/../../lib/fundeploy-common.sh" ]]; then
-  # shellcheck source=../../lib/fundeploy-common.sh
-  source "${SCRIPT_DIR}/../../lib/fundeploy-common.sh"
-else
-  echo "错误: 找不到 lib/fundeploy-common.sh（已检查 ${SCRIPT_DIR}/../lib 与 ${SCRIPT_DIR}/../../lib）" >&2
-  exit 1
-fi
-
-if [[ -f "${SCRIPT_DIR}/../lib/fundeploy-progress.sh" ]]; then
-  # shellcheck source=../lib/fundeploy-progress.sh
-  source "${SCRIPT_DIR}/../lib/fundeploy-progress.sh"
-elif [[ -f "${SCRIPT_DIR}/../../lib/fundeploy-progress.sh" ]]; then
+# shellcheck source=../../lib/fundeploy-common.sh
+source "${SCRIPT_DIR}/../../lib/fundeploy-common.sh"
+if [[ -f "${SCRIPT_DIR}/../../lib/fundeploy-progress.sh" ]]; then
   # shellcheck source=../../lib/fundeploy-progress.sh
   source "${SCRIPT_DIR}/../../lib/fundeploy-progress.sh"
 fi
@@ -75,20 +63,8 @@ ensure_dirs() {
 
 die() { echo "错误: $*" >&2; exit 1; }
 
-process_alive() {
-  kill -0 "$1" 2>/dev/null
-}
-
-listener_pid_for_port() {
-  _fundeploy_listener_pid_for_port "$1"
-}
-
 read_pid() {
-  if [[ ! -f "$PID_FILE" ]]; then
-    echo ""
-    return
-  fi
-  tr -d '[:space:]' <"$PID_FILE" || true
+  _fundeploy_read_pid_file "$PID_FILE"
 }
 
 require_curl() {
@@ -179,12 +155,12 @@ cmd_start() {
   ensure_dirs
   local existing
   existing="$(read_pid)"
-  if [[ -n "$existing" ]] && process_alive "$existing"; then
+  if [[ -n "$existing" ]] && _fundeploy_process_alive "$existing"; then
     echo "code-server 已在运行（PID ${existing}）。重启请: $0 restart" >&2
     exit 1
   fi
   local listener_pid
-  listener_pid="$(listener_pid_for_port "${CODE_SERVER_PORT}")"
+  listener_pid="$(_fundeploy_listener_pid_for_port "${CODE_SERVER_PORT}")"
   if [[ -n "$listener_pid" ]]; then
     die "端口 ${CODE_SERVER_PORT} 已被 PID ${listener_pid} 占用，请先执行 $0 stop 或手动清理。"
   fi
@@ -210,7 +186,7 @@ cmd_start() {
   popd >/dev/null
   sleep 1
   existing="$(read_pid)"
-  if [[ -n "$existing" ]] && process_alive "$existing"; then
+  if [[ -n "$existing" ]] && _fundeploy_process_alive "$existing"; then
     echo "已启动 PID ${existing}（密码见日志或未设置 PASSWORD 时终端提示）"
   else
     echo "警告: 进程可能已退出，请查看: tail -80 ${LOG_FILE}" >&2
@@ -222,7 +198,7 @@ cmd_run() {
   ensure_dirs
   local existing
   existing="$(read_pid)"
-  if [[ -n "$existing" ]] && process_alive "$existing"; then
+  if [[ -n "$existing" ]] && _fundeploy_process_alive "$existing"; then
     echo "code-server 已在后台运行（PID ${existing}）。请先 $0 stop，再使用 run。" >&2
     exit 1
   fi
@@ -243,11 +219,11 @@ cmd_stop() {
   local pid
   pid="$(read_pid)"
   local listener_pid
-  listener_pid="$(listener_pid_for_port "${CODE_SERVER_PORT}")"
+  listener_pid="$(_fundeploy_listener_pid_for_port "${CODE_SERVER_PORT}")"
   if [[ -z "$pid" ]]; then
     echo "未找到 PID，视为未运行。" >&2
     rm -f "$PID_FILE"
-  elif ! process_alive "$pid"; then
+  elif ! _fundeploy_process_alive "$pid"; then
     rm -f "$PID_FILE"
   fi
   if [[ -z "$assume_yes" ]] && [[ -n "$pid" || -n "$listener_pid" ]] && fundeploy_interactive; then
@@ -255,14 +231,8 @@ cmd_stop() {
     # 而不是返回 127 让 `|| exit 0` 谎报「已停止」。
     fundeploy_ui_confirm "停止 code-server（PID ${pid}）？" || return 1
   fi
-  if [[ -n "$pid" ]] && process_alive "$pid"; then
-    kill -TERM "$pid" 2>/dev/null || true
-    local w=0
-    while process_alive "$pid" && (( w < 20 )); do
-      sleep 1
-      w=$((w + 1))
-    done
-    process_alive "$pid" && kill -KILL "$pid" 2>/dev/null || true
+  if [[ -n "$pid" ]] && _fundeploy_process_alive "$pid"; then
+    _fundeploy_stop_pid "$pid" 20
   fi
   if [[ -n "$listener_pid" ]] && { [[ -z "$pid" ]] || [[ "$listener_pid" != "$pid" ]]; }; then
     kill -TERM "$listener_pid" 2>/dev/null || true
@@ -280,10 +250,10 @@ cmd_status() {
   local pid
   pid="$(read_pid)"
   local listener_pid
-  listener_pid="$(listener_pid_for_port "${CODE_SERVER_PORT}")"
+  listener_pid="$(_fundeploy_listener_pid_for_port "${CODE_SERVER_PORT}")"
   echo "CODE_SERVER_SERVICE_HOME=${CODE_SERVER_SERVICE_HOME}"
   echo "CODE_SERVER_BIND=${CODE_SERVER_BIND}"
-  if [[ -n "$pid" ]] && process_alive "$pid"; then
+  if [[ -n "$pid" ]] && _fundeploy_process_alive "$pid"; then
     if [[ -n "$listener_pid" && "$listener_pid" != "$pid" ]]; then
       echo "状态: 运行中 PID ${pid}（监听进程 PID ${listener_pid}）"
     else

@@ -1,22 +1,16 @@
 #!/usr/bin/env bash
-# 本机常用 CLI 与 shell 便利项。与 README 一致可通过 curl 管道执行，不经仓库内脚本互引：
-#   curl -LsSf …/scripts/tools/utils/setup.sh | bash -s -- gum      # 仅 gum
-#   curl -LsSf …/scripts/tools/utils/setup.sh | bash -s -- aliases  # 仅 ll/la/lla 别名
-#   curl -LsSf …/scripts/tools/utils/setup.sh | bash -s -- all      # gum + 别名
+# gum 安装器。可通过 curl 管道执行，不依赖仓库内其它入口。
 # 与 .cursor/agents/software-ops.md 一致：gum 安装在 ~/opt/gum/{bin,etc,data,log}。
 #
 # 用法：
 #   ./setup.sh              # 交互 TTY：gum 菜单（缺 gum 时先自动安装）；否则等同 gum
 #   ./setup.sh gum [--force]
-#   ./setup.sh aliases      # 写入 ll / la / lla（已有标记则跳过）
-#   ./setup.sh all [--force]   # gum 再 aliases
 #   GUM_USE_BREW=1 ./setup.sh gum
 #
 # 环境变量：
 #   GUM_HOME                     默认 ~/opt/gum
 #   GUM_TAG / GUM_USE_BREW       见下
 #   SKIP_GUM_SHELL_PROFILE=1     不写入 gum 的 PATH 片段
-#   SKIP_UTILS_SHELL_ALIASES=1   不写入 ll/la/lla 别名片段
 #   NONINTERACTIVE=1             跳过 gum 安装前确认（curl 管道时 stdin 非 TTY 也会跳过）
 
 set -euo pipefail
@@ -50,11 +44,9 @@ usage() {
 
 命令:
   gum [--force]    安装 gum 到 ${GUM_HOME}/bin（默认命令）
-  aliases          向 ~/.zshrc / ~/.bashrc / ~/.bash_profile 写入 ll、la、lla（已存在标记则跳过）
-  all [--force]    依次执行 gum 与 aliases
   help             显示本说明
 
-环境变量: GUM_HOME, GUM_TAG, GUM_USE_BREW, SKIP_GUM_SHELL_PROFILE, SKIP_UTILS_SHELL_ALIASES, NONINTERACTIVE
+环境变量: GUM_HOME, GUM_TAG, GUM_USE_BREW, SKIP_GUM_SHELL_PROFILE, NONINTERACTIVE
 EOF
 }
 
@@ -90,26 +82,19 @@ _ensure_gum_for_interactive_menu() {
 }
 
 _interactive_main() {
-  # 用字面量常量而非通配符匹配菜单项。原实现按 *别名*/*依次*/*gum* 依次匹配，
-  # 而「gum 与别名（依次执行）」同时含「别名」和「gum」，会先命中 *别名*，
-  # 于是该项只写别名、从不装 gum，cmd_all 成为死代码。
-  local L_GUM L_ALIAS L_ALL L_HELP L_QUIT
+  local L_GUM L_HELP L_QUIT
   L_GUM="安装 / 更新 gum（${GUM_HOME}）"
-  L_ALIAS="写入 ll / la / lla 别名"
-  L_ALL="gum 与别名（依次执行）"
   L_HELP="查看帮助"
   L_QUIT="退出"
 
   while true; do
     local pick
     pick="$(gum choose --header "fundeploy-utils" \
-      "${L_GUM}" "${L_ALIAS}" "${L_ALL}" "${L_HELP}" "${L_QUIT}")" || return 0
+      "${L_GUM}" "${L_HELP}" "${L_QUIT}")" || return 0
     [[ -z "${pick}" ]] && return 0
     case "${pick}" in
       "${L_QUIT}")  return 0 ;;
       "${L_HELP}")  usage; echo "" ;;
-      "${L_ALIAS}") cmd_shell_aliases ;;
-      "${L_ALL}")   cmd_all "" ;;
       "${L_GUM}")   cmd_gum "" ;;
       *)            usage; echo "" ;;
     esac
@@ -171,9 +156,6 @@ _print_post_install_summary() {
 # ---------- 通用：向 shell profile 追加带标记的块（已有标记则跳过）----------
 _GUM_PATH_MARKER_BEGIN='# >>> fundeploy utils-setup: gum PATH >>>'
 _GUM_PATH_MARKER_END='# <<< fundeploy utils-setup: gum PATH <<<'
-
-_LS_ALIAS_MARKER_BEGIN='# >>> fundeploy utils-setup: ls aliases >>>'
-_LS_ALIAS_MARKER_END='# <<< fundeploy utils-setup: ls aliases <<<'
 
 _append_marked_block_to_profiles() {
   local marker_begin="$1"
@@ -237,75 +219,8 @@ ${_GUM_PATH_MARKER_END}
 EOF
 }
 
-_shell_aliases_block() {
-  cat <<EOF
-${_LS_ALIAS_MARKER_BEGIN}
-alias ll='ls -al'
-alias la='ls -A'
-alias lla='ls -lA'
-${_LS_ALIAS_MARKER_END}
-EOF
-}
-
 _append_gum_path_to_profile_files() {
   _append_marked_block_to_profiles "${_GUM_PATH_MARKER_BEGIN}" "$(_gum_path_shell_block)" "${SKIP_GUM_SHELL_PROFILE:-0}" "gum PATH"
-}
-
-_apply_ls_aliases_in_session() {
-  # 当前 bash 子进程内生效（非交互默认关闭 expand_aliases）
-  shopt -s expand_aliases 2>/dev/null || true
-  alias ll='ls -al' 2>/dev/null || true
-  alias la='ls -A' 2>/dev/null || true
-  alias lla='ls -lA' 2>/dev/null || true
-}
-
-_first_profile_ls_alias_conflict_path() {
-  local f targets=() new_file=""
-  [[ -f "${HOME}/.zshrc" ]] && targets+=("${HOME}/.zshrc")
-  [[ -f "${HOME}/.bashrc" ]] && targets+=("${HOME}/.bashrc")
-  [[ -f "${HOME}/.bash_profile" ]] && targets+=("${HOME}/.bash_profile")
-  if [[ ${#targets[@]} -eq 0 ]]; then
-    case "${SHELL:-}" in
-      */zsh) new_file="${HOME}/.zshrc" ;;
-      */bash) new_file="${HOME}/.bashrc" ;;
-      *) new_file="${HOME}/.zshrc" ;;
-    esac
-    targets+=("$new_file")
-  fi
-  for f in "${targets[@]}"; do
-    [[ -f "$f" ]] || continue
-    if grep -qE '^[[:space:]]*alias[[:space:]]+(ll|la|lla)=' "$f" 2>/dev/null &&
-      ! grep -qF "${_LS_ALIAS_MARKER_BEGIN}" "$f" 2>/dev/null; then
-      printf '%s' "$f"
-      return 0
-    fi
-  done
-  return 1
-}
-
-cmd_shell_aliases() {
-  _say_step "==> 配置常用 ls 别名（ll / la / lla）"
-
-  local _cf
-  if _cf="$(_first_profile_ls_alias_conflict_path)"; then
-    _say_step "校验: 在 $(basename "${_cf}") 等 profile 中发现已有 ll/la/lla 类 alias，且不含本脚本标记，可能与本次写入冲突。"
-    _software_ops_confirm "仍要追加本脚本别名片段？" || {
-      echo "已取消。"
-      exit 0
-    }
-  fi
-
-  _append_marked_block_to_profiles "${_LS_ALIAS_MARKER_BEGIN}" "$(_shell_aliases_block)" "${SKIP_UTILS_SHELL_ALIASES:-0}" "ls 别名"
-  _apply_ls_aliases_in_session
-  echo "  ll='ls -al'   la='ls -A'   lla='ls -lA'"
-  echo "  当前 shell 若为 bash 子进程已尝试启用；长期请新开终端或 source 对应 profile。"
-}
-
-cmd_all() {
-  local rest="${1:-}"
-  cmd_gum "${rest}"
-  echo ""
-  cmd_shell_aliases
 }
 
 fetch_latest_gum_tag() {
@@ -549,16 +464,8 @@ main() {
       shift
       cmd_gum "${1:-}"
       ;;
-    aliases)
-      shift
-      cmd_shell_aliases
-      ;;
     help | -h | --help)
       usage
-      ;;
-    all)
-      shift
-      cmd_all "${1:-}"
       ;;
     *)
       usage >&2

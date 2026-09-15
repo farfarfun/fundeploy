@@ -11,7 +11,7 @@
 #   fundeploy service help
 #
 # 模块名: airflow, celery, paperclip, code-server, new-api, sub2api, open-pencil,
-#         funflix-web, pip-sources, python-env, utils, github-net, cockpit-tools
+#         funflix-web, funread-web, pip-sources, python-env, utils, github-net, cockpit-tools
 # 卸载不支持: celery、utils（脚本未提供 uninstall）
 #
 # NONINTERACTIVE=1 且无参数时打印 help 并退出（不进入 gum）。
@@ -24,8 +24,26 @@ source "${SCRIPT_DIR}/../lib/fundeploy-common.sh"
 
 die() { echo "错误: $*" >&2; exit 1; }
 
+_SERVICE_MENU_LABELS=(
+  "airflow      工作流调度"
+  "celery       异步任务队列"
+  "paperclip    AI 协作服务"
+  "code-server 浏览器 VS Code"
+  "new-api      API 网关"
+  "sub2api      订阅 API 网关"
+  "open-pencil  CLI、MCP 与桌面工具"
+  "funflix-web  影视库前后端一体化"
+  "funread-web  阅读源前后端一体化"
+)
+_SERVICE_NAMES=()
+for _label in "${_SERVICE_MENU_LABELS[@]}"; do
+  _SERVICE_NAMES+=("${_label%% *}")
+done
+_INSTALL_MODULES=("${_SERVICE_NAMES[@]}" pip-sources python-env utils github-net cockpit-tools)
+_UNINSTALL_MODULES=(airflow paperclip code-server new-api sub2api open-pencil funflix-web funread-web pip-sources python-env github-net cockpit-tools)
+
 usage() {
-  cat <<'EOF'
+  cat <<EOF
 用法: fundeploy service <服务> [动作...]
       fundeploy service status [--no-http]
       fundeploy service list
@@ -39,7 +57,7 @@ usage() {
   install                 兼容原安装聚合菜单
   help / -h / --help      本说明
 
-服务: airflow celery paperclip code-server new-api sub2api open-pencil funflix-web
+服务: ${_SERVICE_NAMES[*]}
 
 示例:
   fundeploy service code-server official install
@@ -48,11 +66,11 @@ usage() {
   fundeploy service sub2api official restart
   fundeploy service funflix-web install
   fundeploy service funflix-web start
+  fundeploy service funread-web install
+  fundeploy service funread-web start
   fundeploy service status
 EOF
 }
-
-_SERVICE_NAMES=(airflow celery paperclip code-server new-api sub2api open-pencil funflix-web)
 
 _service_known() {
   local name="$1" service
@@ -68,7 +86,6 @@ _resolve_module_entry() {
   local name="$1" candidate
   for candidate in \
     "${SCRIPT_DIR}/${name}/setup.sh" \
-    "${SCRIPT_DIR}/../${name}/setup.sh" \
     "${SCRIPT_DIR}/../tools/${name}/setup.sh"; do
     [[ -f "$candidate" ]] && { printf '%s\n' "$candidate"; return 0; }
   done
@@ -100,13 +117,11 @@ EOF
 DO_HTTP=1
 
 read_pid_file() {
-  local f="$1"
-  [[ -f "$f" ]] || { echo ""; return; }
-  tr -d '[:space:]' <"$f" || true
+  _fundeploy_read_pid_file "$1"
 }
 
 proc_alive() {
-  [[ -n "${1:-}" ]] && kill -0 "$1" 2>/dev/null
+  _fundeploy_process_alive "$1"
 }
 
 listener_pid_for_port() {
@@ -267,6 +282,16 @@ cmd_status() {
   ffx_be_listener_pid="$(listener_pid_for_port "${FUNFLIX_WEB_BACKEND_PORT}")"
   ffx_fe_listener_pid="$(listener_pid_for_port "${FUNFLIX_WEB_FRONTEND_PORT}")"
 
+  FUNREAD_WEB_SERVICE_HOME="${FUNREAD_WEB_SERVICE_HOME:-${HOME}/opt/funread-web}"
+  FUNREAD_WEB_BACKEND_HOST="${FUNREAD_WEB_BACKEND_HOST:-127.0.0.1}"
+  FUNREAD_WEB_BACKEND_PORT="${FUNREAD_WEB_BACKEND_PORT:-18811}"
+  FUNREAD_WEB_FRONTEND_HOST="${FUNREAD_WEB_FRONTEND_HOST:-127.0.0.1}"
+  FUNREAD_WEB_FRONTEND_PORT="${FUNREAD_WEB_FRONTEND_PORT:-8811}"
+  frd_be_pid="$(read_pid_file "${FUNREAD_WEB_SERVICE_HOME}/run/backend.pid")"
+  frd_fe_pid="$(read_pid_file "${FUNREAD_WEB_SERVICE_HOME}/run/frontend.pid")"
+  frd_be_listener_pid="$(listener_pid_for_port "${FUNREAD_WEB_BACKEND_PORT}")"
+  frd_fe_listener_pid="$(listener_pid_for_port "${FUNREAD_WEB_FRONTEND_PORT}")"
+
   local ts flower_url cel_wbf cel_pids cel_probe
   ts="$(date '+%Y-%m-%d %H:%M:%S %z')"
 
@@ -333,13 +358,26 @@ cmd_status() {
       "$(service_pid_display "" "$ffx_fe_listener_pid")" \
       "${FUNFLIX_WEB_FRONTEND_HOST}:${FUNFLIX_WEB_FRONTEND_PORT}" \
       "$(http_probe "http://${FUNFLIX_WEB_FRONTEND_HOST}:${FUNFLIX_WEB_FRONTEND_PORT}/web")"
+    _status_csv_line \
+      "funread" \
+      "$(service_state_from_pid_and_port "$frd_be_pid" "$frd_be_listener_pid")" \
+      "$(service_pid_display "$frd_be_pid" "$frd_be_listener_pid")" \
+      "${FUNREAD_WEB_BACKEND_HOST}:${FUNREAD_WEB_BACKEND_PORT}" \
+      "$(http_probe "http://${FUNREAD_WEB_BACKEND_HOST}:${FUNREAD_WEB_BACKEND_PORT}/healthz")"
+    _status_csv_line \
+      "funread-web" \
+      "$(service_state_from_pid_and_port "$frd_fe_pid" "$frd_fe_listener_pid")" \
+      "$(service_pid_display "$frd_fe_pid" "$frd_fe_listener_pid")" \
+      "${FUNREAD_WEB_FRONTEND_HOST}:${FUNREAD_WEB_FRONTEND_PORT}" \
+      "$(http_probe "http://${FUNREAD_WEB_FRONTEND_HOST}:${FUNREAD_WEB_FRONTEND_PORT}/")"
   } | _render_status_table_from_csv
 
   echo ""
   echo "说明:"
   echo "  • celery 状态列 wbf 为 worker / beat / flower：√ 运行中，× 未运行；与 Airflow 同机时请区分 FLOWER_PORT。"
   echo "  • funflix / funflix-web 各自管理自己的 PID/日志，此表仅按端口探测判断存活；一起装/起/停请用 fundeploy service funflix-web。"
-  echo "  • 安装路径: airflow ${AIRFLOW_HOME} | celery ${CELERY_HOME} | paperclip ${PAPERCLIP_HOME} | code-server ${CODE_SERVER_SERVICE_HOME} | new-api ${NEW_API_SERVICE_HOME} | sub2api ${SUB2API_SERVICE_HOME}"
+  echo "  • funread / funread-web 由 fundeploy 管理 PID/日志；一起装/起/停请用 fundeploy service funread-web。"
+  echo "  • 安装路径: airflow ${AIRFLOW_HOME} | celery ${CELERY_HOME} | paperclip ${PAPERCLIP_HOME} | code-server ${CODE_SERVER_SERVICE_HOME} | new-api ${NEW_API_SERVICE_HOME} | sub2api ${SUB2API_SERVICE_HOME} | funread-web ${FUNREAD_WEB_SERVICE_HOME}"
   echo "  • 详情: fundeploy service <服务> status"
   echo ""
   echo "工具（无统一守护进程）: fundeploy dev / fundeploy tool"
@@ -348,10 +386,11 @@ cmd_status() {
 
 # 是否支持 uninstall（上游脚本有该子命令）
 _module_supports_uninstall() {
-  case "$1" in
-    airflow | paperclip | code-server | new-api | sub2api | open-pencil | funflix-web | pip-sources | python-env | github-net | cockpit-tools) return 0 ;;
-    *) return 1 ;;
-  esac
+  local name
+  for name in "${_UNINSTALL_MODULES[@]}"; do
+    [[ "$name" == "$1" ]] && return 0
+  done
+  return 1
 }
 
 _dispatch_install_or_remove() {
@@ -367,7 +406,7 @@ _dispatch_install_or_remove() {
 
   case "$name" in
     pip-sources | python-env | utils | github-net) exec bash "$target" ;;
-    airflow | celery | paperclip | code-server | new-api | sub2api | open-pencil | funflix-web | cockpit-tools)
+    airflow | celery | paperclip | code-server | new-api | sub2api | open-pencil | funflix-web | funread-web | cockpit-tools)
       exec bash "$target" install
       ;;
     *) die "未知模块: ${name}（见 fundeploy service help）" ;;
@@ -394,13 +433,9 @@ cmd_install() {
     esac
 
     if [[ "$action" == "add" ]]; then
-      name="$(gum choose --header "选择要安装 / 初始化的模块" \
-        "airflow" "celery" "paperclip" "code-server" "new-api" "sub2api" "open-pencil" "funflix-web" \
-        "pip-sources" "python-env" "utils" "github-net" "cockpit-tools" "取消")" || return 0
+      name="$(gum choose --header "选择要安装 / 初始化的模块" "${_INSTALL_MODULES[@]}" "取消")" || return 0
     else
-      name="$(gum choose --header "选择要卸载的模块（celery、utils 请手动清理）" \
-        "airflow" "paperclip" "code-server" "new-api" "sub2api" "open-pencil" "funflix-web" \
-        "pip-sources" "python-env" "github-net" "cockpit-tools" "取消")" || return 0
+      name="$(gum choose --header "选择要卸载的模块（celery、utils 请手动清理）" "${_UNINSTALL_MODULES[@]}" "取消")" || return 0
     fi
     [[ -z "$name" || "$name" == "取消" ]] && return 0
     _dispatch_install_or_remove "$action" "$name"
@@ -414,9 +449,7 @@ cmd_install() {
       if [[ -z "$name" ]]; then
         [[ "${NONINTERACTIVE:-}" == "1" ]] && die "请指定模块: fundeploy service install add <模块>"
         _fundeploy_ensure_gum || exit 1
-        name="$(gum choose --header "选择要安装 / 初始化的模块" \
-          "airflow" "celery" "paperclip" "code-server" "new-api" "sub2api" "open-pencil" "funflix-web" \
-          "pip-sources" "python-env" "utils" "github-net" "cockpit-tools" "取消")" || return 0
+        name="$(gum choose --header "选择要安装 / 初始化的模块" "${_INSTALL_MODULES[@]}" "取消")" || return 0
         [[ -z "$name" || "$name" == "取消" ]] && return 0
       fi
       _dispatch_install_or_remove "add" "$name"
@@ -427,9 +460,7 @@ cmd_install() {
       if [[ -z "$name" ]]; then
         [[ "${NONINTERACTIVE:-}" == "1" ]] && die "请指定模块: fundeploy service install remove <模块>"
         _fundeploy_ensure_gum || exit 1
-        name="$(gum choose --header "选择要卸载的模块" \
-          "airflow" "paperclip" "code-server" "new-api" "sub2api" "open-pencil" "funflix-web" \
-          "pip-sources" "python-env" "github-net" "cockpit-tools" "取消")" || return 0
+        name="$(gum choose --header "选择要卸载的模块" "${_UNINSTALL_MODULES[@]}" "取消")" || return 0
         [[ -z "$name" || "$name" == "取消" ]] && return 0
       fi
       _dispatch_install_or_remove "remove" "$name"
@@ -451,14 +482,7 @@ interactive_main() {
     local pick name
     pick="$(fundeploy_ui_choose "fundeploy / service / 选择服务" \
       "status       全部服务状态" \
-      "airflow      工作流调度" \
-      "celery       异步任务队列" \
-      "paperclip    AI 协作服务" \
-      "code-server 浏览器 VS Code" \
-      "new-api      API 网关" \
-      "sub2api      订阅 API 网关" \
-      "open-pencil  CLI、MCP 与桌面工具" \
-      "funflix-web  影视库前后端一体化" \
+      "${_SERVICE_MENU_LABELS[@]}" \
       "help         命令帮助" \
       "back         返回")" || break
     [[ -z "$pick" ]] && break

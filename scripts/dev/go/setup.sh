@@ -8,27 +8,10 @@ set -euo pipefail
 
 die() { echo "错误: $*" >&2; exit 1; }
 
-# 尽力而为 source 安装辅助库（找不到时保持可独立运行）。
 _GO_ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-for _c in "${_GO_ROOT_DIR}/../../lib" "${_GO_ROOT_DIR}/../../../lib"; do
-  if [[ -f "${_c}/fundeploy-install.sh" ]]; then
-    # shellcheck source=../../lib/fundeploy-install.sh
-    source "${_c}/fundeploy-install.sh"
-    break
-  fi
-done
-# 无辅助库时的降级桩，保证脚本仍可运行。
-if ! declare -F _fundeploy_say_step >/dev/null 2>&1; then
-  _fundeploy_say_title() { printf '\n=== %s ===\n' "$*" >&2; }
-  _fundeploy_say_step()  { printf '▸ %s\n' "$*" >&2; }
-  _fundeploy_say_ok()    { printf '✓ %s\n' "$*" >&2; }
-  _fundeploy_say_warn()  { printf '! %s\n' "$*" >&2; }
-  _fundeploy_say_err()   { printf '✗ %s\n' "$*" >&2; }
-  _fundeploy_pm_detect() { printf ''; return 1; }
-  _fundeploy_pm_install() { return 2; }
-  _fundeploy_pm_uninstall() { return 2; }
-  _fundeploy_resolve_method() { printf '%s\n' "${INSTALL_METHOD:-source}"; }
-fi
+[[ -f "${_GO_ROOT_DIR}/../../lib/fundeploy-install.sh" ]] || die "找不到 lib/fundeploy-install.sh"
+# shellcheck source=../../lib/fundeploy-install.sh
+source "${_GO_ROOT_DIR}/../../lib/fundeploy-install.sh"
 
 GO_INSTALL_ROOT="${GO_INSTALL_ROOT:-${HOME}/opt/go}"
 

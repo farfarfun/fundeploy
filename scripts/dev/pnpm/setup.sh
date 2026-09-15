@@ -9,24 +9,9 @@ set -euo pipefail
 die() { echo "错误: $*" >&2; exit 1; }
 
 _PNPM_ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-for _c in "${_PNPM_ROOT_DIR}/../../lib" "${_PNPM_ROOT_DIR}/../../../lib"; do
-  if [[ -f "${_c}/fundeploy-install.sh" ]]; then
-    # shellcheck source=../../lib/fundeploy-install.sh
-    source "${_c}/fundeploy-install.sh"
-    break
-  fi
-done
-if ! declare -F _fundeploy_say_step >/dev/null 2>&1; then
-  _fundeploy_say_title() { printf '\n=== %s ===\n' "$*" >&2; }
-  _fundeploy_say_step()  { printf '▸ %s\n' "$*" >&2; }
-  _fundeploy_say_ok()    { printf '✓ %s\n' "$*" >&2; }
-  _fundeploy_say_warn()  { printf '! %s\n' "$*" >&2; }
-  _fundeploy_pm_detect() { printf ''; return 1; }
-  _fundeploy_pm_install() { return 2; }
-  _fundeploy_pm_uninstall() { return 2; }
-  _fundeploy_resolve_method() { printf '%s\n' "${INSTALL_METHOD:-source}"; }
-fi
-
+[[ -f "${_PNPM_ROOT_DIR}/../../lib/fundeploy-install.sh" ]] || die "找不到 lib/fundeploy-install.sh"
+# shellcheck source=../../lib/fundeploy-install.sh
+source "${_PNPM_ROOT_DIR}/../../lib/fundeploy-install.sh"
 NODE_INSTALL_ROOT="${NODE_INSTALL_ROOT:-${HOME}/opt/node}"
 NPM_GLOBAL_ROOT="${NPM_GLOBAL_ROOT:-${HOME}/opt/npm}"
 

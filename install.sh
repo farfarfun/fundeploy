@@ -420,23 +420,8 @@ _emit_wrapper() {
   chmod 0755 "${bin_path}"
 }
 
-# 从候选路径中选第一个存在的文件复制到 dest 并 chmod 0755（兼容 _lib→lib、扁平 scripts 与 tools/services 分层）。
-_fundeploy_cp_first() {
-  local dest="$1"
-  shift
-  local f
-  for f in "$@"; do
-    if [[ -f "$f" ]]; then
-      cp -f "$f" "$dest"
-      chmod 0755 "$dest"
-      return 0
-    fi
-  done
-  die "找不到源文件，已尝试: $*"
-}
-
 do_install_or_update() {
-  local SCRIPTS LIBEXEC
+  local SCRIPTS LIBEXEC dir legacy
   _guard_fundeploy_root 1
   _resolve_install_source
   SCRIPTS=""
@@ -454,198 +439,38 @@ do_install_or_update() {
   LIBEXEC="${FUNDEPLOY_ROOT}/libexec/fundeploy"
   mkdir -p "${FUNDEPLOY_ROOT}/bin" "${LIBEXEC}" \
     "${FUNDEPLOY_ROOT}/share/fundeploy" "${FUNDEPLOY_ROOT}/etc/fundeploy"
-  mkdir -p "${LIBEXEC}/pip-sources" "${LIBEXEC}/python-env" "${LIBEXEC}/port-kill" \
-    "${LIBEXEC}/ai-cli/claude" "${LIBEXEC}/ai-cli/codex" "${LIBEXEC}/ai-cli/cursor" \
-    "${LIBEXEC}/dev/go" "${LIBEXEC}/dev/rust" "${LIBEXEC}/dev/nodejs" "${LIBEXEC}/dev/pnpm" "${LIBEXEC}/dev/uv" \
-    "${LIBEXEC}/brew" "${LIBEXEC}/download" "${LIBEXEC}/cockpit-tools" "${LIBEXEC}/skills-sync" \
-    "${LIBEXEC}/airflow" "${LIBEXEC}/celery" "${LIBEXEC}/utils" "${LIBEXEC}/github-net" \
-    "${LIBEXEC}/paperclip" "${LIBEXEC}/code-server" "${LIBEXEC}/new-api" "${LIBEXEC}/sub2api" \
-    "${LIBEXEC}/open-pencil" \
-    "${LIBEXEC}/funflix-web" \
-    "${LIBEXEC}/services" \
-    "${LIBEXEC}/tools" \
-    "${LIBEXEC}/lib"
 
-  _fundeploy_cp_first "${LIBEXEC}/lib/fundeploy-ui.sh" \
-    "${SCRIPTS}/lib/fundeploy-ui.sh"
+  # 仓库和安装目录保持同一层级，新增模块无需再维护复制清单。
+  rm -rf -- "${LIBEXEC}/lib" "${LIBEXEC}/dev" "${LIBEXEC}/tools" \
+    "${LIBEXEC}/services" "${LIBEXEC}/ai-cli"
+  for dir in lib dev tools services ai-cli; do
+    [[ -d "${SCRIPTS}/${dir}" ]] || die "找不到源码目录: ${SCRIPTS}/${dir}"
+    cp -R "${SCRIPTS}/${dir}" "${LIBEXEC}/${dir}"
+  done
+  find "${LIBEXEC}" -type f -name '*.sh' -exec chmod 0755 {} +
+  install -m 0755 "${SCRIPTS}/fundeploy.sh" "${LIBEXEC}/fundeploy.sh"
+  install -m 0755 "${SCRIPTS}/../install.sh" "${LIBEXEC}/fundeploy-install.sh"
 
-  _fundeploy_cp_first "${LIBEXEC}/lib/fundeploy-install.sh" \
-    "${SCRIPTS}/lib/fundeploy-install.sh"
-
-  _fundeploy_cp_first "${LIBEXEC}/lib/fundeploy-github-download.sh" \
-    "${SCRIPTS}/lib/fundeploy-github-download.sh"
-
-  _fundeploy_cp_first "${LIBEXEC}/lib/fundeploy-progress.sh" \
-    "${SCRIPTS}/lib/fundeploy-progress.sh"
-
-  _fundeploy_cp_first "${LIBEXEC}/lib/fundeploy-common.sh" \
-    "${SCRIPTS}/lib/fundeploy-common.sh" \
-    "${SCRIPTS}/_lib/fundeploy-common.sh"
-
-  _fundeploy_cp_first "${LIBEXEC}/dev/setup.sh" \
-    "${SCRIPTS}/dev/setup.sh"
-
-  _fundeploy_cp_first "${LIBEXEC}/dev/go/setup.sh" \
-    "${SCRIPTS}/dev/go/setup.sh"
-
-  _fundeploy_cp_first "${LIBEXEC}/dev/rust/setup.sh" \
-    "${SCRIPTS}/dev/rust/setup.sh"
-
-  _fundeploy_cp_first "${LIBEXEC}/dev/nodejs/setup.sh" \
-    "${SCRIPTS}/dev/nodejs/setup.sh"
-
-  _fundeploy_cp_first "${LIBEXEC}/dev/pnpm/setup.sh" \
-    "${SCRIPTS}/dev/pnpm/setup.sh"
-
-  _fundeploy_cp_first "${LIBEXEC}/dev/uv/setup.sh" \
-    "${SCRIPTS}/dev/uv/setup.sh"
-
-  _fundeploy_cp_first "${LIBEXEC}/ai-cli/common.sh" \
-    "${SCRIPTS}/ai-cli/common.sh"
-
-  _fundeploy_cp_first "${LIBEXEC}/ai-cli/setup.sh" \
-    "${SCRIPTS}/ai-cli/setup.sh"
-
-  _fundeploy_cp_first "${LIBEXEC}/ai-cli/claude/setup.sh" \
-    "${SCRIPTS}/ai-cli/claude/setup.sh"
-
-  _fundeploy_cp_first "${LIBEXEC}/ai-cli/codex/setup.sh" \
-    "${SCRIPTS}/ai-cli/codex/setup.sh"
-
-  _fundeploy_cp_first "${LIBEXEC}/ai-cli/cursor/setup.sh" \
-    "${SCRIPTS}/ai-cli/cursor/setup.sh"
-
-  _fundeploy_cp_first "${LIBEXEC}/pip-sources/setup.sh" \
-    "${SCRIPTS}/tools/pip-sources/setup.sh" \
-    "${SCRIPTS}/pip-sources/setup.sh"
-
-  _fundeploy_cp_first "${LIBEXEC}/python-env/setup.sh" \
-    "${SCRIPTS}/tools/python-env/setup.sh" \
-    "${SCRIPTS}/python-env/setup.sh"
-
-  _fundeploy_cp_first "${LIBEXEC}/airflow/setup.sh" \
-    "${SCRIPTS}/services/airflow/setup.sh" \
-    "${SCRIPTS}/airflow/setup.sh"
-
-  _fundeploy_cp_first "${LIBEXEC}/celery/setup.sh" \
-    "${SCRIPTS}/services/celery/setup.sh" \
-    "${SCRIPTS}/celery/setup.sh" \
-    "${SCRIPTS}/celery/celery-setup.sh"
-
-  _fundeploy_cp_first "${LIBEXEC}/utils/setup.sh" \
-    "${SCRIPTS}/tools/utils/setup.sh" \
-    "${SCRIPTS}/utils/setup.sh" \
-    "${SCRIPTS}/utils/utils-setup.sh"
-
-  _fundeploy_cp_first "${LIBEXEC}/github-net/setup.sh" \
-    "${SCRIPTS}/tools/github-net/setup.sh" \
-    "${SCRIPTS}/github-net/setup.sh"
-
-  _fundeploy_cp_first "${LIBEXEC}/port-kill/setup.sh" \
-    "${SCRIPTS}/tools/port-kill/setup.sh"
-
-  _fundeploy_cp_first "${LIBEXEC}/brew/setup.sh" \
-    "${SCRIPTS}/tools/brew/setup.sh"
-
-  _fundeploy_cp_first "${LIBEXEC}/download/setup.sh" \
-    "${SCRIPTS}/tools/download/setup.sh"
-
-  _fundeploy_cp_first "${LIBEXEC}/download/selftest.sh" \
-    "${SCRIPTS}/tools/download/selftest.sh"
-
-  _fundeploy_cp_first "${LIBEXEC}/cockpit-tools/setup.sh" \
-    "${SCRIPTS}/tools/cockpit-tools/setup.sh"
-
-  _fundeploy_cp_first "${LIBEXEC}/skills-sync/setup.sh" \
-    "${SCRIPTS}/tools/skills-sync/setup.sh"
-
-  _fundeploy_cp_first "${LIBEXEC}/paperclip/setup.sh" \
-    "${SCRIPTS}/services/paperclip/setup.sh" \
-    "${SCRIPTS}/paperclip/setup.sh" \
-    "${SCRIPTS}/paperclip/paperclip-setup.sh"
-
-  _fundeploy_cp_first "${LIBEXEC}/code-server/setup.sh" \
-    "${SCRIPTS}/services/code-server/setup.sh" \
-    "${SCRIPTS}/code-server/setup.sh" \
-    "${SCRIPTS}/code-server/code-server-setup.sh"
-
-  _fundeploy_cp_first "${LIBEXEC}/code-server/setup-manual.sh" \
-    "${SCRIPTS}/services/code-server/setup-manual.sh"
-
-  _fundeploy_cp_first "${LIBEXEC}/code-server/setup-offical.sh" \
-    "${SCRIPTS}/services/code-server/setup-offical.sh"
-
-  _fundeploy_cp_first "${LIBEXEC}/new-api/setup.sh" \
-    "${SCRIPTS}/services/new-api/setup.sh" \
-    "${SCRIPTS}/new-api/setup.sh" \
-    "${SCRIPTS}/new-api/new-api-setup.sh"
-
-  _fundeploy_cp_first "${LIBEXEC}/sub2api/setup.sh" \
-    "${SCRIPTS}/services/sub2api/setup.sh" \
-    "${SCRIPTS}/sub2api/setup.sh"
-
-  _fundeploy_cp_first "${LIBEXEC}/sub2api/setup-manual.sh" \
-    "${SCRIPTS}/services/sub2api/setup-manual.sh"
-
-  _fundeploy_cp_first "${LIBEXEC}/sub2api/setup-offical.sh" \
-    "${SCRIPTS}/services/sub2api/setup-offical.sh"
-
-  _fundeploy_cp_first "${LIBEXEC}/open-pencil/setup.sh" \
-    "${SCRIPTS}/services/open-pencil/setup.sh" \
-    "${SCRIPTS}/open-pencil/setup.sh"
-
-  _fundeploy_cp_first "${LIBEXEC}/funflix-web/setup.sh" \
-    "${SCRIPTS}/services/funflix-web/setup.sh" \
-    "${SCRIPTS}/funflix-web/setup.sh"
-
-  _fundeploy_cp_first "${LIBEXEC}/services/fundeploy-services.sh" \
-    "${SCRIPTS}/services/fundeploy-services.sh" \
-    "${SCRIPTS}/services/services.sh" \
-    "${SCRIPTS}/10-services/services.sh"
-
-  # 顶层与工具统一入口（WAR-402）。
-  _fundeploy_cp_first "${LIBEXEC}/tools/fundeploy-tools.sh" \
-    "${SCRIPTS}/tools/fundeploy-tools.sh"
-
-  _fundeploy_cp_first "${LIBEXEC}/fundeploy.sh" \
-    "${SCRIPTS}/fundeploy.sh"
-
-  # 供 fundeploy uninstall / --source local 离线复用（无需公网 raw）。
-  _fundeploy_cp_first "${LIBEXEC}/fundeploy-install.sh" \
-    "${SCRIPTS}/../install.sh"
+  # 清理旧版扁平 libexec 布局。
+  for dir in pip-sources python-env port-kill brew download cockpit-tools skills-sync \
+    airflow celery utils github-net paperclip code-server new-api sub2api open-pencil \
+    funflix-web funread-web; do
+    rm -rf -- "${LIBEXEC}/${dir}"
+  done
 
   _emit_wrapper fundeploy fundeploy.sh
 
   rm -rf "${LIBEXEC}/build"
-  # 更新旧版本时只清理本项目曾安装过的包装器，保留用户的其它命令。
-  rm -f \
-    "${FUNDEPLOY_ROOT}/bin/nlt" \
-    "${FUNDEPLOY_ROOT}/bin/fundeploy-build" \
-    "${FUNDEPLOY_ROOT}/bin/fundeploy-dev" \
-    "${FUNDEPLOY_ROOT}/bin/fundeploy-ai-cli" \
-    "${FUNDEPLOY_ROOT}/bin/fundeploy-pip-sources" \
-    "${FUNDEPLOY_ROOT}/bin/fundeploy-python-env" \
-    "${FUNDEPLOY_ROOT}/bin/fundeploy-utils" \
-    "${FUNDEPLOY_ROOT}/bin/fundeploy-github-net" \
-    "${FUNDEPLOY_ROOT}/bin/fundeploy-port-kill" \
-    "${FUNDEPLOY_ROOT}/bin/fundeploy-download" \
-    "${FUNDEPLOY_ROOT}/bin/fundeploy-cockpit-tools" \
-    "${FUNDEPLOY_ROOT}/bin/fundeploy-services" \
-    "${FUNDEPLOY_ROOT}/bin/fundeploy-tools" \
-    "${FUNDEPLOY_ROOT}/bin/fundeploy-airflow" \
-    "${FUNDEPLOY_ROOT}/bin/fundeploy-celery" \
-    "${FUNDEPLOY_ROOT}/bin/fundeploy-paperclip" \
-    "${FUNDEPLOY_ROOT}/bin/fundeploy-code-server" \
-    "${FUNDEPLOY_ROOT}/bin/fundeploy-new-api" \
-    "${FUNDEPLOY_ROOT}/bin/fundeploy-sub2api" \
-    "${FUNDEPLOY_ROOT}/bin/fundeploy-open-pencil" \
-    "${FUNDEPLOY_ROOT}/bin/fundeploy-airflow-install" \
-    "${FUNDEPLOY_ROOT}/bin/fundeploy-celery-install" \
-    "${FUNDEPLOY_ROOT}/bin/fundeploy-celery-update" \
-    "${FUNDEPLOY_ROOT}/bin/fundeploy-paperclip-install" \
-    "${FUNDEPLOY_ROOT}/bin/fundeploy-code-server-install" \
-    "${FUNDEPLOY_ROOT}/bin/fundeploy-new-api-install" \
-    "${FUNDEPLOY_ROOT}/bin/fundeploy-sub2api-install"
+  # 更新时清理本项目的历史包装器，保留 bin 中的其它命令。
+  for legacy in nlt fundeploy-build fundeploy-dev fundeploy-ai-cli fundeploy-pip-sources \
+    fundeploy-python-env fundeploy-utils fundeploy-github-net fundeploy-port-kill \
+    fundeploy-download fundeploy-cockpit-tools fundeploy-services fundeploy-tools \
+    fundeploy-airflow fundeploy-celery fundeploy-paperclip fundeploy-code-server \
+    fundeploy-new-api fundeploy-sub2api fundeploy-open-pencil fundeploy-airflow-install \
+    fundeploy-celery-install fundeploy-celery-update fundeploy-paperclip-install \
+    fundeploy-code-server-install fundeploy-new-api-install fundeploy-sub2api-install; do
+    rm -f -- "${FUNDEPLOY_ROOT}/bin/${legacy}"
+  done
   if [[ -z "${FUNDEPLOY_PACKAGE_MANAGER:-}" ]]; then
     rm -f "${HOME}/opt/nlt/bin/fundeploy-port-kill"
   fi
