@@ -1,0 +1,39 @@
+name: sync-gitee
+
+# 每次提交（任意分支/标签）都触发，将本仓库镜像到 Gitee 的 farfarfun/fundeploy。
+# 参考 farfarfun/daily-action 里的 Mirror to Gitee 方案，但那个 workflow
+# 用 hub-mirror-action 批量镜像整个 org 的 129+ 个仓库；这里只同步单个仓库，
+# 用 git clone --mirror + push 更直接，也不需要能建仓的 GITEE_TOKEN。
+on:
+  push:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-gitee
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Mirror push to Gitee
+        env:
+          GITEE_RSA_PRIVATE_KEY: ${{ secrets.GITEE_RSA_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$GITEE_RSA_PRIVATE_KEY" > ~/.ssh/gitee_rsa
+          chmod 600 ~/.ssh/gitee_rsa
+          ssh-keyscan -t rsa gitee.com >> ~/.ssh/known_hosts 2>/dev/null
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/gitee_rsa -o UserKnownHostsFile=~/.ssh/known_hosts"
+
+          # --mirror 拉取全部分支与标签；不用 actions/checkout 是因为它默认
+          # 只取触发时的那个 ref，镜像会漏掉其他分支/标签。
+          git clone --mirror "https://github.com/${GITHUB_REPOSITORY}.git" repo-mirror
+          cd repo-mirror
+          git push --mirror -f git@gitee.com:farfarfun/fundeploy.git
