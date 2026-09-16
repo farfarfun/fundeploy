@@ -1,29 +1,32 @@
 #!/usr/bin/env bash
-# funflix-web 一体化部署：把 funflix（后端，PyPI 包）与 funflix-web（前端，私有 npm 包）
+# funflix-web 一体化部署：把 funflix-api（后端，PyPI 包）与 funflix-web（前端，私有 npm 包）
 # 作为同一个服务单元来装/起/停——两者本是各自独立的进程，但这里只暴露合并命令，
-# 不提供拆开单独控制前后端的子命令；如需单独控制，直接用各自的 CLI（funflix / funflix-web）。
+# 不提供拆开单独控制前后端的子命令；如需单独控制，直接用各自的 CLI（funflix-api / funflix-web）。
 #
 # 上游:
-#   后端 https://github.com/farfarfun/funflix        （发布到 PyPI，包名 funflix）
+#   后端 https://github.com/farfarfun/funflix-api     （发布到 PyPI，包名 funflix-api；
+#                                                        依赖核心库 funflix，不直接安装 funflix）
 #   前端 https://github.com/farfarfun/funflix-web     （发布到私有 npm 源，包名 funflix-web）
 #
-# 前后端各自已提供健壮的 server start/stop/restart/status（各自管理自己的 PID/日志），
-# 本脚本只负责「装两个包 + 按依赖顺序编排调用」，不重复维护 PID 文件。
+# 前后端各自已提供健壮的生命周期命令（各自管理自己的 PID/日志），本脚本只负责
+# 「装两个包 + 按依赖顺序编排调用」，不重复维护 PID 文件。注意 funflix-api 的 CLI
+# 是顶层命令（start/stop/restart/status，没有 server 子分组）；funflix-web 的 CLI
+# 仍是 server 子分组（server start/stop/status），两边命令风格不同，别混用。
 #
 # 依赖: python3 + pip（或 uv）装后端；npm 装前端。
 #
 # 用法：
 #   ./setup.sh                 # gum 菜单
-#   ./setup.sh install         # pip/uv 装 funflix + npm -g 装 funflix-web
+#   ./setup.sh install         # pip/uv 装 funflix-api + npm -g 装 funflix-web
 #   ./setup.sh update          # 同 install（重新安装到最新/指定版本），并打印升级前后版本对比
 #   ./setup.sh start           # 先启动后端，再启动前端（自动把 --backend 指向后端地址）
 #   ./setup.sh stop            # 先停止前端，再停止后端
 #   ./setup.sh restart         # stop + start
-#   ./setup.sh status          # 依次打印 funflix / funflix-web 各自的 server status
+#   ./setup.sh status          # 依次打印 funflix-api / funflix-web 各自的状态
 #   ./setup.sh uninstall       # 停止两者，卸载 npm 包与 pip 包
 #
 # 环境变量：
-#   FUNFLIX_WEB_BACKEND_PACKAGE    后端 pip 包名（默认 funflix）
+#   FUNFLIX_WEB_BACKEND_PACKAGE    后端 pip 包名（默认 funflix-api）
 #   FUNFLIX_WEB_BACKEND_VERSION    后端版本号（默认空＝最新）
 #   FUNFLIX_WEB_FRONTEND_PACKAGE   前端 npm 包名（默认 funflix-web）
 #   FUNFLIX_WEB_FRONTEND_VERSION   前端版本号（默认空＝最新）
@@ -43,7 +46,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../../lib/fundeploy-common.sh
 source "${SCRIPT_DIR}/../../lib/fundeploy-common.sh"
 
-FUNFLIX_WEB_BACKEND_PACKAGE="${FUNFLIX_WEB_BACKEND_PACKAGE:-funflix}"
+FUNFLIX_WEB_BACKEND_PACKAGE="${FUNFLIX_WEB_BACKEND_PACKAGE:-funflix-api}"
 FUNFLIX_WEB_BACKEND_VERSION="${FUNFLIX_WEB_BACKEND_VERSION:-}"
 FUNFLIX_WEB_FRONTEND_PACKAGE="${FUNFLIX_WEB_FRONTEND_PACKAGE:-funflix-web}"
 FUNFLIX_WEB_FRONTEND_VERSION="${FUNFLIX_WEB_FRONTEND_VERSION:-}"
@@ -65,23 +68,24 @@ usage() {
 命令:
   install            pip/uv 装 ${FUNFLIX_WEB_BACKEND_PACKAGE}，npm -g 装 ${FUNFLIX_WEB_FRONTEND_PACKAGE}
   update             同 install，并打印升级前后的版本对比
-  start              按序启动：先 funflix 后端，再 funflix-web 前端（自动带上 --backend）
+  start              按序启动：先 funflix-api 后端，再 funflix-web 前端（自动带上 --backend）
   stop               按序停止：先前端，再后端（best effort，不因某一端未运行而报错）
   restart            stop + start
-  status             依次打印 funflix / funflix-web 的 server status
+  status             依次打印 funflix-api / funflix-web 的状态
   uninstall          停止两者，卸载 npm 包与 pip 包
 
 说明:
   - 前后端是两个独立进程，各自的 PID/日志由上游 CLI 自己管理，本脚本不重复维护：
-      funflix（后端）      PID/日志见 \${XDG_CONFIG_HOME:-~/.config}/farfarfun/funflix/
+      funflix-api（后端）  PID/日志见 \${XDG_CONFIG_HOME:-~/.config}/farfarfun/funflix-api/
       funflix-web（前端）  PID/日志见 ~/.cache/farfarfun/funflix-web/run/
   - 后端: http://${FUNFLIX_WEB_BACKEND_HOST}:${FUNFLIX_WEB_BACKEND_PORT}（接口文档 /docs）
   - 前端: http://${FUNFLIX_WEB_FRONTEND_HOST}:${FUNFLIX_WEB_FRONTEND_PORT}/web（浏览器打开这个）
   - 管理密钥: 提前 export FUNFLIX_ADMIN_API_KEY=... 后再 start，会自动带给后端；
     界面左下角「管理密钥」里填入同一个值即可解锁写操作
-  - 只提供合并命令；如需单独控制某一端，直接用 funflix / funflix-web 各自的 CLI
+  - 只提供合并命令；如需单独控制某一端，直接用 funflix-api / funflix-web 各自的 CLI
+    （注意 funflix-api 是顶层命令 start/stop/status，funflix-web 仍是 server start/stop/status）
 
-上游: https://github.com/farfarfun/funflix ・ https://github.com/farfarfun/funflix-web
+上游: https://github.com/farfarfun/funflix-api ・ https://github.com/farfarfun/funflix-web
 USAGE
 }
 
@@ -228,7 +232,7 @@ _wait_for_listener() {
 }
 
 cmd_start() {
-  _require_cli funflix "pip/uv 安装 ${FUNFLIX_WEB_BACKEND_PACKAGE} 后应在 PATH 中"
+  _require_cli funflix-api "pip/uv 安装 ${FUNFLIX_WEB_BACKEND_PACKAGE} 后应在 PATH 中"
   _require_cli funflix-web "npm -g 安装 ${FUNFLIX_WEB_FRONTEND_PACKAGE} 后应在 PATH 中"
 
   # start 在目标已经运行时，上游 CLI 会返回非零退出码（"已在运行，请用 restart"）；
@@ -236,13 +240,13 @@ cmd_start() {
   if [[ -n "$(_fundeploy_listener_pid_for_port "${FUNFLIX_WEB_BACKEND_PORT}")" ]]; then
     echo "后端 ${FUNFLIX_WEB_BACKEND_HOST}:${FUNFLIX_WEB_BACKEND_PORT} 已在运行，跳过。"
   else
-    echo "==> 启动后端 funflix，监听 ${FUNFLIX_WEB_BACKEND_HOST}:${FUNFLIX_WEB_BACKEND_PORT}"
-    funflix server start --host "${FUNFLIX_WEB_BACKEND_HOST}" --port "${FUNFLIX_WEB_BACKEND_PORT}" \
+    echo "==> 启动后端 funflix-api，监听 ${FUNFLIX_WEB_BACKEND_HOST}:${FUNFLIX_WEB_BACKEND_PORT}"
+    funflix-api start --host "${FUNFLIX_WEB_BACKEND_HOST}" --port "${FUNFLIX_WEB_BACKEND_PORT}" \
       || die "后端启动失败，已中止（前端未启动）"
     _wait_for_listener "${FUNFLIX_WEB_BACKEND_HOST}" "${FUNFLIX_WEB_BACKEND_PORT}" \
       || die "后端启动命令已返回，但端口 ${FUNFLIX_WEB_BACKEND_PORT} 迟迟未监听（多半是启动后崩溃）。" \
-             "已中止（前端未启动）。请看日志: \${XDG_CONFIG_HOME:-~/.config}/farfarfun/funflix/server.log，" \
-             "或跑 funflix server run 看前台报错。"
+             "已中止（前端未启动）。请看日志: \${XDG_CONFIG_HOME:-~/.config}/farfarfun/funflix-api/server.log，" \
+             "或跑 funflix-api run 看前台报错。"
   fi
 
   if [[ -n "$(_fundeploy_listener_pid_for_port "${FUNFLIX_WEB_FRONTEND_PORT}")" ]]; then
@@ -270,9 +274,9 @@ cmd_stop() {
   else
     echo "前端未安装，跳过。"
   fi
-  if command -v funflix >/dev/null 2>&1; then
-    echo "==> 停止后端 funflix"
-    funflix server stop || echo "警告: 后端停止失败或未在运行" >&2
+  if command -v funflix-api >/dev/null 2>&1; then
+    echo "==> 停止后端 funflix-api"
+    funflix-api stop || echo "警告: 后端停止失败或未在运行" >&2
   else
     echo "后端未安装，跳过。"
   fi
@@ -285,9 +289,9 @@ cmd_restart() {
 }
 
 cmd_status() {
-  echo "== 后端 funflix（${FUNFLIX_WEB_BACKEND_HOST}:${FUNFLIX_WEB_BACKEND_PORT}）=="
-  if command -v funflix >/dev/null 2>&1; then
-    funflix server status || true
+  echo "== 后端 funflix-api（${FUNFLIX_WEB_BACKEND_HOST}:${FUNFLIX_WEB_BACKEND_PORT}）=="
+  if command -v funflix-api >/dev/null 2>&1; then
+    funflix-api status || true
   else
     echo "未安装（./setup.sh install 或: pip/uv install ${FUNFLIX_WEB_BACKEND_PACKAGE}）"
   fi
@@ -314,9 +318,9 @@ cmd_uninstall() {
     }
   fi
 
-  if command -v funflix >/dev/null 2>&1; then
-    echo "==> 停止后端 funflix"
-    funflix server stop || echo "警告: 后端停止失败或未在运行" >&2
+  if command -v funflix-api >/dev/null 2>&1; then
+    echo "==> 停止后端 funflix-api"
+    funflix-api stop || echo "警告: 后端停止失败或未在运行" >&2
   fi
   echo "==> 卸载后端 pip 包 ${FUNFLIX_WEB_BACKEND_PACKAGE}"
   _pip_uninstall_pkg "${FUNFLIX_WEB_BACKEND_PACKAGE}"

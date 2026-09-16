@@ -277,7 +277,7 @@ cmd_status() {
   pid_s2a="$(read_pid_file "${SUB2API_SERVICE_HOME}/run/sub2api.pid")"
   s2a_listener_pid="$(listener_pid_for_port "${SUB2API_PORT}")"
 
-  # funflix / funflix-web 各自管理自己的 PID 文件，这里只用端口探测判断是否在跑。
+  # funflix-api / funflix-web 各自管理自己的 PID 文件，这里只用端口探测判断是否在跑。
   FUNFLIX_WEB_BACKEND_HOST="${FUNFLIX_WEB_BACKEND_HOST:-127.0.0.1}"
   FUNFLIX_WEB_BACKEND_PORT="${FUNFLIX_WEB_BACKEND_PORT:-18810}"
   FUNFLIX_WEB_FRONTEND_HOST="${FUNFLIX_WEB_FRONTEND_HOST:-127.0.0.1}"
@@ -358,7 +358,7 @@ cmd_status() {
       "${SUB2API_PORT} → ${SUB2API_HOST}:${SUB2API_PORT}" \
       "$(http_probe "http://${SUB2API_HOST}:${SUB2API_PORT}/health")"
     _status_csv_line \
-      "funflix" \
+      "funflix-api" \
       "$(service_state_from_pid_and_port "" "$ffx_be_listener_pid")" \
       "$(service_pid_display "" "$ffx_be_listener_pid")" \
       "${FUNFLIX_WEB_BACKEND_HOST}:${FUNFLIX_WEB_BACKEND_PORT}" \
@@ -398,7 +398,7 @@ cmd_status() {
   echo ""
   echo "说明:"
   echo "  • celery 状态列 wbf 为 worker / beat / flower：√ 运行中，× 未运行；与 Airflow 同机时请区分 FLOWER_PORT。"
-  echo "  • funflix / funflix-web 各自管理自己的 PID/日志，此表仅按端口探测判断存活；一起装/起/停请用 fundeploy service funflix-web。"
+  echo "  • funflix-api / funflix-web 各自管理自己的 PID/日志，此表仅按端口探测判断存活；一起装/起/停请用 fundeploy service funflix-web。"
   echo "  • funread / funread-web 由 fundeploy 管理 PID/日志；一起装/起/停请用 fundeploy service funread-web。"
   echo "  • funlesson-api / funlesson-web 各自管理自己的 PID/日志，此表仅按端口探测判断存活；一起装/起/停请用 fundeploy service funlesson-web。"
   echo "  • 安装路径: airflow ${AIRFLOW_HOME} | celery ${CELERY_HOME} | paperclip ${PAPERCLIP_HOME} | code-server ${CODE_SERVER_SERVICE_HOME} | new-api ${NEW_API_SERVICE_HOME} | sub2api ${SUB2API_SERVICE_HOME} | funread-web ${FUNREAD_WEB_SERVICE_HOME}"
