@@ -4,7 +4,7 @@
 
 覆盖这些场景：
 - 开发环境：`pip` 镜像、`uv`、Python 虚拟环境、Go、Rust、Node.js、pnpm
-- 常驻服务：Airflow、Celery、Paperclip、code-server、new-api、sub2api、funflix-web（影视库前后端一体化）、funread-web（阅读源前后端一体化）
+- 常驻服务：Airflow、Celery、Paperclip、code-server、new-api、sub2api、funflix-web（影视库前后端一体化）、funread-web（阅读源前后端一体化）、funlesson-web（课程备课材料前后端一体化）
 - 桌面/AI 工具：`fundeploy ai`（Claude Code、Codex、Cursor）与 OpenPencil（CLI + MCP + Tauri 桌面包）
 - 常用工具：gum、GitHub 下载加速、GitHub 网络诊断、按端口杀进程
 
@@ -24,6 +24,8 @@
   fundeploy service funflix-web start
   fundeploy service funread-web install
   fundeploy service funread-web start
+  fundeploy service funlesson-web install
+  fundeploy service funlesson-web start
   fundeploy dev uv install
   fundeploy tool github-net doctor
   fundeploy ai codex update
@@ -129,12 +131,14 @@ brew uninstall fundeploy
 ### 服务
 
 - `fundeploy service status`：服务总览
-- `fundeploy service airflow|celery|paperclip|code-server|new-api|sub2api|open-pencil|funflix-web|funread-web`
+- `fundeploy service airflow|celery|paperclip|code-server|new-api|sub2api|open-pencil|funflix-web|funread-web|funlesson-web`
 - `fundeploy service paperclip start|stop|restart|status|logs`：转发到 Paperclip 官方 `service` 命令（Linux systemd user / macOS LaunchAgent）
 - `fundeploy service funflix-web install|start|stop|restart|status|uninstall`：funflix（后端，PyPI）+
   funflix-web（前端，私有 npm）一起装/起/停，只提供合并命令
 - `fundeploy service funread-web install|start|stop|restart|status|uninstall`：在本地 venv 安装 funread API，
   从 GitHub 构建 funread-web，并一起管理前后端进程
+- `fundeploy service funlesson-web install|start|stop|restart|status|uninstall`：funlesson-api（后端，私有
+  PyPI）+ funlesson-web（前端，私有 npm）一起装/起/停，只提供合并命令
 
 ### 工具
 
