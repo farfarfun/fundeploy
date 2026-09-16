@@ -305,7 +305,13 @@ grep -q "brew" <<<"${out}" || exit 1
 NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" dev --help >/dev/null || exit 1
 mkdir -p "${TMP}/status-home/.paperclip/instances/default"
 printf '%s\n' '{"server":{"host":"127.0.0.2","port":43100}}' >"${TMP}/status-home/.paperclip/instances/default/config.json"
-out="$(HOME="${TMP}/status-home" PATH=/usr/bin:/bin NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" service status --no-http)"
+# status 用 node 解析 paperclip 的 config.json；GitHub Actions 的 node 装在
+# hostedtoolcache 里而非 /usr/bin，PATH=/usr/bin:/bin 会让 command -v node
+# 找不到它，host/port 静默回退到默认值，下面的 grep 就再也匹配不到。
+status_path="/usr/bin:/bin"
+node_bin="$(command -v node 2>/dev/null || true)"
+[[ -n "${node_bin}" ]] && status_path="$(dirname "${node_bin}"):${status_path}"
+out="$(HOME="${TMP}/status-home" PATH="${status_path}" NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" service status --no-http)"
 grep -q '^服务,状态,PID,端口/访问,HTTP$' <<<"${out}" || exit 1
 grep -q '127.0.0.2:43100' <<<"${out}" || exit 1
 NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" dev --help >/dev/null || exit 1
