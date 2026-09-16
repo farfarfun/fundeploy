@@ -36,4 +36,10 @@ jobs:
           # 只取触发时的那个 ref，镜像会漏掉其他分支/标签。
           git clone --mirror "https://github.com/${GITHUB_REPOSITORY}.git" repo-mirror
           cd repo-mirror
-          git push --mirror -f git@gitee.com:farfarfun/fundeploy.git
+
+          # GitHub 会把每个 PR 暴露成 refs/pull/<n>/head，--mirror clone 会带上它们；
+          # Gitee 把这些当「隐藏 ref」拒绝更新（deny updating a hidden ref），导致
+          # `push --mirror` 整体报错退出 1 —— 即使 heads/tags 那部分其实已经推送成功。
+          # 只推 heads/tags，--prune 保留「删除 Gitee 上已不存在分支/标签」的镜像语义。
+          git push --prune -f git@gitee.com:farfarfun/fundeploy.git \
+            'refs/heads/*:refs/heads/*' 'refs/tags/*:refs/tags/*'
