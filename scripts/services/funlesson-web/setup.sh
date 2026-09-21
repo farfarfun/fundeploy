@@ -17,7 +17,7 @@
 # 用法：
 #   ./setup.sh                 # gum 菜单
 #   ./setup.sh install         # pip/uv 装 funlesson-api + npm -g 装 funlesson-web
-#   ./setup.sh update          # 同 install（重新安装到最新/指定版本），并打印升级前后版本对比
+#   ./setup.sh upgrade         # 同 install（重新安装到最新/指定版本），并打印升级前后版本对比
 #   ./setup.sh start           # 先启动后端，再启动前端（自动把 --backend 指向后端地址）
 #   ./setup.sh stop            # 先停止前端，再停止后端
 #   ./setup.sh restart         # stop + start
@@ -65,7 +65,7 @@ usage() {
 
 命令:
   install            pip/uv 装 ${FUNLESSON_WEB_BACKEND_PACKAGE}，npm -g 装 ${FUNLESSON_WEB_FRONTEND_PACKAGE}
-  update             同 install，并打印升级前后的版本对比
+  upgrade            同 install，并打印升级前后的版本对比
   start              按序启动：先 funlesson-api 后端，再 funlesson-web 前端（自动带上 --backend）
   stop               按序停止：先前端，再后端（best effort，不因某一端未运行而报错）
   restart            stop + start
@@ -127,10 +127,24 @@ _npm_uninstall_global() {
   fi
 }
 
+# pnpm add/install -g <pkg>@latest 偶发会命中过期的 dist-tag 解析缓存，装出
+# 比 latest 旧的版本（即使当场 pnpm/npm view 已经能查到新版本号）。为绕开这个
+# 坑，"latest" 一律先用 view 查出具体版本号，再按精确版本号安装；查不到时才
+# 退回字面量 @latest。
+_npm_resolve_latest_version() {
+  local npm_bin="$1" pkg="$2"
+  "${npm_bin}" view "${pkg}" version 2>/dev/null | tail -1
+}
+
 _npm_pkg_spec() {
-  local pkg="$1" version="$2"
+  local npm_bin="$1" pkg="$2" version="$3" resolved
   if [[ -z "${version}" ]]; then
-    printf '%s@latest' "${pkg}"
+    resolved="$(_npm_resolve_latest_version "${npm_bin}" "${pkg}")"
+    if [[ -n "${resolved}" ]]; then
+      printf '%s@%s' "${pkg}" "${resolved}"
+    else
+      printf '%s@latest' "${pkg}"
+    fi
   else
     printf '%s@%s' "${pkg}" "${version#v}"
   fi
@@ -180,7 +194,7 @@ cmd_install() {
   local npm_bin backend_spec frontend_spec
   npm_bin="$(_resolve_npm)"
   backend_spec="$(_pip_pkg_spec "${FUNLESSON_WEB_BACKEND_PACKAGE}" "${FUNLESSON_WEB_BACKEND_VERSION}")"
-  frontend_spec="$(_npm_pkg_spec "${FUNLESSON_WEB_FRONTEND_PACKAGE}" "${FUNLESSON_WEB_FRONTEND_VERSION}")"
+  frontend_spec="$(_npm_pkg_spec "${npm_bin}" "${FUNLESSON_WEB_FRONTEND_PACKAGE}" "${FUNLESSON_WEB_FRONTEND_VERSION}")"
   echo "==> 安装后端: ${backend_spec}"
   _pip_install_pkg "${backend_spec}" || die "后端安装失败: ${backend_spec}"
   if _npm_is_pnpm "${npm_bin}"; then
@@ -235,7 +249,7 @@ print(info.get("version") or "")
   fi
 }
 
-cmd_update() {
+cmd_upgrade() {
   local backend_before backend_after frontend_before frontend_after
   backend_before="$(_pip_pkg_version "${FUNLESSON_WEB_BACKEND_PACKAGE}")"
   frontend_before="$(_npm_pkg_version "${FUNLESSON_WEB_FRONTEND_PACKAGE}")"
@@ -372,7 +386,7 @@ interactive_main() {
     local pick
     pick="$(fundeploy_ui_choose "fundeploy / service / funlesson-web / 选择动作" \
       "install    安装（后端 pip + 前端 npm）" \
-      "update     更新到最新/指定版本，并显示升级前后版本" \
+      "upgrade    更新到最新/指定版本，并显示升级前后版本" \
       "start      启动（后端 → 前端）" \
       "stop       停止（前端 → 后端）" \
       "restart    重启" \
@@ -386,7 +400,7 @@ interactive_main() {
       quit) break ;;
       help) usage ;;
       install) cmd_install ;;
-      update) cmd_update ;;
+      upgrade) cmd_upgrade ;;
       start) cmd_start ;;
       stop) cmd_stop ;;
       restart) cmd_restart ;;
@@ -410,7 +424,7 @@ main() {
   fi
   case "$cmd" in
     install) cmd_install ;;
-    update) cmd_update ;;
+    update|upgrade) cmd_upgrade ;;
     start) cmd_start ;;
     stop) cmd_stop ;;
     restart) cmd_restart ;;
