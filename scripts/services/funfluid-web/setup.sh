@@ -67,6 +67,15 @@ FUNFLUID_WEB_FRONTEND_PORT="${FUNFLUID_WEB_FRONTEND_PORT:-8806}"
 FUNFLUID_WEB_PIP_BIN="${FUNFLUID_WEB_PIP_BIN:-}"
 FUNFLUID_WEB_NPM_BIN="${FUNFLUID_WEB_NPM_BIN:-}"
 
+# funfluid-api 是非 editable 的 uv tool 安装（源码不在本地），其内部的
+# REPO_ROOT 兜底猜测会落在 site-packages 里而不是真正的配置目录，导致
+# Django settings 加载失败、start/stop/status/restart 等自定义管理命令
+# 变得不可见（报一大串 "No config file found" 的 traceback）。必须显式指定
+# FUNFLUID_CONFIG_DIR/FUNFLUID_DATA_DIR，与 funfluid-dev 仓库自带的
+# scripts/services/backend.sh 保持一致。
+export FUNFLUID_CONFIG_DIR="${FUNFLUID_CONFIG_DIR:-${HOME}/.farfarfun/funfluid/backend}"
+export FUNFLUID_DATA_DIR="${FUNFLUID_DATA_DIR:-${HOME}/.farfarfun/funfluid/backend}"
+
 die() { echo "错误: $*" >&2; exit 1; }
 
 usage() {
