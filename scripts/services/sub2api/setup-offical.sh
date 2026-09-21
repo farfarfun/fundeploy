@@ -30,7 +30,7 @@ usage() {
 
 命令:
   install [上游选项]      使用官方脚本安装（/opt/sub2api + systemd，端口默认 8802）
-  update [上游选项]       使用官方脚本升级
+  upgrade [上游选项]      使用官方脚本升级
   start / stop / restart  通过 systemd 管理服务
   status                  查看 systemd 服务状态
   logs [journalctl 选项]  查看服务日志（默认持续跟踪）
@@ -137,7 +137,7 @@ interactive_main() {
     local pick
     pick="$(fundeploy_ui_choose "fundeploy / service / sub2api / official / 选择动作" \
       "install           安装" \
-      "update            更新" \
+      "upgrade           更新" \
       "start             启动" \
       "stop              停止" \
       "restart           重启" \
@@ -149,7 +149,7 @@ interactive_main() {
     pick="${pick%% *}"
     case "$pick" in
       install) run_official install ;;
-      update) run_official upgrade ;;
+      upgrade) run_official upgrade ;;
       start|stop|restart) as_root systemctl "$pick" "${SERVICE_NAME}" ;;
       status) as_root systemctl status "${SERVICE_NAME}" --no-pager ;;
       logs) as_root journalctl -u "${SERVICE_NAME}" -f ;;

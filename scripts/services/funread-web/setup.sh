@@ -34,7 +34,7 @@ usage() {
 用法: ./setup.sh [command]
 
 命令:
-  install / update   安装或更新 funread API，并拉取、构建 funread-web
+  install / upgrade  安装或升级 funread API，并拉取、构建 funread-web
   start              先启动后端，再启动前端
   stop               先停止前端，再停止后端
   restart            stop + start
@@ -261,14 +261,14 @@ interactive_main() {
   while true; do
     local pick
     pick="$(fundeploy_ui_choose "fundeploy / service / funread-web / 选择动作" \
-      "install    安装" "update     更新" "start      启动" "stop       停止" \
+      "install    安装" "upgrade    升级" "start      启动" "stop       停止" \
       "restart    重启" "status     查看状态" "uninstall  卸载" "help       命令帮助" "quit       返回")" || break
     [[ -n "$pick" ]] || break
     pick="${pick%% *}"
     case "$pick" in
       quit) break ;;
       help) usage ;;
-      install|update) cmd_install ;;
+      install|upgrade) cmd_install ;;
       start) cmd_start ;;
       stop) cmd_stop ;;
       restart) cmd_restart ;;
@@ -288,7 +288,7 @@ main() {
     return
   fi
   case "$cmd" in
-    install|update) cmd_install ;;
+    install|update|upgrade) cmd_install ;;
     start) cmd_start ;;
     stop) cmd_stop ;;
     restart) cmd_restart ;;

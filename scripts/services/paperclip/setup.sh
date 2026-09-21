@@ -24,7 +24,7 @@ usage() {
   install          官方 managed install（正式版）
   install-canary   官方 managed install（开发版）
   install-prod     install 的别名
-  update [canary|prod]  官方升级、备份、迁移及服务重启（默认 canary）
+  upgrade [canary|prod] 官方升级、备份、迁移及服务重启（默认 canary）
   onboard          首次配置；NONINTERACTIVE=1 时默认追加 --yes
   plugin list                  列出 awesome-paperclip 收录的插件
   plugin install [npm-package] 安装插件；不指定包名时从清单选择
@@ -41,7 +41,7 @@ usage() {
   - Linux 使用 systemd --user，macOS 使用 LaunchAgent。
   - 配置由 paperclipai onboard / configure 管理。
   - PAPERCLIP_INSTANCE_ID 默认为 ${PAPERCLIP_INSTANCE_ID}。
-  - update 完成后检查 PostgreSQL、Paperclip 端口及 /api/health。
+  - upgrade 完成后检查 PostgreSQL、Paperclip 端口及 /api/health。
 USAGE
 }
 
@@ -256,7 +256,7 @@ paperclip_wait_for_update_health() {
   die "Paperclip 升级后未在 ${PAPERCLIP_UPDATE_HEALTH_TIMEOUT_SEC} 秒内通过健康检查"
 }
 
-cmd_update() {
+cmd_upgrade() {
   local channel="${1:-canary}" option
   case "$channel" in
     canary) option=--canary ;;
@@ -380,7 +380,7 @@ dispatch() {
   case "$cmd" in
     install | install-prod) cmd_install ;;
     install-canary) cmd_install --canary ;;
-    update) cmd_update "$@" ;;
+    update|upgrade) cmd_upgrade "$@" ;;
     onboard) cmd_onboard "$@" ;;
     plugin) cmd_plugin "$@" ;;
     run) cmd_run "$@" ;;
@@ -399,7 +399,7 @@ interactive_main() {
   while true; do
     local pick
     pick="$(fundeploy_ui_choose "fundeploy / service / paperclip / 选择动作" \
-      "install-canary" "install-prod" "update" "onboard" "plugin install" "start" "run" "stop" "restart" "status" "logs" "uninstall" "help" "quit")" || break
+      "install-canary" "install-prod" "upgrade" "onboard" "plugin install" "start" "run" "stop" "restart" "status" "logs" "uninstall" "help" "quit")" || break
     [[ -n "$pick" ]] || break
     case "$pick" in
       quit) break ;;

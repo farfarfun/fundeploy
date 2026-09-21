@@ -20,7 +20,7 @@
 #   ./airflow-setup.sh users-list                # 列举用户（同 airflow users list）
 #   ./airflow-setup.sh users-reset-password      # 重置密码（同 airflow users reset-password）
 #   ./airflow-setup.sh http-trigger <dag_id> [payload.json]   # HTTP 触发 DAG（见下「HTTP 触发」）
-#   ./airflow-setup.sh update          # 保留数据目录，升级依赖并执行 db / fab-db migrate
+#   ./airflow-setup.sh upgrade         # 保留数据目录，升级依赖并执行 db / fab-db migrate
 #   ./airflow-setup.sh stop
 #   ./airflow-setup.sh uninstall        # 停止进程并删除 AIRFLOW_VENV 与 AIRFLOW_HOME（不可逆）
 #
@@ -92,7 +92,7 @@ usage() {
 
 命令:
   install          在 ~/opt/airflow/venv 用 uv 创建/复用环境；按官方 constraints 安装 Airflow 核心 + FAB；db migrate + fab-db migrate
-  update           保留 AIRFLOW_HOME 数据，按当前 AIRFLOW_VERSION 与 constraints 升级依赖并执行 db / fab-db migrate
+  upgrade          保留 AIRFLOW_HOME 数据，按当前 AIRFLOW_VERSION 与 constraints 升级依赖并执行 db / fab-db migrate
   start            后台启动 airflow standalone（写入 run/standalone.pid）
   run              前台启动 airflow standalone（同 start 的 venv 与环境变量；不写 PID；后台已在跑时拒绝）
   stop             停止 standalone 进程组
@@ -286,7 +286,7 @@ cmd_install() {
   say_info "安装完成。下一步: $0 start"
 }
 
-cmd_update() {
+cmd_upgrade() {
   require_uv
   require_venv_airflow
   ensure_dirs
@@ -692,7 +692,7 @@ dispatch() {
   shift || true
   case "$cmd" in
     install) cmd_install ;;
-    update) cmd_update ;;
+    update|upgrade) cmd_upgrade ;;
     start) cmd_start ;;
     run) cmd_run ;;
     stop) cmd_stop ;;
@@ -728,7 +728,7 @@ interactive_main() {
   while true; do
     local pick
     pick="$(fundeploy_ui_choose "fundeploy / service / airflow / 选择动作" \
-      "install" "update" "start" "run" "stop" "restart" "status" \
+      "install" "upgrade" "start" "run" "stop" "restart" "status" \
       "dag-scaffold" "dags-list" "trigger" "task-test" \
       "users-create" "users-list" "users-reset-password" "http-trigger" \
       "uninstall" "help" "quit")" || break

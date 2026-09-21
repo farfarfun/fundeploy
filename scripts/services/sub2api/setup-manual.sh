@@ -6,7 +6,7 @@
 # 用法：
 #   ./setup-manual.sh              # gum 菜单
 #   ./setup-manual.sh install      # 下载二进制与 deploy 资料到 ${SUB2API_SERVICE_HOME}
-#   ./setup-manual.sh update       # 重新下载（同 install）
+#   ./setup-manual.sh upgrade      # 重新下载（同 install）
 #   ./setup-manual.sh install -v v0.1.144
 #   ./setup-manual.sh start | run | stop | restart | status | uninstall
 #
@@ -60,7 +60,7 @@ usage() {
   无参数：gum 菜单。
 
 命令:
-  install / update   从 GitHub Releases 下载二进制到 ${SUB2API_SERVICE_HOME}
+  install / upgrade  从 GitHub Releases 下载二进制到 ${SUB2API_SERVICE_HOME}
                      可配合 -v/--version 指定版本；交互模式默认列版本并预选 latest
   start              后台启动（日志 ${LOG_FILE}；默认 ${SUB2API_HOST}:${SUB2API_PORT}）
   run                前台启动（同环境；不写 PID；后台已在跑时拒绝）
@@ -73,7 +73,7 @@ usage() {
   - 默认导出 RUN_MODE=${SUB2API_RUN_MODE}、SIMPLE_MODE_CONFIRM=${SUB2API_SIMPLE_MODE_CONFIRM}
   - 若 ${SUB2API_ENV_FILE} 存在，将自动 source，可放 DATABASE_* / REDIS_* / JWT_SECRET 等
   - install 会额外保留上游 deploy/ 文档，并在缺失时写入示例配置 ${SUB2API_CONFIG_EXAMPLE_DEST}
-  - install / update 默认会尝试校验 release 附带的 checksums.txt
+  - install / upgrade 默认会尝试校验 release 附带的 checksums.txt
   - 若未提供 config.yaml，Sub2API 可走上游 Setup Wizard / 默认环境变量路径
 USAGE
 }
@@ -406,12 +406,12 @@ cmd_install() {
   _download_install
 }
 
-cmd_update() {
+cmd_upgrade() {
   if [[ -z "${SUB2API_VERSION:-}" ]] && [[ -t 0 && -t 1 ]]; then
     SUB2API_VERSION="$(choose_install_version)" || exit 1
   fi
   ensure_dirs
-  echo "==> 更新 Sub2API（重新下载）…" >&2
+  echo "==> 升级 Sub2API（重新下载）…" >&2
   _download_install
 }
 
@@ -547,7 +547,7 @@ interactive_main() {
     local pick
     pick="$(fundeploy_ui_choose "fundeploy / service / sub2api / manual / 选择动作" \
       "install           安装" \
-      "update            更新" \
+      "upgrade           更新" \
       "start             启动" \
       "run               前台运行（仅本地安装）" \
       "stop              停止" \
@@ -563,7 +563,7 @@ interactive_main() {
       quit) break ;;
       help) usage; echo "" ;;
       install) cmd_install ;;
-      update) cmd_update ;;
+      upgrade) cmd_upgrade ;;
       start) cmd_start ;;
       run) cmd_run ;;
       stop) cmd_stop ;;
@@ -608,7 +608,7 @@ main() {
   fi
   case "$cmd" in
     install) cmd_install ;;
-    update) cmd_update ;;
+    update|upgrade) cmd_upgrade ;;
     start) cmd_start ;;
     run) cmd_run ;;
     stop) cmd_stop ;;

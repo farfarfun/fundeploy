@@ -6,7 +6,7 @@
 # 用法：
 #   ./setup.sh              # gum 菜单
 #   ./setup.sh install      # 下载二进制到 ${NEW_API_SERVICE_HOME}/bin/new-api
-#   ./setup.sh update       # 重新下载（同 install）
+#   ./setup.sh upgrade      # 重新下载（同 install）
 #   ./setup.sh start        # 后台启动（工作目录为数据目录，默认端口 8801）
 #   ./setup.sh run          # 前台启动（同目录与 PORT；不写 PID；后台已在跑时拒绝）
 #   ./setup.sh stop | restart | status | uninstall
@@ -56,7 +56,7 @@ usage() {
   无参数：gum 菜单。
 
 命令:
-  install / update   从 GitHub Releases 下载预编译二进制到 ${NEW_API_BIN}
+  install / upgrade  从 GitHub Releases 下载预编译二进制到 ${NEW_API_BIN}
   start              后台启动（cwd ${NEW_API_DATA_DIR}；无 .env 时注入 PORT=${NEW_API_PORT}；有 .env 时由程序读 .env；日志 ${LOG_FILE}）
   run                前台启动（与 start 相同 cwd；终端附着；不写 PID；后台已在跑时拒绝）
   stop / restart / status
@@ -222,9 +222,9 @@ cmd_install() {
   _download_install
 }
 
-cmd_update() {
+cmd_upgrade() {
   ensure_dirs
-  echo "==> 更新 new-api（重新下载）…" >&2
+  echo "==> 升级 new-api（重新下载）…" >&2
   _download_install
 }
 
@@ -385,7 +385,7 @@ dispatch() {
   shift || true
   case "$cmd" in
     install) cmd_install ;;
-    update) cmd_update ;;
+    update|upgrade) cmd_upgrade ;;
     start) cmd_start ;;
     run) cmd_run ;;
     stop) cmd_stop ;;
@@ -415,7 +415,7 @@ interactive_main() {
   while true; do
     local pick
     pick="$(fundeploy_ui_choose "fundeploy / service / new-api / 选择动作" \
-      "install" "update" "start" "run" "stop" "restart" "status" "uninstall" "help" "quit")" || break
+      "install" "upgrade" "start" "run" "stop" "restart" "status" "uninstall" "help" "quit")" || break
     [[ -z "$pick" ]] && break
     case "$pick" in
       quit) break ;;
