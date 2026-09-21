@@ -13,7 +13,7 @@ FUNREAD_WEB_BACKEND_VERSION="${FUNREAD_WEB_BACKEND_VERSION:-}"
 FUNREAD_WEB_GIT_URL="${FUNREAD_WEB_GIT_URL:-https://github.com/farfarfun/funread-web.git}"
 FUNREAD_WEB_GIT_REF="${FUNREAD_WEB_GIT_REF:-master}"
 FUNREAD_WEB_PYTHON_BIN="${FUNREAD_WEB_PYTHON_BIN:-python3}"
-FUNREAD_WEB_NPM_BIN="${FUNREAD_WEB_NPM_BIN:-npm}"
+FUNREAD_WEB_NPM_BIN="${FUNREAD_WEB_NPM_BIN:-}"
 FUNREAD_WEB_BACKEND_HOST="${FUNREAD_WEB_BACKEND_HOST:-127.0.0.1}"
 FUNREAD_WEB_BACKEND_PORT="${FUNREAD_WEB_BACKEND_PORT:-18811}"
 FUNREAD_WEB_FRONTEND_HOST="${FUNREAD_WEB_FRONTEND_HOST:-127.0.0.1}"
@@ -64,6 +64,26 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || die "未找到 $1（$2）"
 }
 
+_resolve_npm() {
+  if [[ -n "${FUNREAD_WEB_NPM_BIN}" ]]; then
+    [[ -x "${FUNREAD_WEB_NPM_BIN}" ]] || die "FUNREAD_WEB_NPM_BIN 无效: ${FUNREAD_WEB_NPM_BIN}"
+    echo "${FUNREAD_WEB_NPM_BIN}"
+    return
+  fi
+  # 优先 pnpm：前端仓库多数用 only-allow pnpm 锁定包管理器，裸 npm install
+  # 会在 preinstall 阶段直接失败。
+  if command -v pnpm >/dev/null 2>&1; then
+    command -v pnpm
+    return
+  fi
+  command -v npm >/dev/null 2>&1 || die "未找到 npm/pnpm（可先运行 fundeploy dev nodejs install）"
+  command -v npm
+}
+
+_npm_is_pnpm() {
+  [[ "$(basename "$1")" == pnpm* ]]
+}
+
 wait_for_listener() {
   local port="$1" waited=0
   while (( waited < 10 )); do
@@ -85,7 +105,8 @@ backend_spec() {
 cmd_install() {
   require_command "${FUNREAD_WEB_PYTHON_BIN}" "请安装 Python 3.12+"
   require_command git "请先安装 git"
-  require_command "${FUNREAD_WEB_NPM_BIN}" "可先运行 fundeploy dev nodejs install"
+  local npm_bin
+  npm_bin="$(_resolve_npm)"
   ensure_dirs
 
   echo "==> 安装后端: $(backend_spec)"
@@ -111,8 +132,12 @@ cmd_install() {
   fi
   (
     cd "${SOURCE_DIR}"
-    "${FUNREAD_WEB_NPM_BIN}" install --include=dev --no-package-lock
-    "${FUNREAD_WEB_NPM_BIN}" run build
+    if _npm_is_pnpm "${npm_bin}"; then
+      "${npm_bin}" install
+    else
+      "${npm_bin}" install --include=dev --no-package-lock
+    fi
+    "${npm_bin}" run build
   ) || die "前端安装或构建失败"
   echo "已安装。运行 ./setup.sh start 启动。"
 }
