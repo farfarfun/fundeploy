@@ -17,12 +17,14 @@
 # 会把进程重新拉起来）；funfluid-web 是 `start/restart --port/--host -d`、
 # 不带参数的 `stop`/`status`。
 #
-# 依赖: python3 + pip（或 uv）装后端；npm 装前端。
+# 依赖: python3 + pip（或 uv）装后端；npm 或 pnpm 装前端（优先 pnpm——前端包
+# 多数用 only-allow 锁定只能 pnpm 安装，裸 npm install -g 会在 preinstall 阶段
+# 直接失败）。
 #
 # 用法：
 #   ./setup.sh                 # gum 菜单
 #   ./setup.sh install         # pip/uv 装 funfluid-api + npm -g 装 funfluid-web
-#   ./setup.sh update          # 同 install（重新安装到最新/指定版本），并打印升级前后版本对比
+#   ./setup.sh upgrade         # 同 install（重新安装到最新/指定版本），并打印升级前后版本对比
 #   ./setup.sh start           # 先启动后端，再启动前端
 #   ./setup.sh stop            # 先停止前端，再停止后端
 #   ./setup.sh restart         # stop + start
@@ -43,7 +45,7 @@
 #   FUNFLUID_WEB_FRONTEND_HOST       前端监听地址（默认 0.0.0.0，会传给 --host）
 #   FUNFLUID_WEB_FRONTEND_PORT       前端监听端口（默认 8806，会传给 --port）
 #   FUNFLUID_WEB_PIP_BIN             指定 pip/uv 可执行路径（默认自动探测：优先 uv，否则 python3 -m pip）
-#   FUNFLUID_WEB_NPM_BIN             指定 npm 可执行路径（默认从 PATH 查找）
+#   FUNFLUID_WEB_NPM_BIN             指定 npm/pnpm 可执行路径（默认自动探测：优先 pnpm，否则 npm）
 #   NONINTERACTIVE=1
 #   FUNFLUID_WEB_UNINSTALL_YES=1     非 TTY 卸载确认
 
@@ -65,6 +67,15 @@ FUNFLUID_WEB_FRONTEND_PORT="${FUNFLUID_WEB_FRONTEND_PORT:-8806}"
 FUNFLUID_WEB_PIP_BIN="${FUNFLUID_WEB_PIP_BIN:-}"
 FUNFLUID_WEB_NPM_BIN="${FUNFLUID_WEB_NPM_BIN:-}"
 
+# funfluid-api 是非 editable 的 uv tool 安装（源码不在本地），其内部的
+# REPO_ROOT 兜底猜测会落在 site-packages 里而不是真正的配置目录，导致
+# Django settings 加载失败、start/stop/status/restart 等自定义管理命令
+# 变得不可见（报一大串 "No config file found" 的 traceback）。必须显式指定
+# FUNFLUID_CONFIG_DIR/FUNFLUID_DATA_DIR，与 funfluid-dev 仓库自带的
+# scripts/services/backend.sh 保持一致。
+export FUNFLUID_CONFIG_DIR="${FUNFLUID_CONFIG_DIR:-${HOME}/.farfarfun/funfluid/backend}"
+export FUNFLUID_DATA_DIR="${FUNFLUID_DATA_DIR:-${HOME}/.farfarfun/funfluid/backend}"
+
 die() { echo "错误: $*" >&2; exit 1; }
 
 usage() {
@@ -75,7 +86,7 @@ usage() {
 
 命令:
   install            pip/uv 装 ${FUNFLUID_WEB_BACKEND_PACKAGE}，npm -g 装 ${FUNFLUID_WEB_FRONTEND_PACKAGE}
-  update             同 install，并打印升级前后的版本对比
+  upgrade            同 install，并打印升级前后的版本对比
   start              按序启动：先 funfluid-api 后端，再 funfluid-web 前端
   stop               按序停止：先前端，再后端（best effort，不因某一端未运行而报错）
   restart            stop + start
@@ -107,14 +118,56 @@ _resolve_npm() {
     echo "${FUNFLUID_WEB_NPM_BIN}"
     return
   fi
-  command -v npm >/dev/null 2>&1 || die "未找到 npm（可先运行 fundeploy dev nodejs install）"
+  # 优先 pnpm：前端包多数用 only-allow pnpm 锁定包管理器，裸 npm install -g
+  # 会在 preinstall 阶段直接失败。
+  if command -v pnpm >/dev/null 2>&1; then
+    command -v pnpm
+    return
+  fi
+  command -v npm >/dev/null 2>&1 || die "未找到 npm/pnpm（可先运行 fundeploy dev nodejs install）"
   command -v npm
 }
 
+_npm_is_pnpm() {
+  [[ "$(basename "$1")" == pnpm* ]]
+}
+
+_npm_install_global() {
+  local npm_bin="$1" spec="$2"
+  if _npm_is_pnpm "${npm_bin}"; then
+    "${npm_bin}" add -g "${spec}"
+  else
+    "${npm_bin}" install -g "${spec}"
+  fi
+}
+
+_npm_uninstall_global() {
+  local npm_bin="$1" pkg="$2"
+  if _npm_is_pnpm "${npm_bin}"; then
+    "${npm_bin}" remove -g "${pkg}"
+  else
+    "${npm_bin}" uninstall -g "${pkg}"
+  fi
+}
+
+# pnpm add/install -g <pkg>@latest 偶发会命中过期的 dist-tag 解析缓存，装出
+# 比 latest 旧的版本（即使当场 pnpm/npm view 已经能查到新版本号）。为绕开这个
+# 坑，"latest" 一律先用 view 查出具体版本号，再按精确版本号安装；查不到时才
+# 退回字面量 @latest。
+_npm_resolve_latest_version() {
+  local npm_bin="$1" pkg="$2"
+  "${npm_bin}" view "${pkg}" version 2>/dev/null | tail -1
+}
+
 _npm_pkg_spec() {
-  local pkg="$1" version="$2"
+  local npm_bin="$1" pkg="$2" version="$3" resolved
   if [[ -z "${version}" ]]; then
-    printf '%s@latest' "${pkg}"
+    resolved="$(_npm_resolve_latest_version "${npm_bin}" "${pkg}")"
+    if [[ -n "${resolved}" ]]; then
+      printf '%s@%s' "${pkg}" "${resolved}"
+    else
+      printf '%s@latest' "${pkg}"
+    fi
   else
     printf '%s@%s' "${pkg}" "${version#v}"
   fi
@@ -180,13 +233,19 @@ _pip_pkg_version() {
 _npm_pkg_version() {
   local pkg="$1" npm_bin json
   npm_bin="$(_resolve_npm 2>/dev/null)" || { echo ""; return; }
-  json="$("${npm_bin}" ls -g "${pkg}" --depth=0 --json 2>/dev/null || true)"
+  if _npm_is_pnpm "${npm_bin}"; then
+    json="$("${npm_bin}" ls -g "${pkg}" --json 2>/dev/null || true)"
+  else
+    json="$("${npm_bin}" ls -g "${pkg}" --depth=0 --json 2>/dev/null || true)"
+  fi
   [[ -n "${json}" ]] || { echo ""; return; }
   if command -v python3 >/dev/null 2>&1; then
     FUNFLUID_WEB_PKG_QUERY="${pkg}" python3 -c '
 import json, os, sys
 data = json.loads(sys.stdin.read() or "{}")
 pkg = os.environ.get("FUNFLUID_WEB_PKG_QUERY", "")
+if isinstance(data, list):
+    data = data[0] if data else {}
 deps = data.get("dependencies") or {}
 info = deps.get(pkg) or {}
 print(info.get("version") or "")
@@ -201,15 +260,19 @@ cmd_install() {
   local npm_bin backend_spec frontend_spec
   npm_bin="$(_resolve_npm)"
   backend_spec="$(_pip_pkg_spec "${FUNFLUID_WEB_BACKEND_PACKAGE}" "${FUNFLUID_WEB_BACKEND_VERSION}")"
-  frontend_spec="$(_npm_pkg_spec "${FUNFLUID_WEB_FRONTEND_PACKAGE}" "${FUNFLUID_WEB_FRONTEND_VERSION}")"
+  frontend_spec="$(_npm_pkg_spec "${npm_bin}" "${FUNFLUID_WEB_FRONTEND_PACKAGE}" "${FUNFLUID_WEB_FRONTEND_VERSION}")"
   echo "==> 安装后端: ${backend_spec}"
   _pip_install_pkg "${backend_spec}" || die "后端安装失败: ${backend_spec}"
-  echo "==> 安装前端: ${npm_bin} install -g ${frontend_spec}"
-  "${npm_bin}" install -g "${frontend_spec}" || die "前端安装失败: ${frontend_spec}"
+  if _npm_is_pnpm "${npm_bin}"; then
+    echo "==> 安装前端: ${npm_bin} add -g ${frontend_spec}"
+  else
+    echo "==> 安装前端: ${npm_bin} install -g ${frontend_spec}"
+  fi
+  _npm_install_global "${npm_bin}" "${frontend_spec}" || die "前端安装失败: ${frontend_spec}"
   echo "已安装。"
 }
 
-cmd_update() {
+cmd_upgrade() {
   local backend_before backend_after frontend_before frontend_after
   backend_before="$(_pip_pkg_version "${FUNFLUID_WEB_BACKEND_PACKAGE}")"
   frontend_before="$(_npm_pkg_version "${FUNFLUID_WEB_FRONTEND_PACKAGE}")"
@@ -318,7 +381,7 @@ cmd_uninstall() {
     funfluid-web uninstall || {
       echo "警告: funfluid-web 自带卸载失败，尝试手动 npm uninstall" >&2
       local npm_bin
-      npm_bin="$(_resolve_npm 2>/dev/null)" && "${npm_bin}" uninstall -g "${FUNFLUID_WEB_FRONTEND_PACKAGE}" 2>/dev/null || true
+      npm_bin="$(_resolve_npm 2>/dev/null)" && _npm_uninstall_global "${npm_bin}" "${FUNFLUID_WEB_FRONTEND_PACKAGE}" 2>/dev/null || true
     }
   fi
 
@@ -343,7 +406,7 @@ interactive_main() {
     local pick
     pick="$(fundeploy_ui_choose "fundeploy / service / funfluid-web / 选择动作" \
       "install    安装（后端 pip + 前端 npm）" \
-      "update     更新到最新/指定版本，并显示升级前后版本" \
+      "upgrade    更新到最新/指定版本，并显示升级前后版本" \
       "start      启动（后端 → 前端）" \
       "stop       停止（前端 → 后端）" \
       "restart    重启" \
@@ -357,7 +420,7 @@ interactive_main() {
       quit) break ;;
       help) usage ;;
       install) cmd_install ;;
-      update) cmd_update ;;
+      upgrade) cmd_upgrade ;;
       start) cmd_start ;;
       stop) cmd_stop ;;
       restart) cmd_restart ;;
@@ -381,7 +444,7 @@ main() {
   fi
   case "$cmd" in
     install) cmd_install ;;
-    update) cmd_update ;;
+    update|upgrade) cmd_upgrade ;;
     start) cmd_start ;;
     stop) cmd_stop ;;
     restart) cmd_restart ;;

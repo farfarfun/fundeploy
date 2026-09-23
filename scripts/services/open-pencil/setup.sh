@@ -8,7 +8,7 @@
 # 用法：
 #   ./setup.sh                    # gum 菜单
 #   ./setup.sh install            # 安装 CLI + MCP（npm -g）
-#   ./setup.sh update             # 重新安装最新版（同 install）
+#   ./setup.sh upgrade            # 重新安装最新版（同 install）
 #   ./setup.sh install-desktop    # 下载桌面安装包到 ${OPEN_PENCIL_SERVICE_HOME}/dist
 #   ./setup.sh mcp-config         # 打印 Claude Code / Cursor 的 MCP 集成示例
 #   ./setup.sh status             # 显示 CLI/MCP 版本、桌面包下载情况
@@ -54,7 +54,7 @@ usage() {
   无参数：gum 菜单。
 
 命令:
-  install / update      通过 npm 全局安装 ${OPEN_PENCIL_CLI_PACKAGE} 与 ${OPEN_PENCIL_MCP_PACKAGE}
+  install / upgrade     通过 npm 全局安装 ${OPEN_PENCIL_CLI_PACKAGE} 与 ${OPEN_PENCIL_MCP_PACKAGE}
                         版本由 OPEN_PENCIL_VERSION 控制（默认 latest）
   install-desktop       从 GitHub Releases 下载桌面 Tauri 安装包到 ${OPEN_PENCIL_DIST_DIR}
                         Linux 默认 AppImage，macOS dmg，Windows msi；可用
@@ -145,7 +145,7 @@ _npm_install() {
 }
 
 cmd_install() { _npm_install; }
-cmd_update() { _npm_install; }
+cmd_upgrade() { _npm_install; }
 
 # ---- 桌面 Tauri 安装包下载 ----
 _detect_desktop_asset_default() {
@@ -342,7 +342,7 @@ dispatch() {
   shift || true
   case "$cmd" in
     install) cmd_install ;;
-    update) cmd_update ;;
+    update|upgrade) cmd_upgrade ;;
     install-desktop) cmd_install_desktop ;;
     mcp-config | mcp) cmd_mcp_config ;;
     status) cmd_status ;;
@@ -370,7 +370,7 @@ interactive_main() {
   while true; do
     local pick
     pick="$(fundeploy_ui_choose "fundeploy / service / open-pencil / 选择动作" \
-      "install" "update" "install-desktop" "mcp-config" "status" "uninstall" "help" "quit")" || break
+      "install" "upgrade" "install-desktop" "mcp-config" "status" "uninstall" "help" "quit")" || break
     [[ -z "$pick" ]] && break
     case "$pick" in
       quit) break ;;

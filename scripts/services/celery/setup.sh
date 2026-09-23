@@ -43,7 +43,7 @@ usage() {
 
 命令:
   install          创建 venv；安装 celery、redis、flower（可选）；未设 CELERY_APP 时生成 scaffold 示例
-  update           在已有 venv 内升级 pip、celery、redis、flower（需先 install）
+  upgrade          在已有 venv 内升级 pip、celery、redis、flower（需先 install）
   start [1-4]      无参时用 gum 选择；或 1=all, 2=worker, 3=beat, 4=flower
   start-beat       后台启动 Celery beat
   start-flower     后台启动 Flower（Web 监控，需已安装 flower）
@@ -252,10 +252,10 @@ ENV
   echo "安装完成。可执行: $0 start 一键启动 worker/beat/flower"
 }
 
-cmd_update() {
+cmd_upgrade() {
   require_venv_celery
   ensure_dirs
-  echo "==> 更新 Celery 依赖（保留 ${CELERY_HOME} 数据）..."
+  echo "==> 升级 Celery 依赖（保留 ${CELERY_HOME} 数据）..."
   activate_venv
   pip install --upgrade pip
   pip install -U celery redis flower
@@ -593,7 +593,7 @@ dispatch() {
   shift || true
   case "$cmd" in
     install) cmd_install ;;
-    update) cmd_update ;;
+    update|upgrade) cmd_upgrade ;;
     start) cmd_start "$@" ;;
     start-worker) cmd_start_worker ;;
     start-beat) cmd_start_beat ;;
@@ -628,7 +628,7 @@ interactive_main() {
   while true; do
     local pick
     pick="$(fundeploy_ui_choose "fundeploy / service / celery / 选择动作" \
-      "install" "update" "start" "run" "stop" "restart" "status" \
+      "install" "upgrade" "start" "run" "stop" "restart" "status" \
       "start-worker" "start-beat" "start-flower" \
       "run-worker" "run-beat" "run-flower" \
       "help" "quit")" || break

@@ -6,7 +6,7 @@
 # 用法：
 #   ./setup-manual.sh              # gum 菜单
 #   ./setup-manual.sh install      # 下载并解压到 ${CODE_SERVER_SERVICE_HOME}
-#   ./setup-manual.sh update       # 重新下载安装（同 install）
+#   ./setup-manual.sh upgrade      # 重新下载安装（同 install）
 #   ./setup-manual.sh start        # 后台 code-server --bind-addr …
 #   ./setup-manual.sh run          # 前台附着（PASSWORD 与 start 一致；不写 PID；后台已在跑时拒绝）
 #   ./setup-manual.sh stop | restart | status | uninstall
@@ -47,7 +47,7 @@ usage() {
   无参数：gum 菜单。
 
 命令:
-  install / update   从 GitHub Releases 下载 standalone 包并解压到 ${CODE_SERVER_SERVICE_HOME}
+  install / upgrade  从 GitHub Releases 下载 standalone 包并解压到 ${CODE_SERVER_SERVICE_HOME}
   start              后台启动（日志 ${LOG_FILE}，默认绑定 ${CODE_SERVER_BIND}）
   run                前台启动（同绑定与 PASSWORD 规则；不写 PID；后台已在跑时拒绝）
   stop / restart / status
@@ -144,9 +144,9 @@ cmd_install() {
   _download_install
 }
 
-cmd_update() {
+cmd_upgrade() {
   ensure_dirs
-  echo "==> 更新 code-server（重新下载）…" >&2
+  echo "==> 升级 code-server（重新下载）…" >&2
   _download_install
 }
 
@@ -289,7 +289,7 @@ dispatch() {
   shift || true
   case "$cmd" in
     install) cmd_install ;;
-    update) cmd_update ;;
+    update|upgrade) cmd_upgrade ;;
     start) cmd_start ;;
     run) cmd_run ;;
     stop) cmd_stop ;;
@@ -320,7 +320,7 @@ interactive_main() {
   while true; do
     local pick
     pick="$(fundeploy_ui_choose "fundeploy / service / code-server / manual / 选择动作" \
-      "install" "update" "start" "run" "stop" "restart" "status" "uninstall" "help" "quit")" || break
+      "install" "upgrade" "start" "run" "stop" "restart" "status" "uninstall" "help" "quit")" || break
     [[ -z "$pick" ]] && break
     case "$pick" in
       quit) break ;;

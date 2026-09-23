@@ -20,7 +20,7 @@ usage() {
 
 命令:
   install [官方选项]      执行 https://code-server.dev/install.sh
-  update [官方选项]       再次执行官方脚本以升级
+  upgrade [官方选项]      再次执行官方脚本以升级
   start / stop / restart  Linux 使用 ${SERVICE_UNIT}；macOS 使用 brew services
   status                  查看官方服务状态
   logs [journalctl 选项]  查看 Linux systemd 日志（默认持续跟踪）
@@ -32,7 +32,7 @@ usage() {
 示例:
   fundeploy service code-server official install
   fundeploy service code-server official start
-  fundeploy service code-server official update
+  fundeploy service code-server official upgrade
   fundeploy service code-server official uninstall -y
 EOF
 }
@@ -154,7 +154,7 @@ interactive_main() {
     local pick
     pick="$(fundeploy_ui_choose "fundeploy / service / code-server / official / 选择动作" \
       "install           安装" \
-      "update            更新" \
+      "upgrade           更新" \
       "start             启动并设为开机启动" \
       "stop              停止" \
       "restart           重启" \
@@ -165,7 +165,7 @@ interactive_main() {
       "quit              返回")" || break
     pick="${pick%% *}"
     case "$pick" in
-      install|update) run_official ;;
+      install|update|upgrade) run_official ;;
       start|stop|restart|status|logs) service_action "$pick" ;;
       uninstall) cmd_uninstall ;;
       help) usage ;;
