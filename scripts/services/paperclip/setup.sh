@@ -4,6 +4,13 @@
 
 set -euo pipefail
 
+# 已知 npm bug（npm/cli#9783、#9912、#9968）：用户/全局 .npmrc 中的 allow-scripts
+# 配置会被 npx/npm 以 npm_config_allow_scripts 环境变量形式透传给内部再次触发的
+# npm install（例如 paperclipai 安装器自身的依赖安装），而该内部安装是
+# project-scoped 的，npm 会误判为显式传入 --allow-scripts 并直接报错
+# EALLOWSCRIPTS。此处清除该环境变量，避免其被继承到子进程。
+unset npm_config_allow_scripts
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../../lib/fundeploy-common.sh
 source "${SCRIPT_DIR}/../../lib/fundeploy-common.sh"
