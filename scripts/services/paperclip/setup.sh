@@ -4,12 +4,25 @@
 
 set -euo pipefail
 
-# 已知 npm bug（npm/cli#9783、#9912、#9968）：用户/全局 .npmrc 中的 allow-scripts
-# 配置会被 npx/npm 以 npm_config_allow_scripts 环境变量形式透传给内部再次触发的
-# npm install（例如 paperclipai 安装器自身的依赖安装），而该内部安装是
-# project-scoped 的，npm 会误判为显式传入 --allow-scripts 并直接报错
-# EALLOWSCRIPTS。此处清除该环境变量，避免其被继承到子进程。
+# 已知 npm bug（npm/cli#9783、#9912、#9968）：用户 .npmrc 中的 allow-scripts
+# 配置会被 npm 读入后传给内部再次触发的 npm install（例如 paperclipai 安装器
+# 自身的依赖安装），而该内部安装是 project-scoped 的，npm 会把继承来的
+# allow-scripts 策略误判为显式传入 --allow-scripts 并直接报错 EALLOWSCRIPTS。
+# 仅 unset 环境变量并不够（该配置本就来自 .npmrc 文件而非环境变量），这里生成
+# 一份去掉 allow-scripts 的用户配置副本，并通过 npm_config_userconfig 让所有
+# 子进程改用它。
 unset npm_config_allow_scripts
+if command -v npm >/dev/null 2>&1; then
+  _paperclip_npm_userconfig="$(npm config get userconfig 2>/dev/null || true)"
+  if [[ -n "${_paperclip_npm_userconfig}" && -f "${_paperclip_npm_userconfig}" ]] &&
+    grep -Eq '^[[:space:]]*allow-scripts[[:space:]]*=' "${_paperclip_npm_userconfig}" 2>/dev/null; then
+    _paperclip_sanitized_npmrc="$(mktemp "${TMPDIR:-/tmp}/fundeploy-paperclip-npmrc.XXXXXX")"
+    grep -Ev '^[[:space:]]*allow-scripts[[:space:]]*=' "${_paperclip_npm_userconfig}" >"${_paperclip_sanitized_npmrc}"
+    export npm_config_userconfig="${_paperclip_sanitized_npmrc}"
+    trap 'rm -f "${_paperclip_sanitized_npmrc}"' EXIT
+  fi
+  unset _paperclip_npm_userconfig
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../../lib/fundeploy-common.sh
