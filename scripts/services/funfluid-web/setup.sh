@@ -189,11 +189,11 @@ _pip_install_pkg() {
     return
   fi
   if command -v uv >/dev/null 2>&1; then
-    uv pip install "${spec} -U"
+    uv pip install "${spec}" -U
     return
   fi
   command -v python3 >/dev/null 2>&1 || die "未找到 python3/pip/uv（可先运行 fundeploy dev uv install）"
-  python3 -m pip install --user "${spec} -U"
+  python3 -m pip install --user "${spec}"
 }
 
 _pip_uninstall_pkg() {
