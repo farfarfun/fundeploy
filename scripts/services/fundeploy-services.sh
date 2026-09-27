@@ -10,9 +10,9 @@
 #   fundeploy service install remove <名> # 卸载类（uninstall 与 remove 同义）
 #   fundeploy service help
 #
-# 模块名: airflow, celery, paperclip, code-server, new-api, sub2api, open-pencil,
-#         funflix-web, funread-web, funlesson-web, funfluid-web, fungame-web,
-#         pip-sources, python-env, utils, github-net, cockpit-tools
+# 模块名: airflow, celery, paperclip, code-server, new-api, sub2api, funmill,
+#         open-pencil, funflix-web, funread-web, funlesson-web, funfluid-web,
+#         fungame-web, pip-sources, python-env, utils, github-net, cockpit-tools
 # 卸载不支持: celery、utils（脚本未提供 uninstall）
 #
 # NONINTERACTIVE=1 且无参数时打印 help 并退出（不进入 gum）。
@@ -32,6 +32,7 @@ _SERVICE_MENU_LABELS=(
   "code-server 浏览器 VS Code"
   "new-api      API 网关"
   "sub2api      订阅 API 网关"
+  "funmill      任务执行 API(Dagu/Windmill 后端)"
   "open-pencil  CLI、MCP 与桌面工具"
   "funflix-web  影视库前后端一体化"
   "funread-web  阅读源前后端一体化"
@@ -44,7 +45,7 @@ for _label in "${_SERVICE_MENU_LABELS[@]}"; do
   _SERVICE_NAMES+=("${_label%% *}")
 done
 _INSTALL_MODULES=("${_SERVICE_NAMES[@]}" pip-sources python-env utils github-net cockpit-tools)
-_UNINSTALL_MODULES=(airflow paperclip code-server new-api sub2api open-pencil funflix-web funread-web funlesson-web funfluid-web fungame-web pip-sources python-env github-net cockpit-tools)
+_UNINSTALL_MODULES=(airflow paperclip code-server new-api sub2api funmill open-pencil funflix-web funread-web funlesson-web funfluid-web fungame-web pip-sources python-env github-net cockpit-tools)
 
 usage() {
   cat <<EOF
@@ -284,6 +285,12 @@ cmd_status() {
   pid_s2a="$(read_pid_file "${SUB2API_SERVICE_HOME}/run/sub2api.pid")"
   s2a_listener_pid="$(listener_pid_for_port "${SUB2API_PORT}")"
 
+  # Funmill API / 后端各自管理自己的 PID 文件，这里只用端口探测判断是否在跑。
+  FUNMILL_API_PORT="${FUNMILL_API_PORT:-8812}"
+  FUNMILL_BACKEND_PORT="${FUNMILL_BACKEND_PORT:-8813}"
+  fm_api_listener_pid="$(listener_pid_for_port "${FUNMILL_API_PORT}")"
+  fm_backend_listener_pid="$(listener_pid_for_port "${FUNMILL_BACKEND_PORT}")"
+
   # funflix-api / funflix-web 各自管理自己的 PID 文件，这里只用端口探测判断是否在跑。
   FUNFLIX_WEB_BACKEND_HOST="${FUNFLIX_WEB_BACKEND_HOST:-127.0.0.1}"
   FUNFLIX_WEB_BACKEND_PORT="${FUNFLIX_WEB_BACKEND_PORT:-18810}"
@@ -384,6 +391,18 @@ cmd_status() {
       "${SUB2API_PORT} → ${SUB2API_HOST}:${SUB2API_PORT}" \
       "$(http_probe "http://${SUB2API_HOST}:${SUB2API_PORT}/health")"
     _status_csv_line \
+      "funmill-api" \
+      "$(service_state_from_pid_and_port "" "$fm_api_listener_pid")" \
+      "$(service_pid_display "" "$fm_api_listener_pid")" \
+      "127.0.0.1:${FUNMILL_API_PORT}" \
+      "$(http_probe "http://127.0.0.1:${FUNMILL_API_PORT}/health")"
+    _status_csv_line \
+      "funmill-backend" \
+      "$(service_state_from_pid_and_port "" "$fm_backend_listener_pid")" \
+      "$(service_pid_display "" "$fm_backend_listener_pid")" \
+      "127.0.0.1:${FUNMILL_BACKEND_PORT}" \
+      "$(http_probe "http://127.0.0.1:${FUNMILL_BACKEND_PORT}/")"
+    _status_csv_line \
       "funflix-api" \
       "$(service_state_from_pid_and_port "" "$ffx_be_listener_pid")" \
       "$(service_pid_display "" "$ffx_be_listener_pid")" \
@@ -454,6 +473,7 @@ cmd_status() {
   echo ""
   echo "说明:"
   echo "  • celery 状态列 wbf 为 worker / beat / flower：√ 运行中，× 未运行；与 Airflow 同机时请区分 FLOWER_PORT。"
+  echo "  • funmill-api / funmill-backend（dagu/windmill）各自管理自己的 PID/日志，此表仅按端口探测判断存活；一起装/起/停请用 fundeploy service funmill。"
   echo "  • funflix-api / funflix-web 各自管理自己的 PID/日志，此表仅按端口探测判断存活；一起装/起/停请用 fundeploy service funflix-web。"
   echo "  • funread / funread-web 由 fundeploy 管理 PID/日志；一起装/起/停请用 fundeploy service funread-web。"
   echo "  • funlesson-api / funlesson-web 各自管理自己的 PID/日志，此表仅按端口探测判断存活；一起装/起/停请用 fundeploy service funlesson-web。"
@@ -488,7 +508,7 @@ _dispatch_install_or_remove() {
 
   case "$name" in
     pip-sources | python-env | utils | github-net) exec bash "$target" ;;
-    airflow | celery | paperclip | code-server | new-api | sub2api | open-pencil | funflix-web | funread-web | funlesson-web | funfluid-web | fungame-web | cockpit-tools)
+    airflow | celery | paperclip | code-server | new-api | sub2api | funmill | open-pencil | funflix-web | funread-web | funlesson-web | funfluid-web | fungame-web | cockpit-tools)
       exec bash "$target" install
       ;;
     *) die "未知模块: ${name}（见 fundeploy service help）" ;;
