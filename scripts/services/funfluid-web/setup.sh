@@ -42,7 +42,7 @@
 #                                    一致；不会作为参数传给 CLI）
 #   FUNFLUID_WEB_FRONTEND_PACKAGE    前端 npm 包名（默认 @farfarfun/funfluid-web）
 #   FUNFLUID_WEB_FRONTEND_VERSION    前端版本号（默认空＝最新）
-#   FUNFLUID_WEB_FRONTEND_HOST       前端监听地址（默认 0.0.0.0，会传给 --host）
+#   FUNFLUID_WEB_FRONTEND_HOST       前端监听地址（默认 127.0.0.1；对外暴露须显式设置）
 #   FUNFLUID_WEB_FRONTEND_PORT       前端监听端口（默认 8806，会传给 --port）
 #   FUNFLUID_WEB_PIP_BIN             指定 pip/uv 可执行路径（默认自动探测：优先 uv，否则 python3 -m pip）
 #   FUNFLUID_WEB_NPM_BIN             指定 npm/pnpm 可执行路径（默认自动探测：优先 pnpm，否则 npm）
@@ -62,7 +62,7 @@ FUNFLUID_WEB_BACKEND_HOST="${FUNFLUID_WEB_BACKEND_HOST:-127.0.0.1}"
 FUNFLUID_WEB_BACKEND_PORT="${FUNFLUID_WEB_BACKEND_PORT:-18806}"
 FUNFLUID_WEB_FRONTEND_PACKAGE="${FUNFLUID_WEB_FRONTEND_PACKAGE:-@farfarfun/funfluid-web}"
 FUNFLUID_WEB_FRONTEND_VERSION="${FUNFLUID_WEB_FRONTEND_VERSION:-}"
-FUNFLUID_WEB_FRONTEND_HOST="${FUNFLUID_WEB_FRONTEND_HOST:-0.0.0.0}"
+FUNFLUID_WEB_FRONTEND_HOST="${FUNFLUID_WEB_FRONTEND_HOST:-127.0.0.1}"
 FUNFLUID_WEB_FRONTEND_PORT="${FUNFLUID_WEB_FRONTEND_PORT:-8806}"
 FUNFLUID_WEB_PIP_BIN="${FUNFLUID_WEB_PIP_BIN:-}"
 FUNFLUID_WEB_NPM_BIN="${FUNFLUID_WEB_NPM_BIN:-}"
@@ -304,6 +304,11 @@ _wait_for_listener() {
 cmd_start() {
   _require_cli funfluid-api "pip/uv 安装 ${FUNFLUID_WEB_BACKEND_PACKAGE} 后应在 PATH 中"
   _require_cli funfluid-web "npm -g 安装 ${FUNFLUID_WEB_FRONTEND_PACKAGE} 后应在 PATH 中"
+
+  case "${FUNFLUID_WEB_FRONTEND_HOST}" in
+    127.0.0.1|localhost|::1) ;;
+    *) fundeploy_ui_warn "前端将监听 ${FUNFLUID_WEB_FRONTEND_HOST}:${FUNFLUID_WEB_FRONTEND_PORT} 并可能对外开放；请确认防火墙和访问控制配置。" ;;
+  esac
 
   if [[ -n "$(_fundeploy_listener_pid_for_port "${FUNFLUID_WEB_BACKEND_PORT}")" ]]; then
     echo "后端 ${FUNFLUID_WEB_BACKEND_HOST}:${FUNFLUID_WEB_BACKEND_PORT} 已在运行，跳过。"

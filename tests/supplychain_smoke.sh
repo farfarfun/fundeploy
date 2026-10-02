@@ -75,6 +75,12 @@ echo "== 服务不得默认把无认证界面暴露到全网 =="
 _celery="$(cat "${_REPO_ROOT}/scripts/services/celery/setup.sh")"
 assert_contains     "Flower 默认监听回环"   "${_celery}" 'FLOWER_ADDRESS:-127.0.0.1'
 assert_contains     "支持 basic auth"       "${_celery}" 'FLOWER_BASIC_AUTH'
+assert_contains     "连接 URL 输出经过脱敏" "${_celery}" 'redact_connection_url'
+assert_not_contains "不得直接输出 broker URL" "${_celery}" 'echo "CELERY_BROKER_URL=${CELERY_BROKER_URL}"'
+
+_funfluid="$(cat "${_REPO_ROOT}/scripts/services/funfluid-web/setup.sh")"
+assert_contains     "funfluid 前端默认监听回环" "${_funfluid}" 'FUNFLUID_WEB_FRONTEND_HOST:-127.0.0.1'
+assert_contains     "外部监听给出安全提示"     "${_funfluid}" '请确认防火墙和访问控制配置'
 
 echo "== 敏感文件权限 =="
 _s2m="$(cat "${_REPO_ROOT}/scripts/services/sub2api/setup-manual.sh")"

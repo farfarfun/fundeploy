@@ -75,6 +75,19 @@ CELERY_RUN_DIR="${CELERY_HOME}/run"
 # Broker 默认 Redis
 CELERY_BROKER_URL="${CELERY_BROKER_URL:-redis://localhost:6379/0}"
 
+# 只展示连接目标，丢弃可能包含用户名、密码、token 的 userinfo、路径和查询串。
+redact_connection_url() {
+  local url="$1" scheme rest authority host_port
+  if [[ "$url" =~ ^([A-Za-z][A-Za-z0-9+.-]*):// ]]; then
+    scheme="${BASH_REMATCH[1]}"
+    rest="${url#*://}"
+    authority="${rest%%[/?#]*}"
+    host_port="${authority##*@}"
+    [[ -n "$host_port" ]] && printf '%s://%s' "$scheme" "$host_port" && return 0
+  fi
+  printf '%s' '<configured>'
+}
+
 # Flower 监控界面：端口与监听地址
 FLOWER_PORT="${FLOWER_PORT:-8806}"
 # 默认只监听回环。Flower 自身不带任何认证，却会暴露任务参数（其中经常含有
@@ -203,7 +216,7 @@ cmd_install() {
   ensure_dirs
   echo "CELERY_HOME=${CELERY_HOME}"
   echo "CELERY_VENV=${CELERY_VENV}"
-  echo "CELERY_BROKER_URL=${CELERY_BROKER_URL}"
+  echo "CELERY_BROKER_URL=$(redact_connection_url "$CELERY_BROKER_URL")"
   if [[ ! -d "$CELERY_VENV" ]]; then
     echo "==> 创建虚拟环境..."
     python3 -m venv "$CELERY_VENV"
@@ -319,7 +332,7 @@ cmd_start_worker() {
   activate_venv
   local log_file="${CELERY_LOG_DIR}/worker.log"
   echo "==> 启动 Celery worker（日志: ${log_file}）..."
-  echo "    CELERY_BROKER_URL=${CELERY_BROKER_URL}"
+  echo "    CELERY_BROKER_URL=$(redact_connection_url "$CELERY_BROKER_URL")"
   # 使用 scaffold 时需从 etc 目录启动，以便找到 celery_app 模块
   if [[ "${CELERY_APP}" == "celery_app:app" ]] && [[ -f "${CELERY_ETC_DIR}/celery_app.py" ]]; then
     (cd "$CELERY_ETC_DIR" && exec nohup celery -A celery_app:app worker --loglevel=info >>"$log_file" 2>&1) &
@@ -446,7 +459,7 @@ cmd_run_worker() {
   fi
   activate_venv
   echo "==> 前台 Celery worker（Ctrl+C 退出；不写 PID）…"
-  echo "    CELERY_BROKER_URL=${CELERY_BROKER_URL}"
+  echo "    CELERY_BROKER_URL=$(redact_connection_url "$CELERY_BROKER_URL")"
   if [[ "${CELERY_APP}" == "celery_app:app" ]] && [[ -f "${CELERY_ETC_DIR}/celery_app.py" ]]; then
     cd "$CELERY_ETC_DIR" && exec celery -A celery_app:app worker --loglevel=info
   fi
@@ -530,8 +543,8 @@ cmd_status() {
   printf "├────────────────┼%s┤\n" "$(printf '%.0s─' $(seq 1 50))"
   printf "│ %-14s │ %-48s │\n" "CELERY_HOME" "${CELERY_HOME:0:48}"
   printf "│ %-14s │ %-48s │\n" "CELERY_APP" "$(echo "${CELERY_APP:-（scaffold）}" | head -c 48)"
-  printf "│ %-14s │ %-48s │\n" "Broker" "$(echo "$CELERY_BROKER_URL" | head -c 48)"
-  printf "│ %-14s │ %-48s │\n" "Result" "$(echo "${CELERY_RESULT_BACKEND:-$CELERY_BROKER_URL}" | head -c 48)"
+  printf "│ %-14s │ %-48s │\n" "Broker" "$(redact_connection_url "$CELERY_BROKER_URL")"
+  printf "│ %-14s │ %-48s │\n" "Result" "$(redact_connection_url "${CELERY_RESULT_BACKEND:-$CELERY_BROKER_URL}")"
   printf "│ %-14s │ %-48s │\n" "日志目录" "$(echo "$CELERY_LOG_DIR" | head -c 48)"
   printf "└────────────────┴%s┘\n" "$(printf '%.0s─' $(seq 1 50))"
   echo ""
@@ -617,11 +630,11 @@ dispatch() {
 interactive_main() {
   declare -F fundeploy_ui_apply_theme >/dev/null 2>&1 && fundeploy_ui_apply_theme
   if declare -F fundeploy_ui_banner >/dev/null 2>&1; then
-    fundeploy_ui_banner "Celery 本地助手" "CELERY_HOME=${CELERY_HOME}" "CELERY_BROKER_URL=${CELERY_BROKER_URL}"
+    fundeploy_ui_banner "Celery 本地助手" "CELERY_HOME=${CELERY_HOME}" "CELERY_BROKER_URL=$(redact_connection_url "$CELERY_BROKER_URL")"
   else
     gum style --bold --foreground 212 "Celery 本地助手"
     gum style "CELERY_HOME=${CELERY_HOME}"
-    gum style "CELERY_BROKER_URL=${CELERY_BROKER_URL}"
+    gum style "CELERY_BROKER_URL=$(redact_connection_url "$CELERY_BROKER_URL")"
   fi
   echo ""
   set +e
