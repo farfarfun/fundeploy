@@ -13,7 +13,7 @@
 # 环境变量：
 #   SUB2API_SERVICE_HOME   安装根（默认 ~/opt/sub2api），内含 bin/sub2api、deploy/、data/
 #   SUB2API_DATA_DIR       数据目录（默认 ${SUB2API_SERVICE_HOME}/data）；会向程序导出 DATA_DIR
-#   SUB2API_HOST           监听地址（默认 0.0.0.0）
+#   SUB2API_HOST           监听地址（默认 127.0.0.1；需对外暴露时显式设为 0.0.0.0）
 #   SUB2API_PORT           监听端口（默认 8802）
 #   SUB2API_RUN_MODE       运行模式（默认 simple）
 #   SUB2API_SIMPLE_MODE_CONFIRM  简易模式生产确认（默认 true）
@@ -38,7 +38,17 @@ fi
 SUB2API_GITHUB_REPO="${SUB2API_GITHUB_REPO:-Wei-Shaw/sub2api}"
 SUB2API_SERVICE_HOME="${SUB2API_SERVICE_HOME:-${HOME}/opt/sub2api}"
 SUB2API_DATA_DIR="${SUB2API_DATA_DIR:-${SUB2API_SERVICE_HOME}/data}"
-SUB2API_HOST="${SUB2API_HOST:-0.0.0.0}"
+# 先记下用户是否显式给了值，再用默认值兜底。
+# SPEC §9.3 的优先级是「环境变量 > 配置文件 > 代码内默认值」，而
+# sub2api_export_runtime_env() 以前无条件 `export SERVER_HOST/SERVER_PORT`，
+# 等于让代码默认值盖掉 ${SUB2API_ENV_FILE} 里用户自己写的 SERVER_HOST/SERVER_PORT。
+SUB2API_HOST_EXPLICIT="${SUB2API_HOST:+1}"
+SUB2API_PORT_EXPLICIT="${SUB2API_PORT:+1}"
+# 默认只监听回环：sub2api 是订阅 API 网关，data/ 下存着上游渠道的 key 与用户
+# token，默认绑 0.0.0.0 等于把整个网关交给所在网段（SPEC §9.3 安全默认值）。
+# 同仓库其余服务（code-server、funflix-web、funread-web 等）默认都是 127.0.0.1，
+# `fundeploy service status` 的汇总逻辑也一直按 127.0.0.1 探活。
+SUB2API_HOST="${SUB2API_HOST:-127.0.0.1}"
 SUB2API_PORT="${SUB2API_PORT:-8802}"
 SUB2API_RUN_MODE="${SUB2API_RUN_MODE:-simple}"
 SUB2API_SIMPLE_MODE_CONFIRM="${SUB2API_SIMPLE_MODE_CONFIRM:-true}"
@@ -374,8 +384,14 @@ _download_install() {
 
 sub2api_export_runtime_env() {
   export DATA_DIR="${SUB2API_DATA_DIR}"
-  export SERVER_HOST="${SUB2API_HOST}"
-  export SERVER_PORT="${SUB2API_PORT}"
+  # 只有用户显式设置了 SUB2API_HOST/SUB2API_PORT 时才覆盖配置文件里的值，
+  # 否则沿用 ${SUB2API_ENV_FILE} 已 source 进来的 SERVER_HOST/SERVER_PORT（SPEC §9.3）。
+  if [[ -n "${SUB2API_HOST_EXPLICIT}" || -z "${SERVER_HOST:-}" ]]; then
+    export SERVER_HOST="${SUB2API_HOST}"
+  fi
+  if [[ -n "${SUB2API_PORT_EXPLICIT}" || -z "${SERVER_PORT:-}" ]]; then
+    export SERVER_PORT="${SUB2API_PORT}"
+  fi
   export RUN_MODE="${SUB2API_RUN_MODE}"
   export SIMPLE_MODE_CONFIRM="${SUB2API_SIMPLE_MODE_CONFIRM}"
   export GIN_MODE="${GIN_MODE:-release}"
@@ -388,6 +404,14 @@ sub2api_source_env_file() {
     source "${SUB2API_ENV_FILE}"
     set +a
   fi
+}
+
+# 对外监听时提醒一次：sub2api 的默认 simple 模式没有前置网关或 TLS。
+sub2api_warn_if_exposed() {
+  case "${SUB2API_HOST}" in
+    127.0.0.1 | localhost | ::1) return 0 ;;
+  esac
+  fundeploy_ui_warn "Sub2API 将监听 ${SUB2API_HOST}:${SUB2API_PORT} 并可能对外开放；请确认防火墙和访问控制配置。"
 }
 
 sub2api_http_code() {
@@ -427,6 +451,7 @@ cmd_start() {
   listener_pid="$(_fundeploy_listener_pid_for_port "${SUB2API_PORT}")"
   [[ -z "$listener_pid" ]] || die "端口 ${SUB2API_PORT} 已被 PID ${listener_pid} 占用，请先执行 $0 stop 或手动清理。"
   rm -f "$PID_FILE"
+  sub2api_warn_if_exposed
   echo "==> 启动 Sub2API，监听 ${SUB2API_HOST}:${SUB2API_PORT}，日志: ${LOG_FILE}" >&2
   (
     cd "${SUB2API_SERVICE_HOME}"
@@ -453,6 +478,7 @@ cmd_run() {
     echo "Sub2API 已在后台运行（PID ${existing}）。请先 $0 stop，再使用 run。" >&2
     exit 1
   fi
+  sub2api_warn_if_exposed
   echo "==> 前台启动 Sub2API，监听 ${SUB2API_HOST}:${SUB2API_PORT}（Ctrl+C 退出；不写 PID）" >&2
   cd "${SUB2API_SERVICE_HOME}"
   sub2api_source_env_file

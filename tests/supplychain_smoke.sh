@@ -82,6 +82,49 @@ _funfluid="$(cat "${_REPO_ROOT}/scripts/services/funfluid-web/setup.sh")"
 assert_contains     "funfluid 前端默认监听回环" "${_funfluid}" 'FUNFLUID_WEB_FRONTEND_HOST:-127.0.0.1'
 assert_contains     "外部监听给出安全提示"     "${_funfluid}" '请确认防火墙和访问控制配置'
 
+# sub2api 是订阅 API 网关（data/ 下有上游渠道 key），默认绑 0.0.0.0 等于把网关
+# 交给整个网段。用真实的 status 输出断言，而不是 grep 源码里的字面量。
+_out="$(NONINTERACTIVE=1 SUB2API_SERVICE_HOME="$(mktemp -d)" \
+  bash "${_REPO_ROOT}/scripts/services/sub2api/setup-manual.sh" status 2>&1)"
+assert_contains     "sub2api 默认监听回环"   "${_out}" "监听: http://127.0.0.1:"
+assert_not_contains "sub2api 默认不绑全网卡" "${_out}" "0.0.0.0"
+
+# 聚合 status 的默认值必须与服务脚本一致，否则会展示出一个服务不会绑定的地址。
+_svcs="$(cat "${_REPO_ROOT}/scripts/services/fundeploy-services.sh")"
+assert_contains "status 汇总的 Flower 默认地址对齐回环" "${_svcs}" 'FLOWER_ADDRESS:-127.0.0.1'
+
+echo "== 凭据不得出现在命令行/进程列表里 =="
+# 只看代码行：注释里提到这些写法（用于说明为何不再这么写）是允许的。
+_celery_code="$(sed 's/[[:space:]]*#.*$//' "${_REPO_ROOT}/scripts/services/celery/setup.sh")"
+# /proc/<pid>/cmdline 对本机所有用户可读，守护进程的命令行等于长期公开的明文。
+assert_not_contains "Flower 认证不得走 --basic-auth" "${_celery_code}" '--basic-auth'
+assert_contains     "Flower 认证改走环境变量"        "${_celery}" 'export FLOWER_BASIC_AUTH'
+# start-flower 与 run-flower 必须走同一条认证/告警路径，否则前台会跑出无认证实例。
+assert_eq "prepare_flower_env 被 start/run 两条路径调用" "2" \
+  "$(grep -c '^  prepare_flower_env$' "${_REPO_ROOT}/scripts/services/celery/setup.sh")"
+
+echo "== 连接 URL 脱敏必须真的脱敏（行为断言，不只看字面量）=="
+# 只抽取纯函数，避免执行整个服务脚本。
+eval "$(sed -n '/^redact_connection_url() {/,/^}/p' "${_REPO_ROOT}/scripts/services/celery/setup.sh")"
+assert_eq "剥掉 userinfo 只留 host:port" "redis://db.internal:6379" \
+  "$(redact_connection_url 'redis://admin:s3cr3t@db.internal:6379/0')"
+assert_not_contains "脱敏结果不含密码" \
+  "$(redact_connection_url 'redis://admin:s3cr3t@db.internal:6379/0')" 's3cr3t'
+assert_not_contains "脱敏结果不含查询串里的 token" \
+  "$(redact_connection_url 'amqp://u:p@mq:5672/vhost?token=abc123')" 'abc123'
+assert_eq "无 userinfo 时保持可读" "redis://localhost:6379" \
+  "$(redact_connection_url 'redis://localhost:6379/0')"
+assert_eq "无法解析时不泄漏原值" "<configured>" \
+  "$(redact_connection_url 'admin:s3cr3t@db.internal:6379')"
+
+echo "== 第三方依赖必须带版本下限（SPEC §5）=="
+assert_not_contains "不得安装裸包"       "${_celery_code}" 'pip install celery redis flower'
+assert_not_contains "升级也不得用裸包"   "${_celery_code}" 'pip install -U celery redis flower'
+assert_contains     "celery 带版本下限"  "${_celery}" 'CELERY_PKG_SPEC:-celery>='
+assert_contains     "redis 带版本下限"   "${_celery}" 'CELERY_REDIS_PKG_SPEC:-redis>='
+assert_contains     "flower 带版本下限"  "${_celery}" 'CELERY_FLOWER_PKG_SPEC:-flower>='
+assert_contains     "优先用 uv 建环境"   "${_celery}" 'uv venv "$CELERY_VENV"'
+
 echo "== 敏感文件权限 =="
 _s2m="$(cat "${_REPO_ROOT}/scripts/services/sub2api/setup-manual.sh")"
 assert_contains "sub2api.env 以 umask 077 创建" "${_s2m}" 'umask 077'

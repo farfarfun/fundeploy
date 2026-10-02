@@ -27,6 +27,12 @@
 #   FLOWER_PORT              Flower 监控端口（默认 8806）
 #   FLOWER_ADDRESS           Flower 监听地址（默认 127.0.0.1；对外暴露须同时设 FLOWER_BASIC_AUTH）
 #   FLOWER_BASIC_AUTH        Flower 基本认证 user:pass（Flower 自身无认证，对外监听时必配）
+#                            只经环境变量传给 Flower，不会出现在命令行/进程列表里
+#   CELERY_PKG_SPEC          celery 依赖规格（默认 celery>=5.3）
+#   CELERY_REDIS_PKG_SPEC    redis 依赖规格（默认 redis>=5.0）
+#   CELERY_FLOWER_PKG_SPEC   flower 依赖规格（默认 flower>=2.0）
+#
+# 虚拟环境优先用 uv 创建与安装（缺 uv 时退回 python3 -m venv + pip）。
 #
 # 官方文档：https://docs.celeryq.dev/
 
@@ -98,6 +104,40 @@ FLOWER_PORT="${FLOWER_PORT:-8806}"
 FLOWER_ADDRESS="${FLOWER_ADDRESS:-127.0.0.1}"
 FLOWER_BASIC_AUTH="${FLOWER_BASIC_AUTH:-}"
 
+# Flower 认证凭据只经环境变量传递，绝不进命令行。
+#
+# 之前 start-flower 写的是 `--basic-auth=user:pass`：守护进程存活期间这串
+# user:pass 一直在 /proc/<pid>/cmdline 里，而该文件对本机所有用户可读，
+# `ps aux | grep flower` 一眼就能拿到（SPEC §9.1 安全红线）。
+# Flower 原生支持用 FLOWER_<选项名> 环境变量设置同名选项，所以改为 export。
+#
+# 另一个此前的不一致：run-flower（前台）既不传 --basic-auth 也不告警，于是
+# 用户设了 FLOWER_BASIC_AUTH 却在前台跑出一个完全无认证的 Flower。统一到这个
+# 函数后，start-flower 与 run-flower 的认证与告警行为完全一致。
+prepare_flower_env() {
+  if [[ -n "${FLOWER_BASIC_AUTH:-}" ]]; then
+    export FLOWER_BASIC_AUTH
+    return 0
+  fi
+  # 空值不能 export：Flower 会把空串当成「已配置 basic auth」而解析失败。
+  unset FLOWER_BASIC_AUTH
+  case "${FLOWER_ADDRESS}" in
+    127.0.0.1 | localhost | ::1) ;;
+    *)
+      fundeploy_ui_warn "Flower 监听 ${FLOWER_ADDRESS} 且未设置 FLOWER_BASIC_AUTH：任务参数与 revoke/terminate 将对该网络完全开放。"
+      fundeploy_ui_warn "建议: FLOWER_BASIC_AUTH=user:pass fundeploy service celery start-flower"
+      ;;
+  esac
+}
+
+# 依赖规格：必须带版本下限，不能装裸包（SPEC §5）。
+# 裸 `pip install celery redis flower` 在 flower 2.0 之前/之后行为差异很大
+# （2.0 才改掉 --basic-auth 之外的一批选项名），装到远古版本会静默跑偏。
+# 需要钉死某个版本时直接覆盖，例如 CELERY_PKG_SPEC="celery==5.4.0"。
+CELERY_PKG_SPEC="${CELERY_PKG_SPEC:-celery>=5.3}"
+CELERY_REDIS_PKG_SPEC="${CELERY_REDIS_PKG_SPEC:-redis>=5.0}"
+CELERY_FLOWER_PKG_SPEC="${CELERY_FLOWER_PKG_SPEC:-flower>=2.0}"
+
 # PID 文件
 PID_WORKER="${CELERY_RUN_DIR}/worker.pid"
 PID_BEAT="${CELERY_RUN_DIR}/beat.pid"
@@ -113,6 +153,36 @@ require_python() {
     exit 1
   fi
   echo "使用 Python: $(python3 --version)"
+}
+
+# 虚拟环境与依赖优先交给 uv（SPEC §5；同仓库的 airflow 服务已经是这个路径）。
+# 没有 uv 的机器仍可用 python3 -m venv + pip 兜底，避免把已装好的主机卡住。
+celery_venv_create() {
+  if command -v uv &>/dev/null; then
+    echo "==> 使用 uv 创建虚拟环境..."
+    uv venv "$CELERY_VENV"
+  else
+    echo "==> 未找到 uv，退回 python3 -m venv（建议先执行: fundeploy dev uv install）..."
+    python3 -m venv "$CELERY_VENV"
+  fi
+}
+
+# celery_pip_install [--upgrade] <spec...>
+celery_pip_install() {
+  local upgrade=0
+  if [[ "${1:-}" == "--upgrade" ]]; then
+    upgrade=1
+    shift
+  fi
+  local -a cmd
+  if command -v uv &>/dev/null; then
+    cmd=(uv pip install --python "${CELERY_VENV}/bin/python")
+  else
+    cmd=("${CELERY_VENV}/bin/python" -m pip install)
+  fi
+  (( upgrade )) && cmd+=(--upgrade)
+  cmd+=("$@")
+  "${cmd[@]}"
 }
 
 activate_venv() {
@@ -218,14 +288,13 @@ cmd_install() {
   echo "CELERY_VENV=${CELERY_VENV}"
   echo "CELERY_BROKER_URL=$(redact_connection_url "$CELERY_BROKER_URL")"
   if [[ ! -d "$CELERY_VENV" ]]; then
-    echo "==> 创建虚拟环境..."
-    python3 -m venv "$CELERY_VENV"
+    celery_venv_create
   fi
-  activate_venv
   echo "==> 升级 pip..."
-  pip install --upgrade pip
-  echo "==> 安装 celery、redis、flower..."
-  pip install celery redis flower
+  celery_pip_install --upgrade pip
+  echo "==> 安装 ${CELERY_PKG_SPEC}、${CELERY_REDIS_PKG_SPEC}、${CELERY_FLOWER_PKG_SPEC}..."
+  celery_pip_install "$CELERY_PKG_SPEC" "$CELERY_REDIS_PKG_SPEC" "$CELERY_FLOWER_PKG_SPEC"
+  activate_venv
   echo "==> 检查 CELERY_APP..."
   if [[ -z "${CELERY_APP:-}" ]]; then
     local scaffold_file="${CELERY_HOME}/etc/celery_app.py"
@@ -269,9 +338,9 @@ cmd_upgrade() {
   require_venv_celery
   ensure_dirs
   echo "==> 升级 Celery 依赖（保留 ${CELERY_HOME} 数据）..."
+  celery_pip_install --upgrade pip
+  celery_pip_install --upgrade "$CELERY_PKG_SPEC" "$CELERY_REDIS_PKG_SPEC" "$CELERY_FLOWER_PKG_SPEC"
   activate_venv
-  pip install --upgrade pip
-  pip install -U celery redis flower
   echo "更新完成。"
 }
 
@@ -387,14 +456,9 @@ cmd_start_flower() {
   echo "==> 启动 Flower（日志: ${log_file}，http://${FLOWER_ADDRESS}:${FLOWER_PORT}）..."
 
   # Flower 无内建认证：一旦对外监听而又没配 basic auth，任何人都能看到任务
-  # 参数（常含凭据）并 revoke/terminate 任务。
+  # 参数（常含凭据）并 revoke/terminate 任务。凭据走环境变量，见 prepare_flower_env。
+  prepare_flower_env
   local -a flower_args=(--port="${FLOWER_PORT}" --address="${FLOWER_ADDRESS}")
-  if [[ -n "${FLOWER_BASIC_AUTH}" ]]; then
-    flower_args+=(--basic-auth="${FLOWER_BASIC_AUTH}")
-  elif [[ "${FLOWER_ADDRESS}" != "127.0.0.1" && "${FLOWER_ADDRESS}" != "localhost" ]]; then
-    fundeploy_ui_warn "Flower 监听 ${FLOWER_ADDRESS} 且未设置 FLOWER_BASIC_AUTH：任务参数与 revoke/terminate 将对该网络完全开放。"
-    fundeploy_ui_warn "建议: FLOWER_BASIC_AUTH=user:pass fundeploy service celery start-flower"
-  fi
 
   if [[ "${CELERY_APP}" == "celery_app:app" ]] && [[ -f "${CELERY_ETC_DIR}/celery_app.py" ]]; then
     (cd "$CELERY_ETC_DIR" && exec nohup celery -A celery_app:app flower "${flower_args[@]}" >>"$log_file" 2>&1) &
@@ -501,6 +565,7 @@ cmd_run_flower() {
     exit 1
   fi
   activate_venv
+  prepare_flower_env
   echo "==> 前台 Flower（http://${FLOWER_ADDRESS}:${FLOWER_PORT}；Ctrl+C 退出；不写 PID）…"
   if [[ "${CELERY_APP}" == "celery_app:app" ]] && [[ -f "${CELERY_ETC_DIR}/celery_app.py" ]]; then
     cd "$CELERY_ETC_DIR" && exec celery -A celery_app:app flower --port="${FLOWER_PORT}" --address="${FLOWER_ADDRESS}"

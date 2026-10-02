@@ -245,7 +245,9 @@ cmd_status() {
   CELERY_HOME="${CELERY_HOME:-${HOME}/opt/celery}"
   CELERY_RUN="${CELERY_HOME}/run"
   FLOWER_PORT="${FLOWER_PORT:-8806}"
-  FLOWER_ADDRESS="${FLOWER_ADDRESS:-0.0.0.0}"
+  # 与 services/celery/setup.sh 的默认值保持一致（那边早已收紧为 127.0.0.1）；
+  # 这里残留的 0.0.0.0 会让 status 展示出一个服务其实不会绑定的监听地址。
+  FLOWER_ADDRESS="${FLOWER_ADDRESS:-127.0.0.1}"
   pid_cel_w="$(read_pid_file "${CELERY_RUN}/worker.pid")"
   pid_cel_b="$(read_pid_file "${CELERY_RUN}/beat.pid")"
   pid_cel_f="$(read_pid_file "${CELERY_RUN}/flower.pid")"
