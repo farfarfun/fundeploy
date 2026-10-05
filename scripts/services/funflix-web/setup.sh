@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# funflix-web 一体化部署：把 funflix-api（后端，PyPI 包）与 funflix-web（前端，私有 npm 包）
-# 作为同一个服务单元来装/起/停——两者本是各自独立的进程，但这里只暴露合并命令，
-# 不提供拆开单独控制前后端的子命令；如需单独控制，直接用各自的 CLI（funflix-api / funflix-web）。
+# funflix-web 一体化部署：把 funflix-api（后端，PyPI 包）与 @farfarfun/funflix-web
+# （前端，私有 npm 包，bin 名 funflix-web）作为同一个服务单元来装/起/停——两者本是
+# 各自独立的进程，但这里只暴露合并命令，不提供拆开单独控制前后端的子命令；
+# 如需单独控制，直接用各自的 CLI（funflix-api / funflix-web）。
 #
 # 上游:
 #   后端 https://github.com/farfarfun/funflix-api     （发布到 PyPI，包名 funflix-api；
 #                                                        依赖核心库 funflix，不直接安装 funflix）
-#   前端 https://github.com/farfarfun/funflix-web     （发布到私有 npm 源，包名 funflix-web）
+#   前端 https://github.com/farfarfun/funflix-web     （发布到私有 npm 源，
+#        包名 @farfarfun/funflix-web，bin 名 funflix-web）
 #
 # 前后端各自已提供健壮的生命周期命令（各自管理自己的 PID/日志），本脚本只负责
 # 「装两个包 + 按依赖顺序编排调用」，不重复维护 PID 文件。注意 funflix-api 的 CLI
@@ -30,7 +32,7 @@
 # 环境变量：
 #   FUNFLIX_WEB_BACKEND_PACKAGE    后端 pip 包名（默认 funflix-api）
 #   FUNFLIX_WEB_BACKEND_VERSION    后端版本号（默认空＝最新）
-#   FUNFLIX_WEB_FRONTEND_PACKAGE   前端 npm 包名（默认 funflix-web）
+#   FUNFLIX_WEB_FRONTEND_PACKAGE   前端 npm 包名（默认 @farfarfun/funflix-web）
 #   FUNFLIX_WEB_FRONTEND_VERSION   前端版本号（默认空＝最新）
 #   FUNFLIX_WEB_PIP_BIN            指定 pip/uv 可执行路径（默认自动探测：优先 uv，否则 python3 -m pip）
 #   FUNFLIX_WEB_NPM_BIN            指定 npm/pnpm 可执行路径（默认自动探测：优先 pnpm，否则 npm）
@@ -50,7 +52,10 @@ source "${SCRIPT_DIR}/../../lib/fundeploy-common.sh"
 
 FUNFLIX_WEB_BACKEND_PACKAGE="${FUNFLIX_WEB_BACKEND_PACKAGE:-funflix-api}"
 FUNFLIX_WEB_BACKEND_VERSION="${FUNFLIX_WEB_BACKEND_VERSION:-}"
-FUNFLIX_WEB_FRONTEND_PACKAGE="${FUNFLIX_WEB_FRONTEND_PACKAGE:-funflix-web}"
+FUNFLIX_WEB_FRONTEND_PACKAGE="${FUNFLIX_WEB_FRONTEND_PACKAGE:-@farfarfun/funflix-web}"
+# 前端包从裸名 funflix-web 改成了 @farfarfun/funflix-web, bin 名没变。老机器上
+# 装的还是裸名包, 它占着全局 bin/funflix-web, 新包装不进去（npm EEXIST）。
+FUNFLIX_WEB_FRONTEND_LEGACY_PACKAGE="funflix-web"
 FUNFLIX_WEB_FRONTEND_VERSION="${FUNFLIX_WEB_FRONTEND_VERSION:-}"
 FUNFLIX_WEB_PIP_BIN="${FUNFLIX_WEB_PIP_BIN:-}"
 FUNFLIX_WEB_NPM_BIN="${FUNFLIX_WEB_NPM_BIN:-}"
@@ -197,6 +202,19 @@ _pip_uninstall_pkg() {
   echo "警告: 未找到 pip/uv，无法卸载 ${pkg}" >&2
 }
 
+# 加 scope 之前装的裸名全局包占着 bin/funflix-web, 不先摘掉, 新的 scoped 包会在
+# npm 建 bin 软链时直接 EEXIST 失败。只在目标包确实是 scoped 名时才清, 免得把
+# 用户用 FUNFLIX_WEB_FRONTEND_PACKAGE 显式指回裸名的安装给卸了。
+_npm_drop_legacy_unscoped() {
+  local npm_bin="$1" legacy_version
+  [[ "${FUNFLIX_WEB_FRONTEND_PACKAGE}" != "${FUNFLIX_WEB_FRONTEND_LEGACY_PACKAGE}" ]] || return 0
+  legacy_version="$(_npm_pkg_version "${FUNFLIX_WEB_FRONTEND_LEGACY_PACKAGE}")"
+  [[ -n "${legacy_version}" ]] || return 0
+  echo "==> 移除改 scope 前的旧前端包 ${FUNFLIX_WEB_FRONTEND_LEGACY_PACKAGE}@${legacy_version}（它占着 bin/funflix-web）"
+  _npm_uninstall_global "${npm_bin}" "${FUNFLIX_WEB_FRONTEND_LEGACY_PACKAGE}" \
+    || echo "警告: 旧包卸载失败, 接下来的安装可能因 bin 冲突失败" >&2
+}
+
 cmd_install() {
   local npm_bin backend_spec frontend_spec
   npm_bin="$(_resolve_npm)"
@@ -204,6 +222,7 @@ cmd_install() {
   frontend_spec="$(_npm_pkg_spec "${npm_bin}" "${FUNFLIX_WEB_FRONTEND_PACKAGE}" "${FUNFLIX_WEB_FRONTEND_VERSION}")"
   echo "==> 安装后端: ${backend_spec}"
   _pip_install_pkg "${backend_spec}" || die "后端安装失败: ${backend_spec}"
+  _npm_drop_legacy_unscoped "${npm_bin}"
   if _npm_is_pnpm "${npm_bin}"; then
     echo "==> 安装前端: ${npm_bin} add -g ${frontend_spec}"
   else

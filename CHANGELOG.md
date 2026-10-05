@@ -44,6 +44,11 @@
   重复的独立「许可证」小节；服务清单补上 `funmill` / `funfluid-web` /
   `fungame-web`，并写明「默认只监听回环」的约定。
 - CHANGELOG：修正 `[0.1.15]` 的错误归属（见下）。
+- `funflix-web`：前端 npm 包名跟随上游改为 `@farfarfun/funflix-web`（bin 名仍是
+  `funflix-web`，与 `funfluid-web` 的写法对齐）。`install` / `upgrade` 会先摘掉
+  改 scope 前装的裸名全局包——它占着 `bin/funflix-web`，不清掉新包会在建 bin
+  软链时直接 `EEXIST` 失败。显式把 `FUNFLIX_WEB_FRONTEND_PACKAGE` 指回裸名时
+  不做这个清理。
 
 ### 废弃
 
