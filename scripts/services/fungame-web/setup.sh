@@ -85,6 +85,7 @@ usage() {
   install            pip/uv 装 ${FUNGAME_WEB_BACKEND_PACKAGE}，npm -g 装 ${FUNGAME_WEB_ADMIN_PACKAGE} 与 ${FUNGAME_WEB_CLIENT_PACKAGE}
   upgrade            同 install，并打印升级前后的版本对比
   start              按序启动：backend -> admin(B端) -> client(C端)
+  run                启动 backend/admin 后，前台运行 client(C端)
   stop               按序停止：client -> admin -> backend（best effort，不因某一端未运行而报错）
   restart            stop + start
   status             依次打印 fungame-backend / fungame-admin / fungame-client 的状态
@@ -352,6 +353,21 @@ cmd_start() {
   echo "已启动。C 端: http://127.0.0.1:${FUNGAME_WEB_CLIENT_PORT}  B 端: http://127.0.0.1:${FUNGAME_WEB_ADMIN_PORT}"
 }
 
+cmd_run() {
+  _require_cli fungame-backend "pip/uv 安装 ${FUNGAME_WEB_BACKEND_PACKAGE} 后应在 PATH 中"
+  _require_cli fungame-admin "npm -g 安装 ${FUNGAME_WEB_ADMIN_PACKAGE} 后应在 PATH 中"
+  _require_cli fungame-client "npm -g 安装 ${FUNGAME_WEB_CLIENT_PACKAGE} 后应在 PATH 中"
+  [[ -z "$(_fundeploy_listener_pid_for_port "${FUNGAME_WEB_BACKEND_PORT}")" ]] || die "backend 端口 ${FUNGAME_WEB_BACKEND_PORT} 已被占用；run 不能接管已有进程"
+  [[ -z "$(_fundeploy_listener_pid_for_port "${FUNGAME_WEB_ADMIN_PORT}")" ]] || die "admin 端口 ${FUNGAME_WEB_ADMIN_PORT} 已被占用；run 不能接管已有进程"
+  [[ -z "$(_fundeploy_listener_pid_for_port "${FUNGAME_WEB_CLIENT_PORT}")" ]] || die "client 端口 ${FUNGAME_WEB_CLIENT_PORT} 已被占用；run 不能接管已有进程"
+  fungame-backend server start --host "${FUNGAME_WEB_BACKEND_HOST}" --port "${FUNGAME_WEB_BACKEND_PORT}" || die "backend 启动失败"
+  _wait_for_listener "${FUNGAME_WEB_BACKEND_HOST}" "${FUNGAME_WEB_BACKEND_PORT}" || die "backend 未监听端口 ${FUNGAME_WEB_BACKEND_PORT}"
+  fungame-admin server start --host "${FUNGAME_WEB_ADMIN_HOST}" --port "${FUNGAME_WEB_ADMIN_PORT}" --api-upstream-host 127.0.0.1 --api-upstream-port "${FUNGAME_WEB_BACKEND_PORT}" || die "admin 启动失败"
+  _wait_for_listener "${FUNGAME_WEB_ADMIN_HOST}" "${FUNGAME_WEB_ADMIN_PORT}" || die "admin 未监听端口 ${FUNGAME_WEB_ADMIN_PORT}"
+  echo "==> 前台启动 client(C端) fungame-client（Ctrl+C 退出）"
+  exec fungame-client server run --host "${FUNGAME_WEB_CLIENT_HOST}" --port "${FUNGAME_WEB_CLIENT_PORT}" --api-upstream-host 127.0.0.1 --api-upstream-port "${FUNGAME_WEB_BACKEND_PORT}"
+}
+
 # best effort：某一端未安装/未运行不算错误，只提示，不阻断其它端的停止。
 cmd_stop() {
   if command -v fungame-client >/dev/null 2>&1; then
@@ -449,6 +465,7 @@ interactive_main() {
       "install    安装（后端 pip + admin/client npm）" \
       "upgrade    更新到最新/指定版本，并显示升级前后版本" \
       "start      启动（backend → admin → client）" \
+      "run        前台运行（backend → admin → client）" \
       "stop       停止（client → admin → backend）" \
       "restart    重启" \
       "status     查看状态" \
@@ -463,6 +480,7 @@ interactive_main() {
       install) cmd_install ;;
       upgrade) cmd_upgrade ;;
       start) cmd_start ;;
+      run) cmd_run ;;
       stop) cmd_stop ;;
       restart) cmd_restart ;;
       status) cmd_status ;;
@@ -487,6 +505,7 @@ main() {
     install) cmd_install ;;
     update|upgrade) cmd_upgrade ;;
     start) cmd_start ;;
+    run) cmd_run ;;
     stop) cmd_stop ;;
     restart) cmd_restart ;;
     status) cmd_status ;;

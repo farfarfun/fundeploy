@@ -21,7 +21,7 @@ FUNREAD_WEB_FRONTEND_PORT="${FUNREAD_WEB_FRONTEND_PORT:-8811}"
 
 SOURCE_DIR="${FUNREAD_WEB_SERVICE_HOME}/src"
 VENV_DIR="${FUNREAD_WEB_SERVICE_HOME}/venv"
-RUN_DIR="${FUNREAD_WEB_SERVICE_HOME}/run"
+RUN_DIR="${FUNREAD_WEB_SERVICE_HOME}/.run"
 BACKEND_PID_FILE="${RUN_DIR}/backend.pid"
 FRONTEND_PID_FILE="${RUN_DIR}/frontend.pid"
 BACKEND_LOG_FILE="${RUN_DIR}/backend.log"
@@ -36,6 +36,7 @@ usage() {
 命令:
   install / upgrade  安装或升级 funread API，并拉取、构建 funread-web
   start              先启动后端，再启动前端
+  run                先启动后端，前台运行前端（不写前端 PID）
   stop               先停止前端，再停止后端
   restart            stop + start
   status             查看前后端状态
@@ -191,6 +192,34 @@ cmd_start() {
   echo "已启动。界面: http://${FUNREAD_WEB_FRONTEND_HOST}:${FUNREAD_WEB_FRONTEND_PORT}/"
 }
 
+cmd_run() {
+  [[ -x "${VENV_DIR}/bin/python" ]] || die "后端未安装，请先: ./setup.sh install"
+  [[ -x "${SOURCE_DIR}/node_modules/.bin/vite" && -d "${SOURCE_DIR}/dist" ]] \
+    || die "前端未安装或未构建，请先: ./setup.sh install"
+  ensure_dirs
+
+  [[ -z "$(_fundeploy_listener_pid_for_port "${FUNREAD_WEB_BACKEND_PORT}")" ]] \
+    || die "后端端口 ${FUNREAD_WEB_BACKEND_PORT} 已被占用；run 不能接管已有进程"
+  [[ -z "$(_fundeploy_listener_pid_for_port "${FUNREAD_WEB_FRONTEND_PORT}")" ]] \
+    || die "前端端口 ${FUNREAD_WEB_FRONTEND_PORT} 已被占用；run 不能接管已有进程"
+
+  echo "==> 启动后端 ${FUNREAD_WEB_BACKEND_HOST}:${FUNREAD_WEB_BACKEND_PORT}"
+  nohup "${VENV_DIR}/bin/python" -m uvicorn funread.api.app:app \
+    --host "${FUNREAD_WEB_BACKEND_HOST}" --port "${FUNREAD_WEB_BACKEND_PORT}" \
+    >>"${BACKEND_LOG_FILE}" 2>&1 &
+  echo $! >"${BACKEND_PID_FILE}"
+  if ! wait_for_listener "${FUNREAD_WEB_BACKEND_PORT}"; then
+    stop_process "后端" "${BACKEND_PID_FILE}"
+    die "后端未监听端口 ${FUNREAD_WEB_BACKEND_PORT}，请查看 ${BACKEND_LOG_FILE}"
+  fi
+
+  echo "==> 前台启动前端 ${FUNREAD_WEB_FRONTEND_HOST}:${FUNREAD_WEB_FRONTEND_PORT}（Ctrl+C 退出）"
+  cd "${SOURCE_DIR}"
+  FUNREAD_API_BASE_URL="http://${FUNREAD_WEB_BACKEND_HOST}:${FUNREAD_WEB_BACKEND_PORT}" \
+    exec "${SOURCE_DIR}/node_modules/.bin/vite" preview \
+      --host "${FUNREAD_WEB_FRONTEND_HOST}" --port "${FUNREAD_WEB_FRONTEND_PORT}"
+}
+
 stop_process() {
   local name="$1" pid_file="$2" pid
   pid="$(_fundeploy_read_pid_file "${pid_file}")"
@@ -261,7 +290,7 @@ interactive_main() {
   while true; do
     local pick
     pick="$(fundeploy_ui_choose "fundeploy / service / funread-web / 选择动作" \
-      "install    安装" "upgrade    升级" "start      启动" "stop       停止" \
+      "install    安装" "upgrade    升级" "start      启动" "run        前台运行" "stop       停止" \
       "restart    重启" "status     查看状态" "uninstall  卸载" "help       命令帮助" "quit       返回")" || break
     [[ -n "$pick" ]] || break
     pick="${pick%% *}"
@@ -270,6 +299,7 @@ interactive_main() {
       help) usage ;;
       install|upgrade) cmd_install ;;
       start) cmd_start ;;
+      run) cmd_run ;;
       stop) cmd_stop ;;
       restart) cmd_restart ;;
       status) cmd_status ;;
@@ -290,6 +320,7 @@ main() {
   case "$cmd" in
     install|update|upgrade) cmd_install ;;
     start) cmd_start ;;
+    run) cmd_run ;;
     stop) cmd_stop ;;
     restart) cmd_restart ;;
     status) cmd_status ;;

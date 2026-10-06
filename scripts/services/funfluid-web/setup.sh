@@ -88,6 +88,7 @@ usage() {
   install            pip/uv 装 ${FUNFLUID_WEB_BACKEND_PACKAGE}，npm -g 装 ${FUNFLUID_WEB_FRONTEND_PACKAGE}
   upgrade            同 install，并打印升级前后的版本对比
   start              按序启动：先 funfluid-api 后端，再 funfluid-web 前端
+  run                启动后端后，前台运行 funfluid-web 前端
   stop               按序停止：先前端，再后端（best effort，不因某一端未运行而报错）
   restart            stop + start
   status             依次打印 funfluid-api / funfluid-web 的状态
@@ -335,6 +336,17 @@ cmd_start() {
   echo "已启动。界面: http://127.0.0.1:${FUNFLUID_WEB_FRONTEND_PORT}"
 }
 
+cmd_run() {
+  _require_cli funfluid-api "pip/uv 安装 ${FUNFLUID_WEB_BACKEND_PACKAGE} 后应在 PATH 中"
+  _require_cli funfluid-web "npm -g 安装 ${FUNFLUID_WEB_FRONTEND_PACKAGE} 后应在 PATH 中"
+  [[ -z "$(_fundeploy_listener_pid_for_port "${FUNFLUID_WEB_BACKEND_PORT}")" ]] || die "后端端口 ${FUNFLUID_WEB_BACKEND_PORT} 已被占用；run 不能接管已有进程"
+  [[ -z "$(_fundeploy_listener_pid_for_port "${FUNFLUID_WEB_FRONTEND_PORT}")" ]] || die "前端端口 ${FUNFLUID_WEB_FRONTEND_PORT} 已被占用；run 不能接管已有进程"
+  funfluid-api start "${FUNFLUID_WEB_BACKEND_SERVICE}" -d || die "后端启动失败，已中止（前端未启动）"
+  _wait_for_listener "${FUNFLUID_WEB_BACKEND_HOST}" "${FUNFLUID_WEB_BACKEND_PORT}" || die "后端未监听端口 ${FUNFLUID_WEB_BACKEND_PORT}，前端未启动"
+  echo "==> 前台启动前端 funfluid-web（Ctrl+C 退出）"
+  exec funfluid-web run --port "${FUNFLUID_WEB_FRONTEND_PORT}" --host "${FUNFLUID_WEB_FRONTEND_HOST}"
+}
+
 # best effort：某一端未安装/未运行不算错误，只提示，不阻断另一端的停止。
 cmd_stop() {
   if command -v funfluid-web >/dev/null 2>&1; then
@@ -413,6 +425,7 @@ interactive_main() {
       "install    安装（后端 pip + 前端 npm）" \
       "upgrade    更新到最新/指定版本，并显示升级前后版本" \
       "start      启动（后端 → 前端）" \
+      "run        前台运行（后端 → 前端）" \
       "stop       停止（前端 → 后端）" \
       "restart    重启" \
       "status     查看状态" \
@@ -427,6 +440,7 @@ interactive_main() {
       install) cmd_install ;;
       upgrade) cmd_upgrade ;;
       start) cmd_start ;;
+      run) cmd_run ;;
       stop) cmd_stop ;;
       restart) cmd_restart ;;
       status) cmd_status ;;
@@ -451,6 +465,7 @@ main() {
     install) cmd_install ;;
     update|upgrade) cmd_upgrade ;;
     start) cmd_start ;;
+    run) cmd_run ;;
     stop) cmd_stop ;;
     restart) cmd_restart ;;
     status) cmd_status ;;

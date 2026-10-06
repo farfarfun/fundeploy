@@ -133,15 +133,15 @@ brew uninstall fundeploy
 - `fundeploy service status`：服务总览
 - `fundeploy service airflow|celery|paperclip|code-server|new-api|sub2api|funmill|open-pencil|funflix-web|funread-web|funlesson-web|funfluid-web|fungame-web`
 - `fundeploy service paperclip start|stop|restart|status|logs`：转发到 Paperclip 官方 `service` 命令（Linux systemd user / macOS LaunchAgent）
-- `fundeploy service funflix-web install|start|stop|restart|status|uninstall`：funflix-api（后端，PyPI，
+- `fundeploy service funflix-web install|start|run|stop|restart|status|uninstall`：funflix-api（后端，PyPI，
   依赖核心库 funflix）+ funflix-web（前端，私有 npm）一起装/起/停，只提供合并命令
-- `fundeploy service funread-web install|start|stop|restart|status|uninstall`：在本地 venv 安装 funread API，
+- `fundeploy service funread-web install|start|run|stop|restart|status|uninstall`：在本地 venv 安装 funread API，
   从 GitHub 构建 funread-web，并一起管理前后端进程
-- `fundeploy service funlesson-web install|start|stop|restart|status|uninstall`：funlesson-api（后端，私有
+- `fundeploy service funlesson-web install|start|run|stop|restart|status|uninstall`：funlesson-api（后端，私有
   PyPI）+ funlesson-web（前端，私有 npm）一起装/起/停，只提供合并命令
-- `fundeploy service funfluid-web install|start|stop|restart|status|uninstall`：funfluid-api（后端）
+- `fundeploy service funfluid-web install|start|run|stop|restart|status|uninstall`：funfluid-api（后端）
   + funfluid-web（前端）一起装/起/停，只提供合并命令
-- `fundeploy service fungame-web install|start|stop|restart|status|uninstall`：fungame 后端
+- `fundeploy service fungame-web install|start|run|stop|restart|status|uninstall`：fungame 后端
   + 管理端 + 客户端三个进程一起装/起/停
 
 所有服务默认只监听回环地址（`127.0.0.1`）。需要对外暴露时显式设置对应的
