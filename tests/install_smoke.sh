@@ -82,6 +82,8 @@ bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/sub2api/setup-offical.sh" 
 bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/funflix-web/setup.sh" || exit 1
 bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/funread-web/setup.sh" || exit 1
 bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/funlesson-web/setup.sh" || exit 1
+bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/funfluid-web/setup.sh" || exit 1
+bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/fungame-web/setup.sh" || exit 1
 curl() {
   [[ "$*" == "--proto =https --proto-redir =https --tlsv1.2 -LsSf https://example.invalid/install.sh" ]] || return 64
   printf '%s\n' '[[ "$*" == "update --source github" ]]'
@@ -260,6 +262,14 @@ grep -q "sub2api" <<<"${out}" || exit 1
 grep -q "funflix-web" <<<"${out}" || exit 1
 grep -q "funread-web" <<<"${out}" || exit 1
 grep -q "funlesson-web" <<<"${out}" || exit 1
+
+for service in funflix-web funread-web funlesson-web funfluid-web fungame-web; do
+  out="$(NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" service "${service}" --help)"
+  grep -q '^  run ' <<<"${out}" || exit 1
+done
+
+out="$(NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" service funread-web --help)"
+grep -q '\.run' "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/funread-web/setup.sh" || exit 1
 NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" dev --help >/dev/null || exit 1
 out="$(NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" tool list)"
 grep -q "brew" <<<"${out}" || exit 1
