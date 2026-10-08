@@ -46,7 +46,9 @@ PAPERCLIP_HTTPS_PROXY="${PAPERCLIP_HTTPS_PROXY:-}"
 PAPERCLIP_NO_PROXY="${PAPERCLIP_NO_PROXY:-}"
 PAPERCLIP_NODE_MIN_VERSION="${PAPERCLIP_NODE_MIN_VERSION:-24.11.0}"
 PAPERCLIP_NODE_MIN_MAJOR="${PAPERCLIP_NODE_MIN_MAJOR:-24}"
-PAPERCLIP_UPDATE_HEALTH_TIMEOUT_SEC="${PAPERCLIP_UPDATE_HEALTH_TIMEOUT_SEC:-60}"
+# 升级后要等 embedded PostgreSQL 冷启动、数据库迁移和服务就绪，低配或受限网络的机器
+# 60 秒常不够，超时即 die 会把「还在启动」误报成「升级失败」，故放宽到 180 秒。
+PAPERCLIP_UPDATE_HEALTH_TIMEOUT_SEC="${PAPERCLIP_UPDATE_HEALTH_TIMEOUT_SEC:-180}"
 PAPERCLIP_CONFIG_PATH="${PAPERCLIP_HOME}/instances/${PAPERCLIP_INSTANCE_ID}/config.json"
 
 usage() {
@@ -57,7 +59,9 @@ usage() {
   install          官方 managed install（正式版）
   install-canary   官方 managed install（开发版）
   install-prod     install 的别名
-  upgrade [canary|prod] 官方升级、备份、迁移及服务重启（默认 canary）
+  upgrade [canary|prod] 官方升级、备份、迁移及服务重启（默认 canary；别名 update）
+  service-install [--enable-linger] [--no-start-on-login]
+                   注册后台服务并设置开机自启；无登录会话的机器需 --enable-linger
   onboard          首次配置；NONINTERACTIVE=1 时默认追加 --yes
   plugin list                  列出 awesome-paperclip 收录的插件
   plugin install [npm-package] 安装插件；不指定包名时从清单选择
@@ -65,13 +69,16 @@ usage() {
   start             启动官方后台服务
   run               使用 paperclipai run 前台启动
   stop              停止官方后台服务
-  restart           热重启官方后台服务
+  restart           热重启官方后台服务；未在运行时自动改为 start
   status            查看官方 supervisor 与健康状态
   logs [options]    查看官方服务日志，例如 logs -f
   uninstall         卸载官方服务和 CLI，保留 ${PAPERCLIP_HOME} 数据
 
 说明:
   - Linux 使用 systemd --user，macOS 使用 LaunchAgent。
+  - systemd --user 需要一个用户级 systemd 实例；容器、WSL1 或没有登录会话的
+    终端里不存在，官方 CLI 会提示改用 run。此时先在有登录会话的 shell 执行
+    service-install --enable-linger（等价于 loginctl enable-linger）。
   - 配置由 paperclipai onboard / configure 管理。
   - PAPERCLIP_INSTANCE_ID 默认为 ${PAPERCLIP_INSTANCE_ID}。
   - upgrade 完成后检查 PostgreSQL、Paperclip 端口及 /api/health。
@@ -152,14 +159,40 @@ paperclip_executable() {
 
 paperclip_cli() {
   require_node
-  local executable
+  local executable rc=0
   executable="$(paperclip_executable)" || die "未找到 paperclipai，请先执行: $0 install"
   paperclip_load_config
   if [[ "${PAPERCLIP_DATABASE_MODE}" == "embedded-postgres" ]]; then
-    (unset DATABASE_URL; PAPERCLIP_HOME="${PAPERCLIP_HOME}" PAPERCLIP_INSTANCE_ID="${PAPERCLIP_INSTANCE_ID}" "$executable" "$@")
+    (unset DATABASE_URL; PAPERCLIP_HOME="${PAPERCLIP_HOME}" PAPERCLIP_INSTANCE_ID="${PAPERCLIP_INSTANCE_ID}" "$executable" "$@") || rc=$?
   else
-    PAPERCLIP_HOME="${PAPERCLIP_HOME}" PAPERCLIP_INSTANCE_ID="${PAPERCLIP_INSTANCE_ID}" "$executable" "$@"
+    PAPERCLIP_HOME="${PAPERCLIP_HOME}" PAPERCLIP_INSTANCE_ID="${PAPERCLIP_INSTANCE_ID}" "$executable" "$@" || rc=$?
   fi
+  # paperclip_executable 只判断 -x：payload 被删或损坏而 shim 仍在时，官方 CLI 只会
+  # 抛 node 的原始堆栈。失败后补一次探测把它翻译成可执行的建议；正常路径零开销。
+  if ((rc != 0)) && ! "$executable" --version >/dev/null 2>&1; then
+    echo "提示: ${executable} 无法运行，paperclipai 安装可能已损坏，可执行: $0 install" >&2
+  fi
+  return "$rc"
+}
+
+# service start / stop / status 在检测不到服务管理器时只打印一条 reason 就以 0 退出
+# （commands/service.ts 的 resolveManager 返回 null 而非抛错），对调用方是「假成功」。
+# 这里统一解析 --json 输出，取出 supported / pid / message 供上层判断。
+# 依次输出三行 supported / pid / message；拿不到可解析的状态时返回非 0。
+# 刻意分行而非用 \t 拼接：tab 属于 IFS 空白字符，read 会把连续分隔符合并成一个，
+# pid 为空时字段会整体错位（message 被读进 pid）。
+paperclip_service_state() {
+  local json
+  json="$(paperclip_cli service status --json 2>/dev/null)" || return 1
+  printf '%s' "$json" | node -e '
+    const fs = require("node:fs");
+    let value;
+    try { value = JSON.parse(fs.readFileSync(0, "utf8")); } catch { process.exit(1); }
+    const pid = Number.isInteger(value.pid) && value.pid > 0 ? String(value.pid) : "";
+    console.log(value.supported === false ? "false" : "true");
+    console.log(pid);
+    console.log(String(value.message || "").replace(/\s+/g, " ").trim());
+  ' 2>/dev/null || return 1
 }
 
 # paperclipai 的 managed install 把 registry 硬编码为 registry.npmjs.org，并且会另写
@@ -364,7 +397,11 @@ paperclip_wait_for_update_health() {
     fi
     sleep 1
   done
-  die "Paperclip 升级后未在 ${PAPERCLIP_UPDATE_HEALTH_TIMEOUT_SEC} 秒内通过健康检查"
+  # 此时 payload 已替换且 service start 已执行过，服务很可能只是还在启动 —— 先把状态
+  # 打出来，避免把「仍在启动」误读成「升级失败」。
+  echo "==> 健康检查未通过，当前服务状态：" >&2
+  paperclip_cli service status || true
+  die "Paperclip 升级后未在 ${PAPERCLIP_UPDATE_HEALTH_TIMEOUT_SEC} 秒内通过健康检查（payload 已更新，服务可能仍在启动，可用 $0 status / logs 确认）"
 }
 
 cmd_upgrade() {
@@ -380,8 +417,13 @@ cmd_upgrade() {
   paperclip_load_config
   [[ ! -f "${PAPERCLIP_CONFIG_PATH}" ]] || paperclip_cli db:backup
 
-  if ! paperclip_cli service stop; then
-    paperclip_port_open "${PAPERCLIP_SERVER_PORT}" && die "Paperclip 仍在监听 ${PAPERCLIP_SERVER_PORT}，中止升级"
+  paperclip_cli service stop || true
+  # 原先只在 service stop 失败时才查端口，但无服务管理器时 stop 会「假成功」（返回 0
+  # 且什么都没停，见 paperclip_service_state 的注释），端口检查会被整个跳过 —— 用
+  # run 前台启动的实例正属于这种情况，继续下去就会在服务运行中替换 payload。
+  # 因此改为无条件确认端口已释放。
+  if paperclip_port_open "${PAPERCLIP_SERVER_PORT}"; then
+    die "Paperclip 仍在监听 ${PAPERCLIP_SERVER_PORT}（可能由 $0 run 前台启动，不受服务管理器管辖），请先停止后重试"
   fi
   [[ "${PAPERCLIP_DATABASE_MODE}" != "embedded-postgres" ]] || paperclip_stop_embedded_postgres
   paperclip_allow_embedded_postgres_build
@@ -470,6 +512,43 @@ cmd_plugin() {
   esac
 }
 
+# start / restart 内部的 ensureCurrent() 会写 ~/.config/systemd/user 单元并
+# daemon-reload，所以单元文件本身能自愈；但 systemctl --user enable（开机自启）和
+# loginctl enable-linger 只有官方 service install 会做，此前脚本没有暴露它，于是
+# fundeploy 管理的 Paperclip 不会开机自启。
+cmd_service_install() {
+  paperclip_cli service install "$@"
+}
+
+cmd_restart() {
+  local state supported="" pid="" message=""
+  if ! state="$(paperclip_service_state)"; then
+    # 状态拿不到就交给官方 restart 自己报错，不猜测。
+    paperclip_cli service restart "$@"
+    return
+  fi
+  # read 读到最后一行若无换行会返回非 0，但变量已赋值，故逐行 || true。
+  {
+    read -r supported || true
+    read -r pid || true
+    IFS= read -r message || true
+  } <<<"$state"
+
+  if [[ "$supported" == "false" ]]; then
+    die "${message:-未检测到可用的服务管理器}
+可选做法: $0 run 前台启动，或在有登录会话的 shell 执行 $0 service-install --enable-linger"
+  fi
+
+  # 官方 service restart 只做热重启：writeHotRestartIntent 第一步就是 if (!status.pid)
+  # throw，所以服务没在跑时它永远失败 —— 那种场景要的其实是 start。
+  if [[ -z "$pid" ]]; then
+    echo "==> 服务未在运行（无 supervisor pid），改为 start" >&2
+    paperclip_cli service start
+    return
+  fi
+  paperclip_cli service restart "$@"
+}
+
 cmd_run() {
   require_node
   local executable
@@ -492,13 +571,15 @@ dispatch() {
   local cmd="${1:-}"
   shift || true
   case "$cmd" in
-    install | install-prod) cmd_install ;;
-    install-canary) cmd_install --canary ;;
+    install | install-prod) cmd_install "$@" ;;
+    install-canary) cmd_install --canary "$@" ;;
     update|upgrade) cmd_upgrade "$@" ;;
+    service-install) cmd_service_install "$@" ;;
     onboard) cmd_onboard "$@" ;;
     plugin) cmd_plugin "$@" ;;
     run) cmd_run "$@" ;;
-    start | stop | restart | status | logs) paperclip_cli service "$cmd" "$@" ;;
+    restart) cmd_restart "$@" ;;
+    start | stop | status | logs) paperclip_cli service "$cmd" "$@" ;;
     uninstall) cmd_uninstall ;;
     help | -h | --help) usage ;;
     *) echo "未知命令: ${cmd}" >&2; usage >&2; exit 2 ;;
@@ -513,12 +594,16 @@ interactive_main() {
   while true; do
     local pick
     pick="$(fundeploy_ui_choose "fundeploy / service / paperclip / 选择动作" \
-      "install-canary" "install-prod" "upgrade" "onboard" "plugin install" "start" "run" "stop" "restart" "status" "logs" "uninstall" "help" "quit")" || break
+      "install-canary" "install-prod" "upgrade" "service-install" "onboard" \
+      "plugin list" "plugin install" "plugin installed" \
+      "start" "run" "stop" "restart" "status" "logs" "uninstall" "help" "quit")" || break
     [[ -n "$pick" ]] || break
     case "$pick" in
       quit) break ;;
       help) usage; continue ;;
+      "plugin list") ( dispatch plugin list ) ;;
       "plugin install") ( dispatch plugin install ) ;;
+      "plugin installed") ( dispatch plugin installed ) ;;
       *) ( dispatch "$pick" ) ;;
     esac
     echo ""
