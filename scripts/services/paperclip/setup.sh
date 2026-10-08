@@ -30,11 +30,13 @@ source "${SCRIPT_DIR}/../../lib/fundeploy-common.sh"
 
 PAPERCLIP_HOME="${PAPERCLIP_HOME:-${HOME}/.paperclip}"
 PAPERCLIP_INSTANCE_ID="${PAPERCLIP_INSTANCE_ID:-default}"
-# 仅作用于 cmd_install 回落到 npx 拉取 paperclipai 本体那一步。刻意保持 npmjs.org：
-# managed install 固定从 npmjs.org 取包（见 paperclip_apply_npm_network_env 的注释），
-# 两步指向同一 registry 时第二步才能命中 npm cache（cache key 含完整 URL）。换成国内
-# 镜像会让两步各下一份完整依赖树（实测各约 1.4G），总耗时反而更长。
+# 官方源。两个用途：npx 回落那一步的 registry，以及预装产物的 integrity 校验基准
+# （见 paperclip_verify_payload_scope）。除非官方换域名，不要改。
 PAPERCLIP_NPM_REGISTRY="${PAPERCLIP_NPM_REGISTRY:-https://registry.npmjs.org}"
+# 整棵依赖树的预装源（见 paperclip_prefetch_payload）。留空则沿用本机 npm 自己的
+# registry（npm config get registry）；设为 off 关闭预装，严格走官方路径。
+PAPERCLIP_NPM_MIRROR="${PAPERCLIP_NPM_MIRROR:-}"
+PAPERCLIP_NPM_PREFETCH="${PAPERCLIP_NPM_PREFETCH:-auto}"
 # 受限网络下的 npm 取回加固。npm 默认 fetch-retries=2、fetch-timeout=5min，而本项目
 # 单个 tarball 可达 370M（@openai/codex-linux-x64），直连跨境链路极易在中途断流，
 # 一旦失败整棵 1.4G 依赖树都要重来，因此默认把重试次数和超时都放宽。
@@ -83,15 +85,21 @@ usage() {
   - PAPERCLIP_INSTANCE_ID 默认为 ${PAPERCLIP_INSTANCE_ID}。
   - upgrade 完成后检查 PostgreSQL、Paperclip 端口及 /api/health。
 
-受限网络（install / upgrade / plugin install 下载约 1.4G）:
+受限网络（install / upgrade 下载约 1.4G）:
+  - PAPERCLIP_NPM_MIRROR      整棵依赖树的预装源，如 https://registry.npmmirror.com；
+                              留空则沿用本机 npm 自己的 registry
+  - PAPERCLIP_NPM_PREFETCH=off  关闭预装，严格走官方直连 npmjs.org 的路径
   - PAPERCLIP_HTTPS_PROXY     npm 代理，如 http://127.0.0.1:7890；留空为直连
   - PAPERCLIP_NO_PROXY        配合上一项的排除列表
   - PAPERCLIP_NETWORK_HINT=0  隐藏直连提示
-  - PAPERCLIP_INSTALL_VIA_NPX=1  强制 install 走 npx（默认复用本机 CLI 以省一份下载）
+  - PAPERCLIP_INSTALL_VIA_NPX=1  强制 install 走 npx（默认复用已有 CLI 以省一份下载）
   - PAPERCLIP_NPM_PREFER_OFFLINE=1  优先用 npm cache，减少重装同版本时的网络往返
   - PAPERCLIP_NPM_FETCH_RETRIES / _FETCH_TIMEOUT 等可覆盖 npm 取回重试与超时
-  - 换国内镜像源无效：managed install 固定直连 registry.npmjs.org，详见
-    paperclip_apply_npm_network_env 的注释。
+
+  官方 managed install 把 registry 钉死在 npmjs.org，改 npm 配置对它无效。本脚本改为
+  先用可达的源把整棵树装到官方的 payload 路径，再让官方 install 走它的「payload 已存在
+  即复用」分支（实测几秒、零下载）。预装后会用 npmjs.org 的 integrity 逐个核对
+  @paperclipai/*，不一致就丢弃并回落官方直连路径。详见 paperclip_prefetch_payload。
 USAGE
 }
 
@@ -240,12 +248,311 @@ paperclip_print_network_hint() {
   if [[ "${PAPERCLIP_NETWORK_HINT:-1}" == "0" || -n "${PAPERCLIP_HTTPS_PROXY}" ]]; then
     return 0
   fi
+  paperclip_prefetch_registry >/dev/null 2>&1 && return 0
   cat >&2 <<'HINT'
-提示: Paperclip 的 managed install 固定直连 registry.npmjs.org，依赖树实测约 1.4G
-      （@openai/codex-* 370M、@paperclipai/server 360M、@anthropic-ai/* 220M）。
-      配置国内镜像源对它无效，受限网络请设 PAPERCLIP_HTTPS_PROXY=http://127.0.0.1:7890
-      之类的本机代理。PAPERCLIP_NETWORK_HINT=0 可隐藏本行。
+提示: Paperclip 的依赖树实测约 1.4G（@openai/codex 370M、@paperclipai/server 360M、
+      @anthropic-ai/* 220M），而 managed install 固定直连 registry.npmjs.org。
+      受限网络可设 PAPERCLIP_NPM_MIRROR=<https 镜像> 让整棵树改从该源预装，
+      或设 PAPERCLIP_HTTPS_PROXY=http://127.0.0.1:7890 之类的本机代理。
+      PAPERCLIP_NETWORK_HINT=0 可隐藏本行。
 HINT
+}
+
+# ===== 整树预装（受限网络的主要加速手段）=====
+#
+# 上游把 registry 钉死在 npmjs.org 且无法从外部覆盖（见 paperclip_apply_npm_network_env），
+# 所以无法直接让它改走镜像。但 install-store 的 installNpmPayload() 在 payload 目录
+# 已存在时，只跑一次冒烟检查就复用，完全跳过 npm install：
+#
+#   const payloadPath = payloadPathFor(paths, "npm", version);
+#   if (fs.existsSync(payloadPath)) { await smokePayload(...); return { reused: true }; }
+#
+# 实测该分支 4.5 秒、零下载（输出 "Activated cached paperclipai ..."）。于是这里先用
+# 可达的源把整棵树装到正式 payload 路径，再把 manifest / current 链接 / shim 的写入交回
+# 官方 install。好处是整树都走镜像 —— 包括官方额外钉死的 @paperclipai 那 434M，而只改
+# @scope:registry 环境变量的做法覆盖不到它。
+#
+# 代价：依赖的 integrity 来自镜像的 packument 而非 npmjs.org，相当于把上游刻意的防投毒
+# 决策换成了对镜像的信任。因此预装后强制用 npmjs.org 的单版本端点逐个核对 @paperclipai/*
+# 的 integrity（该 scope 承载 CLI 与 server 本体，被替换等价于任意代码执行），不一致就
+# 丢弃 staging、回落官方直连路径。实测 registry.npmmirror.com 与 npmjs.org 字节一致。
+
+# 输出预装用的 registry；未启用或无可用源时返回 1。
+paperclip_prefetch_registry() {
+  [[ "${PAPERCLIP_NPM_PREFETCH}" == "off" ]] && return 1
+  local url="${PAPERCLIP_NPM_MIRROR}"
+  if [[ -z "$url" ]]; then
+    command -v npm >/dev/null 2>&1 || return 1
+    url="$(npm config get registry 2>/dev/null || true)"
+  fi
+  url="${url%/}"
+  [[ -n "$url" && "$url" != "null" && "$url" != "undefined" ]] || return 1
+  # 与 fundeploy-github-download.sh 的约定一致：只接受 https://。预装源能决定装进
+  # payload 的每一个字节，不允许降级到明文 http://。
+  if [[ "$url" != https://* ]]; then
+    echo "[fundeploy paperclip] 忽略非 https:// 的预装源（${url}）" >&2
+    return 1
+  fi
+  # 已经是官方源时预装没有意义：官方 install 自己就走它，且能命中同一份 npm cache。
+  [[ "$url" == "${PAPERCLIP_NPM_REGISTRY%/}" ]] && return 1
+  printf '%s\n' "$url"
+}
+
+# 从 npmjs.org 的单版本端点解析 tag 或精确版本，输出 "版本<TAB>integrity"。
+# 用单版本端点而不是完整 packument：paperclipai 已有 1700+ 个版本，完整 packument 很大，
+# 而 /paperclipai/canary 这种响应实测仅约 3KB。
+paperclip_npm_official_manifest() {
+  local spec="$1"
+  command -v curl >/dev/null 2>&1 || return 1
+  _fundeploy_github_download_curl -fsSL --max-time 60 \
+    "${PAPERCLIP_NPM_REGISTRY%/}/paperclipai/${spec}" 2>/dev/null | node -e '
+    let body = "";
+    process.stdin.on("data", (chunk) => (body += chunk)).on("end", () => {
+      try {
+        const manifest = JSON.parse(body);
+        if (!manifest.version || !manifest.dist || !manifest.dist.integrity) process.exit(1);
+        console.log(manifest.version + "\t" + manifest.dist.integrity);
+      } catch {
+        process.exit(1);
+      }
+    });
+  ' 2>/dev/null
+}
+
+# 从 install 的参数推出要预装的 npm spec；git-ref 安装不走 npm payload，返回 1。
+paperclip_prefetch_spec() {
+  local spec="latest" expect_version=0 arg
+  for arg in "$@"; do
+    if ((expect_version)); then
+      spec="$arg"
+      expect_version=0
+      continue
+    fi
+    case "$arg" in
+      --ref | --ref=* | --repo | --repo=*) return 1 ;;
+      --canary) spec="canary" ;;
+      --version) expect_version=1 ;;
+      --version=*) spec="${arg#--version=}" ;;
+    esac
+  done
+  printf '%s\n' "$spec"
+}
+
+# 预检目标版本的 @paperclipai/* 依赖在预装源上是否取得到；缺失时输出清单并返回 1。
+#
+# 必须预检，因为常见镜像恰好缺的就是这个 scope：registry.npmmirror.com 永久没有
+# @paperclipai/server（解包 276M，超过 cnpm 的 256M 上限，其同步日志为
+# "too many large versions ... maximum unpacked size: 268435456"，见 cnpm/unpkg-white-list），
+# 而它是必需依赖。没有预检就会白跑一次整树 npm install —— npm 要把依赖图解析完才报
+# ETARGET。这里只要两三个小请求。
+#
+# 只检查这个 scope：实测 @openai/codex（370M）和 @anthropic-ai/claude-agent-sdk-linux-x64
+# 在 npmmirror 上都有，缺口集中在 @paperclipai，它也正是上游在命令行额外钉死的那一个。
+paperclip_prefetch_source_check() {
+  local registry="$1" version="$2"
+  node -e '
+    const official = process.argv[1].replace(/\/$/, "");
+    const mirror = process.argv[2].replace(/\/$/, "");
+    const version = process.argv[3];
+    const get = (url) => fetch(url, { signal: AbortSignal.timeout(30000) });
+    (async () => {
+      let manifest;
+      try {
+        const response = await get(`${official}/paperclipai/${version}`);
+        if (!response.ok) throw new Error("HTTP " + response.status);
+        manifest = await response.json();
+      } catch (err) {
+        console.error("  无法从官方源读取依赖清单: " + err.message);
+        process.exit(1);
+      }
+      const deps = Object.entries(manifest.dependencies || {}).filter(
+        ([name]) => name === "paperclipai" || name.startsWith("@paperclipai/"),
+      );
+      const missing = [];
+      await Promise.all(
+        deps.map(async ([name, range]) => {
+          const exact = String(range).replace(/^[\^~=v]+/, "");
+          try {
+            const response = await get(`${mirror}/${name}/${exact}`);
+            if (!response.ok) missing.push(`${name}@${exact}（HTTP ${response.status}）`);
+          } catch (err) {
+            missing.push(`${name}@${exact}（${err.message}）`);
+          }
+        }),
+      );
+      if (missing.length) {
+        for (const item of missing) console.error("  缺: " + item);
+        process.exit(1);
+      }
+      console.log(String(deps.length));
+    })();
+  ' "${PAPERCLIP_NPM_REGISTRY}" "$registry" "$version" 2>&1
+}
+
+# 用 npmjs.org 的 integrity 核对预装产物里的 @paperclipai/*；成功时输出核对过的包数。
+paperclip_verify_payload_scope() {
+  local lockfile="$1"
+  [[ -f "$lockfile" ]] || return 1
+  node -e '
+    const fs = require("node:fs");
+    const registry = process.argv[2].replace(/\/$/, "");
+    let lock;
+    try {
+      lock = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+    } catch (err) {
+      console.error("  无法读取 lockfile: " + err.message);
+      process.exit(1);
+    }
+    const targets = [];
+    for (const [location, info] of Object.entries(lock.packages || {})) {
+      const name = location.replace(/^.*node_modules\//, "");
+      if (name !== "paperclipai" && !name.startsWith("@paperclipai/")) continue;
+      if (!info.version || !info.integrity) continue;
+      targets.push({ name, version: info.version, integrity: info.integrity });
+    }
+    if (!targets.length) {
+      console.error("  lockfile 中没有 @paperclipai 包，无法核对");
+      process.exit(1);
+    }
+    (async () => {
+      const problems = [];
+      await Promise.all(
+        targets.map(async (target) => {
+          const url = `${registry}/${target.name}/${target.version}`;
+          let official;
+          try {
+            const response = await fetch(url, { signal: AbortSignal.timeout(30000) });
+            if (!response.ok) throw new Error("HTTP " + response.status);
+            official = (await response.json()).dist?.integrity;
+          } catch (err) {
+            problems.push(`${target.name}@${target.version}: 无法向 npmjs.org 核对（${err.message}）`);
+            return;
+          }
+          if (official !== target.integrity) {
+            problems.push(`${target.name}@${target.version}: 镜像 ${target.integrity} != npmjs.org ${official}`);
+          }
+        }),
+      );
+      if (problems.length) {
+        for (const problem of problems) console.error("  " + problem);
+        process.exit(1);
+      }
+      console.log(String(targets.length));
+    })();
+  ' "$lockfile" "${PAPERCLIP_NPM_REGISTRY}" 2>&1
+}
+
+# 把整棵树装进 staging 并自检；失败时由调用方清理 staging。
+paperclip_prefetch_into_staging() {
+  local registry="$1" version="$2" staging="$3"
+  echo "==> 从 ${registry} 预装 paperclipai@${version} 整棵依赖树（约 1.4G，首次较久）" >&2
+  # 与上游 installNpmPayload 的命令保持一致，只替换 registry：同样不传 --ignore-scripts，
+  # 否则原生模块的 postinstall 不会执行，冒烟检查过不去。
+  npm install --prefix "$staging" "paperclipai@${version}" \
+    --registry="$registry" --no-audit --no-fund >&2 || {
+    echo "==> 预装失败（镜像可能缺该版本），回落官方直连路径" >&2
+    return 1
+  }
+
+  # 复刻上游 smokePayload：入口必须存在，且自报版本要与目标一致。先于 integrity 核对，
+  # 装坏了就没必要再发网络请求。
+  local entrypoint="${staging}/node_modules/paperclipai/dist/index.js"
+  [[ -f "$entrypoint" ]] || {
+    echo "==> 预装产物缺少 CLI 入口 ${entrypoint}，丢弃" >&2
+    return 1
+  }
+  local reported
+  reported="$(node "$entrypoint" --version 2>/dev/null | awk 'NR==1{print $1}')"
+  [[ "$reported" == "$version" ]] || {
+    echo "==> 预装产物自报版本 ${reported:-未知}，与目标 ${version} 不符，丢弃" >&2
+    return 1
+  }
+
+  local verified
+  if ! verified="$(paperclip_verify_payload_scope "${staging}/package-lock.json")"; then
+    echo "${verified}" >&2
+    echo "==> @paperclipai/* 的 integrity 与 npmjs.org 不一致或无法核对，丢弃预装产物并回落官方直连路径" >&2
+    return 1
+  fi
+  echo "==> 已用 npmjs.org 核对 ${verified} 个 @paperclipai 包的 integrity" >&2
+  return 0
+}
+
+# 成功时 stdout 输出已就绪 payload 的版本号。
+paperclip_prefetch_payload() {
+  local registry="$1" spec="$2"
+  local resolved version
+  resolved="$(paperclip_npm_official_manifest "$spec")" || {
+    echo "==> 无法从 ${PAPERCLIP_NPM_REGISTRY} 解析 paperclipai@${spec}，跳过预装" >&2
+    return 1
+  }
+  version="${resolved%%$'\t'*}"
+  # 对齐上游 payloadPathFor 的校验，顺带挡住解析结果里的路径穿越。
+  [[ "$version" =~ ^[A-Za-z0-9._-]+$ ]] || {
+    echo "==> 解析到的版本号不合法（${version}），跳过预装" >&2
+    return 1
+  }
+
+  local installs_root="${PAPERCLIP_HOME}/cli/installs/npm"
+  local payload="${installs_root}/${version}"
+  if [[ -d "$payload" ]]; then
+    echo "==> payload 已存在，官方 install 将直接复用: ${version}" >&2
+    printf '%s\n' "$version"
+    return 0
+  fi
+
+  command -v npm >/dev/null 2>&1 || return 1
+
+  local checked
+  if ! checked="$(paperclip_prefetch_source_check "$registry" "$version")"; then
+    echo "${checked}" >&2
+    cat >&2 <<HINT
+==> ${registry} 取不到 paperclipai@${version} 的 @paperclipai 依赖，跳过预装、改走官方直连。
+    registry.npmmirror.com 永久缺 @paperclipai/server（解包 276M，超过 cnpm 的 256M
+    上限），换一个不做大小限制的源即可，例如:
+      PAPERCLIP_NPM_MIRROR=https://mirrors.cloud.tencent.com/npm
+HINT
+    return 1
+  fi
+  echo "==> 预检通过：${registry} 具备 ${checked} 个 @paperclipai 依赖" >&2
+
+  mkdir -p "$installs_root" || return 1
+  # 前缀刻意不同于上游的 .<version>.tmp-<pid>：上游的 finally 只删自己那个，而带这个
+  # 前缀的目录也不会被 payloadPathFor 当成某个版本的 payload。
+  local staging="${installs_root}/.fundeploy-prefetch-${version}.$$"
+  rm -rf "$staging"
+  if ! paperclip_prefetch_into_staging "$registry" "$version" "$staging"; then
+    rm -rf "$staging"
+    return 1
+  fi
+  # rename 是原子的，所以官方 install 看到的 payload 要么不存在、要么已完整自检通过。
+  mv "$staging" "$payload" || {
+    rm -rf "$staging"
+    return 1
+  }
+  echo "==> 预装完成: ${payload}" >&2
+  printf '%s\n' "$version"
+}
+
+# 剔除参数里的通道选择（--canary / --version），改为精确钉到已预装的版本。
+paperclip_pin_version_args() {
+  local version="$1"
+  shift
+  local pinned=() skip_next=0 arg
+  for arg in "$@"; do
+    if ((skip_next)); then
+      skip_next=0
+      continue
+    fi
+    case "$arg" in
+      --canary) ;;
+      --version) skip_next=1 ;;
+      --version=*) ;;
+      *) pinned+=("$arg") ;;
+    esac
+  done
+  pinned+=(--version "$version")
+  printf '%s\n' "${pinned[@]}"
 }
 
 cmd_install() {
@@ -253,19 +560,45 @@ cmd_install() {
   paperclip_apply_npm_network_env
   paperclip_print_network_hint
 
-  # npx paperclipai@latest 会把 paperclipai 的全部依赖下到 ~/.npm/_npx（实测 1.4G），
-  # 而它唯一的用途是执行一次 install 子命令 —— managed install 紧接着又把同一棵依赖树
-  # 装一份到 PAPERCLIP_HOME。首次安装无从避免（那一份同时预热了 npm cache，使第二步
-  # 基本不再走网络），但本机已有可用 CLI 时这 1.4G 是纯浪费。install 子命令自己会用
-  # npm view 解析目标版本，与执行它的 CLI 版本无关，所以复用本机 CLI 不会装到旧版。
-  local executable
-  if [[ "${PAPERCLIP_INSTALL_VIA_NPX:-0}" != "1" ]] &&
+  local prefetched="" registry spec
+  if registry="$(paperclip_prefetch_registry)" && spec="$(paperclip_prefetch_spec "$@")"; then
+    prefetched="$(paperclip_prefetch_payload "$registry" "$spec")" || prefetched=""
+  fi
+
+  local args=("$@")
+  if [[ -n "$prefetched" ]]; then
+    # 预装期间上游可能又发了一版（canary 实测几小时一个）。那时 tag 已指向新版本，官方
+    # install 的复用分支落空，刚预装的 1.4G 白下。所以只在 tag 仍指向预装版本时保留原
+    # 通道参数，否则精确钉到预装的那一个。代价是 manifest 的 channel 记为 pinned，裸
+    # `paperclipai update` 会卡在该版本 —— 本脚本的 upgrade 始终显式传 --canary/--latest，
+    # 不受影响。
+    local recheck=""
+    recheck="$(paperclip_npm_official_manifest "$spec")" || recheck=""
+    if [[ -n "$recheck" && "${recheck%%$'\t'*}" != "$prefetched" ]]; then
+      echo "==> ${spec} 已更新到 ${recheck%%$'\t'*}；为复用预装 payload 改按精确版本安装 ${prefetched}（channel 记为 pinned）" >&2
+      mapfile -t args < <(paperclip_pin_version_args "$prefetched" "$@")
+    fi
+  fi
+
+  # 执行器优先级：预装 payload 自带的 CLI > 本机已装的 CLI > npx。
+  # npx paperclipai@latest 会把全部依赖再下一份到 ~/.npm/_npx（实测 1.4G），而它唯一的
+  # 用途是执行一次 install 子命令。前两条路都能省掉这一份；预装成功时连首次安装也不再
+  # 需要 npx。install 子命令自己会解析目标版本，与执行它的 CLI 版本无关，所以复用已有
+  # CLI 不会装到旧版。
+  local via_npx="${PAPERCLIP_INSTALL_VIA_NPX:-0}"
+  local entrypoint="" executable
+  [[ -n "$prefetched" ]] &&
+    entrypoint="${PAPERCLIP_HOME}/cli/installs/npm/${prefetched}/node_modules/paperclipai/dist/index.js"
+  if [[ "$via_npx" != "1" && -n "$entrypoint" && -f "$entrypoint" ]]; then
+    echo "==> 用预装 payload 自带的 CLI 执行 managed install" >&2
+    PAPERCLIP_HOME="${PAPERCLIP_HOME}" node "$entrypoint" install --yes "${args[@]}"
+  elif [[ "$via_npx" != "1" ]] &&
     executable="$(paperclip_executable)" && "$executable" --version >/dev/null 2>&1; then
     echo "==> 复用本机 paperclipai 执行 managed install（跳过 npx 的重复下载）" >&2
-    PAPERCLIP_HOME="${PAPERCLIP_HOME}" "$executable" install --yes "$@"
+    PAPERCLIP_HOME="${PAPERCLIP_HOME}" "$executable" install --yes "${args[@]}"
   else
     command -v npx >/dev/null 2>&1 || die "未找到 npx（Node.js 自带）"
-    PAPERCLIP_HOME="${PAPERCLIP_HOME}" npx --yes --registry "${PAPERCLIP_NPM_REGISTRY}" paperclipai@latest install --yes "$@"
+    PAPERCLIP_HOME="${PAPERCLIP_HOME}" npx --yes --registry "${PAPERCLIP_NPM_REGISTRY}" paperclipai@latest install --yes "${args[@]}"
   fi
   paperclip_cli --version
 }
@@ -412,8 +745,33 @@ cmd_upgrade() {
     *) die "未知更新渠道: ${channel}（支持 canary / prod）" ;;
   esac
 
+  local spec
+  case "$channel" in
+    canary) spec=canary ;;
+    prod) spec=latest ;;
+  esac
+
   paperclip_apply_npm_network_env
   paperclip_print_network_hint
+
+  # 预装刻意放在停服之前：它要下约 1.4G，而之后 update 命中 payload 复用分支只要几秒。
+  # 先装好再停服，能把停机时间从「下载整棵依赖树」压到「一次冒烟检查」。
+  local prefetched="" registry
+  if registry="$(paperclip_prefetch_registry)"; then
+    prefetched="$(paperclip_prefetch_payload "$registry" "$spec")" || prefetched=""
+  fi
+
+  # 版本没变就不必停服再启：update 在版本相同时只会打印 already up-to-date，但停服、
+  # 重启和健康检查照样走一遍，白中断一次。
+  local current=""
+  if [[ -n "$prefetched" ]]; then
+    current="$(paperclip_cli --version 2>/dev/null | awk 'NR==1{print $1}')" || current=""
+    if [[ -n "$current" && "$current" == "$prefetched" ]]; then
+      echo "==> 已是 ${spec} 通道最新版 ${current}，跳过更新（未重启服务；需重启用: $0 restart）" >&2
+      return 0
+    fi
+  fi
+
   paperclip_load_config
   [[ ! -f "${PAPERCLIP_CONFIG_PATH}" ]] || paperclip_cli db:backup
 
@@ -428,7 +786,18 @@ cmd_upgrade() {
   [[ "${PAPERCLIP_DATABASE_MODE}" != "embedded-postgres" ]] || paperclip_stop_embedded_postgres
   paperclip_allow_embedded_postgres_build
 
-  if ! paperclip_cli update "$option" --no-backup; then
+  # 与 cmd_install 同一个竞态：预装期间 tag 可能已经前进，那时复用分支落空、刚下的
+  # 1.4G 白费，故改为精确钉到预装的版本。
+  local update_args=("$option") recheck=""
+  if [[ -n "$prefetched" ]]; then
+    recheck="$(paperclip_npm_official_manifest "$spec")" || recheck=""
+    if [[ -n "$recheck" && "${recheck%%$'\t'*}" != "$prefetched" ]]; then
+      echo "==> ${spec} 已更新到 ${recheck%%$'\t'*}；为复用预装 payload 改按精确版本更新 ${prefetched}（channel 记为 pinned）" >&2
+      update_args=(--version "$prefetched")
+    fi
+  fi
+
+  if ! paperclip_cli update "${update_args[@]}" --no-backup; then
     paperclip_cli service start || true
     return 1
   fi
