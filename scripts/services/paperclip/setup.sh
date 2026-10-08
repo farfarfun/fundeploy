@@ -30,7 +30,20 @@ source "${SCRIPT_DIR}/../../lib/fundeploy-common.sh"
 
 PAPERCLIP_HOME="${PAPERCLIP_HOME:-${HOME}/.paperclip}"
 PAPERCLIP_INSTANCE_ID="${PAPERCLIP_INSTANCE_ID:-default}"
+# 仅作用于 cmd_install 回落到 npx 拉取 paperclipai 本体那一步。刻意保持 npmjs.org：
+# managed install 固定从 npmjs.org 取包（见 paperclip_apply_npm_network_env 的注释），
+# 两步指向同一 registry 时第二步才能命中 npm cache（cache key 含完整 URL）。换成国内
+# 镜像会让两步各下一份完整依赖树（实测各约 1.4G），总耗时反而更长。
 PAPERCLIP_NPM_REGISTRY="${PAPERCLIP_NPM_REGISTRY:-https://registry.npmjs.org}"
+# 受限网络下的 npm 取回加固。npm 默认 fetch-retries=2、fetch-timeout=5min，而本项目
+# 单个 tarball 可达 370M（@openai/codex-linux-x64），直连跨境链路极易在中途断流，
+# 一旦失败整棵 1.4G 依赖树都要重来，因此默认把重试次数和超时都放宽。
+PAPERCLIP_NPM_FETCH_RETRIES="${PAPERCLIP_NPM_FETCH_RETRIES:-5}"
+PAPERCLIP_NPM_FETCH_RETRY_MINTIMEOUT="${PAPERCLIP_NPM_FETCH_RETRY_MINTIMEOUT:-20000}"
+PAPERCLIP_NPM_FETCH_RETRY_MAXTIMEOUT="${PAPERCLIP_NPM_FETCH_RETRY_MAXTIMEOUT:-180000}"
+PAPERCLIP_NPM_FETCH_TIMEOUT="${PAPERCLIP_NPM_FETCH_TIMEOUT:-1200000}"
+PAPERCLIP_HTTPS_PROXY="${PAPERCLIP_HTTPS_PROXY:-}"
+PAPERCLIP_NO_PROXY="${PAPERCLIP_NO_PROXY:-}"
 PAPERCLIP_NODE_MIN_VERSION="${PAPERCLIP_NODE_MIN_VERSION:-24.11.0}"
 PAPERCLIP_NODE_MIN_MAJOR="${PAPERCLIP_NODE_MIN_MAJOR:-24}"
 PAPERCLIP_UPDATE_HEALTH_TIMEOUT_SEC="${PAPERCLIP_UPDATE_HEALTH_TIMEOUT_SEC:-60}"
@@ -62,6 +75,16 @@ usage() {
   - 配置由 paperclipai onboard / configure 管理。
   - PAPERCLIP_INSTANCE_ID 默认为 ${PAPERCLIP_INSTANCE_ID}。
   - upgrade 完成后检查 PostgreSQL、Paperclip 端口及 /api/health。
+
+受限网络（install / upgrade / plugin install 下载约 1.4G）:
+  - PAPERCLIP_HTTPS_PROXY     npm 代理，如 http://127.0.0.1:7890；留空为直连
+  - PAPERCLIP_NO_PROXY        配合上一项的排除列表
+  - PAPERCLIP_NETWORK_HINT=0  隐藏直连提示
+  - PAPERCLIP_INSTALL_VIA_NPX=1  强制 install 走 npx（默认复用本机 CLI 以省一份下载）
+  - PAPERCLIP_NPM_PREFER_OFFLINE=1  优先用 npm cache，减少重装同版本时的网络往返
+  - PAPERCLIP_NPM_FETCH_RETRIES / _FETCH_TIMEOUT 等可覆盖 npm 取回重试与超时
+  - 换国内镜像源无效：managed install 固定直连 registry.npmjs.org，详见
+    paperclip_apply_npm_network_env 的注释。
 USAGE
 }
 
@@ -139,10 +162,78 @@ paperclip_cli() {
   fi
 }
 
+# paperclipai 的 managed install 把 registry 硬编码为 registry.npmjs.org，并且会另写
+# 一份只含 registry 两行的临时 .npmrc、用 npm_config_userconfig 强制 npm 子进程改用它，
+# 同时在命令行再传一次 --registry / --@paperclipai:registry（cli/src/commands/install.ts
+# 的 PUBLIC_NPM_REGISTRY）。这是刻意的防 registry 投毒设计，有测试守着，因此：
+#   - ~/.npmrc 里的 registry、proxy、fetch-* 对它一概无效（文件被整体替换）；
+#   - npm_config_registry 环境变量也压不过它（命令行优先级最高）。
+# 唯一能透进去的是环境变量：它以 env: { ...process.env, npm_config_userconfig } 启动
+# npm。所以这里只设它没有在命令行显式传入的那些键 —— 取回重试/超时和代理 —— 不去和
+# 它的 --registry 对抗。
+paperclip_apply_npm_network_env() {
+  export npm_config_fetch_retries="${PAPERCLIP_NPM_FETCH_RETRIES}"
+  export npm_config_fetch_retry_mintimeout="${PAPERCLIP_NPM_FETCH_RETRY_MINTIMEOUT}"
+  export npm_config_fetch_retry_maxtimeout="${PAPERCLIP_NPM_FETCH_RETRY_MAXTIMEOUT}"
+  export npm_config_fetch_timeout="${PAPERCLIP_NPM_FETCH_TIMEOUT}"
+  if [[ "${PAPERCLIP_NPM_PREFER_OFFLINE:-0}" == "1" ]]; then
+    export npm_config_prefer_offline=true
+  fi
+
+  local proxy="${PAPERCLIP_HTTPS_PROXY}"
+  if [[ -z "$proxy" ]]; then
+    return 0
+  fi
+  # 代理只做隧道（HTTPS 经 CONNECT 透传，TLS 仍是端到端），因此本机 http:// 代理是
+  # 正常用法，这里不像 GitHub 下载改写那样强制 https://。但仍限定已知 scheme，避免把
+  # registry 地址或 shell 片段误填进来后静默生效。
+  case "$proxy" in
+    http://* | https://* | socks5://* | socks5h://*) ;;
+    *)
+      echo "[fundeploy paperclip] 忽略 PAPERCLIP_HTTPS_PROXY（${proxy}）：仅支持 http:// https:// socks5:// socks5h://" >&2
+      return 0
+      ;;
+  esac
+  echo "[fundeploy paperclip] npm 下载走代理 ${proxy}" >&2
+  export npm_config_proxy="$proxy" npm_config_https_proxy="$proxy"
+  export HTTP_PROXY="$proxy" HTTPS_PROXY="$proxy" http_proxy="$proxy" https_proxy="$proxy"
+  if [[ -n "${PAPERCLIP_NO_PROXY}" ]]; then
+    export NO_PROXY="${PAPERCLIP_NO_PROXY}" no_proxy="${PAPERCLIP_NO_PROXY}"
+  fi
+  return 0
+}
+
+paperclip_print_network_hint() {
+  if [[ "${PAPERCLIP_NETWORK_HINT:-1}" == "0" || -n "${PAPERCLIP_HTTPS_PROXY}" ]]; then
+    return 0
+  fi
+  cat >&2 <<'HINT'
+提示: Paperclip 的 managed install 固定直连 registry.npmjs.org，依赖树实测约 1.4G
+      （@openai/codex-* 370M、@paperclipai/server 360M、@anthropic-ai/* 220M）。
+      配置国内镜像源对它无效，受限网络请设 PAPERCLIP_HTTPS_PROXY=http://127.0.0.1:7890
+      之类的本机代理。PAPERCLIP_NETWORK_HINT=0 可隐藏本行。
+HINT
+}
+
 cmd_install() {
   require_node
-  command -v npx >/dev/null 2>&1 || die "未找到 npx（Node.js 自带）"
-  PAPERCLIP_HOME="${PAPERCLIP_HOME}" npx --yes --registry "${PAPERCLIP_NPM_REGISTRY}" paperclipai@latest install --yes "$@"
+  paperclip_apply_npm_network_env
+  paperclip_print_network_hint
+
+  # npx paperclipai@latest 会把 paperclipai 的全部依赖下到 ~/.npm/_npx（实测 1.4G），
+  # 而它唯一的用途是执行一次 install 子命令 —— managed install 紧接着又把同一棵依赖树
+  # 装一份到 PAPERCLIP_HOME。首次安装无从避免（那一份同时预热了 npm cache，使第二步
+  # 基本不再走网络），但本机已有可用 CLI 时这 1.4G 是纯浪费。install 子命令自己会用
+  # npm view 解析目标版本，与执行它的 CLI 版本无关，所以复用本机 CLI 不会装到旧版。
+  local executable
+  if [[ "${PAPERCLIP_INSTALL_VIA_NPX:-0}" != "1" ]] &&
+    executable="$(paperclip_executable)" && "$executable" --version >/dev/null 2>&1; then
+    echo "==> 复用本机 paperclipai 执行 managed install（跳过 npx 的重复下载）" >&2
+    PAPERCLIP_HOME="${PAPERCLIP_HOME}" "$executable" install --yes "$@"
+  else
+    command -v npx >/dev/null 2>&1 || die "未找到 npx（Node.js 自带）"
+    PAPERCLIP_HOME="${PAPERCLIP_HOME}" npx --yes --registry "${PAPERCLIP_NPM_REGISTRY}" paperclipai@latest install --yes "$@"
+  fi
   paperclip_cli --version
 }
 
@@ -284,6 +375,8 @@ cmd_upgrade() {
     *) die "未知更新渠道: ${channel}（支持 canary / prod）" ;;
   esac
 
+  paperclip_apply_npm_network_env
+  paperclip_print_network_hint
   paperclip_load_config
   [[ ! -f "${PAPERCLIP_CONFIG_PATH}" ]] || paperclip_cli db:backup
 
@@ -341,6 +434,7 @@ cmd_plugin_list() {
 
 cmd_plugin_install() {
   local package="${1:-}" pick name url description i
+  paperclip_apply_npm_network_env
   if [[ -n "$package" ]]; then
     shift
     paperclip_cli plugin install "$package" "$@"
