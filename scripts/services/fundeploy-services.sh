@@ -409,7 +409,7 @@ cmd_status() {
       "$(service_state_from_pid_and_port "" "$ffx_be_listener_pid")" \
       "$(service_pid_display "" "$ffx_be_listener_pid")" \
       "${FUNFLIX_WEB_BACKEND_HOST}:${FUNFLIX_WEB_BACKEND_PORT}" \
-      "$(http_probe "http://${FUNFLIX_WEB_BACKEND_HOST}:${FUNFLIX_WEB_BACKEND_PORT}/docs")"
+      "$(http_probe "http://${FUNFLIX_WEB_BACKEND_HOST}:${FUNFLIX_WEB_BACKEND_PORT}/healthz")"
     _status_csv_line \
       "funflix-web" \
       "$(service_state_from_pid_and_port "" "$ffx_fe_listener_pid")" \
