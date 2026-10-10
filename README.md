@@ -136,8 +136,8 @@ brew uninstall fundeploy
 - `fundeploy service funflix-web install|upgrade|rollback <版本>|start|run|stop|restart|status|migrate|user-create|uninstall`：
   funflix-api（后端，PyPI，依赖核心库 funflix）+ funflix-web（前端，私有 npm）一起装/起/停，只提供合并命令。
   新机器装完先 `migrate`（建表）再 `user-create <用户名>`（建登录账号）——1.0.30 起是整站门禁，没账号登不进去
-- `fundeploy service funread-web install|start|run|stop|restart|status|uninstall`：在本地 venv 安装 funread API，
-  从 GitHub 构建 funread-web，并一起管理前后端进程
+- `fundeploy service funread-web install|start|run|stop|restart|status|uninstall`：在本地 venv 安装固定版本的
+  funread API，从经 SHA-256 校验的固定前端归档构建 funread-web，并一起管理前后端进程
 - `fundeploy service funlesson-web install|start|run|stop|restart|status|uninstall`：funlesson-api（后端，私有
   PyPI）+ funlesson-web（前端，私有 npm）一起装/起/停，只提供合并命令
 - `fundeploy service funfluid-web install|start|run|stop|restart|status|uninstall`：funfluid-api（后端）

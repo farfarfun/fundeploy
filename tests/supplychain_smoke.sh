@@ -71,6 +71,14 @@ assert_contains     "端口改写需校验是否生效"      "${_sub}" '端口�
 _ref="$(printf '%s\n' "${_sub}" | sed -n 's/^SUB2API_INSTALLER_REF="\${SUB2API_INSTALLER_REF:-\([0-9a-f]*\)}"/\1/p' | head -1)"
 assert_eq "REF 为 40 位 commit SHA" "40" "${#_ref}"
 
+echo "== funread-web 发布输入必须固定且可校验 =="
+_funread="$(cat "${_REPO_ROOT}/scripts/services/funread-web/setup.sh")"
+assert_contains "前端归档需锁定提交" "${_funread}" 'FUNREAD_WEB_ARCHIVE_REF'
+assert_contains "前端归档需带 SHA-256" "${_funread}" 'FUNREAD_WEB_ARCHIVE_SHA256'
+assert_contains "pnpm 必须使用锁文件" "${_funread}" 'install --frozen-lockfile'
+_funread_code="$(sed 's/[[:space:]]*#.*$//' "${_REPO_ROOT}/scripts/services/funread-web/setup.sh")"
+assert_not_contains "生产路径不得引用 master 分支" "${_funread_code}" 'master'
+
 echo "== 服务不得默认把无认证界面暴露到全网 =="
 _celery="$(cat "${_REPO_ROOT}/scripts/services/celery/setup.sh")"
 assert_contains     "Flower 默认监听回环"   "${_celery}" 'FLOWER_ADDRESS:-127.0.0.1'

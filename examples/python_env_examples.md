@@ -1,82 +1,49 @@
-# 使用示例
+# Python 环境使用示例
 
-## 创建 Python 环境
+Python 环境由 `fundeploy dev python` 管理。环境默认创建在 `~/opt/py<版本号>`，例如 Python 3.12 对应 `~/opt/py312`。
 
-### 基本用法
+## 创建环境
 
 ```bash
 # 创建 Python 3.12 环境
-fundeploy create py312
+fundeploy dev python install -v 3.12
 
-# 创建 Python 3.11 环境
-fundeploy create py311
-
-# 创建 Python 3.10 环境
-fundeploy create py310
+# 创建 Python 3.11 环境，并额外安装包
+fundeploy dev python install -v 3.11 -p requests -p flask
 ```
 
-### 自定义安装路径
+`install` 不带 `-v` 时会进入版本选择；非交互使用默认版本：
 
 ```bash
-# 安装到自定义路径
-fundeploy create py312 --path /custom/path
+NONINTERACTIVE=1 fundeploy dev python install
 ```
 
-### 激活环境
+## 使用环境
 
 ```bash
-# Linux/macOS
+# 激活环境
 source ~/opt/py312/bin/activate
 
-# Windows PowerShell
-~\opt\py312\Scripts\Activate.ps1
-```
-
-### 使用环境中的 Python
-
-```bash
-# 直接使用 Python（无需激活）
+# 或直接使用环境中的解释器
 ~/opt/py312/bin/python script.py
 ~/opt/py312/bin/pip install requests
-
-# Windows
-~\opt\py312\Scripts\python.exe script.py
-~\opt\py312\Scripts\pip.exe install requests
 ```
 
-## 完整工作流示例
+## 管理环境
 
 ```bash
-# 1. 创建 Python 3.12 环境
-fundeploy create py312
+# 更新默认环境中的预装包
+fundeploy dev python update
 
-# 2. 激活环境
-source ~/opt/py312/bin/activate
+# 删除并重建默认环境
+fundeploy dev python reinstall
 
-# 3. 安装项目依赖
-pip install -r requirements.txt
-
-# 4. 运行项目
-python app.py
-
-# 5. 退出环境
-deactivate
+# 删除默认环境（会要求确认）
+fundeploy dev python uninstall
 ```
 
-## 管理多个 Python 版本
+可用的版本和附加包参数见：
 
 ```bash
-# 创建多个版本
-fundeploy create py312
-fundeploy create py311
-fundeploy create py310
-
-# 添加别名到 ~/.bashrc 或 ~/.zshrc
-alias py312='source ~/opt/py312/bin/activate'
-alias py311='source ~/opt/py311/bin/activate'
-alias py310='source ~/opt/py310/bin/activate'
-
-# 快速切换版本
-py312  # 激活 Python 3.12
-py311  # 激活 Python 3.11
+fundeploy dev python --help
 ```

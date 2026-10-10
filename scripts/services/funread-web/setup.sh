@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# funread-web 一体化部署：在本地 venv 安装 funread API，并从 GitHub 构建 funread-web。
+# funread-web 一体化部署：在本地 venv 安装 funread API，并从已校验的发布归档构建 funread-web。
 # 上游尚未提供后台生命周期 CLI，因此 PID、日志与前后端启动顺序由本脚本管理。
 
 set -euo pipefail
@@ -9,9 +9,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../lib/fundeploy-common.sh"
 
 FUNREAD_WEB_SERVICE_HOME="${FUNREAD_WEB_SERVICE_HOME:-${HOME}/opt/funread-web}"
-FUNREAD_WEB_BACKEND_VERSION="${FUNREAD_WEB_BACKEND_VERSION:-}"
-FUNREAD_WEB_GIT_URL="${FUNREAD_WEB_GIT_URL:-https://github.com/farfarfun/funread-web.git}"
-FUNREAD_WEB_GIT_REF="${FUNREAD_WEB_GIT_REF:-master}"
+FUNREAD_WEB_BACKEND_VERSION="${FUNREAD_WEB_BACKEND_VERSION:-1.1.108}"
+# 默认归档固定到发布提交并校验内容；更新时须同时复核提交和 SHA-256。
+FUNREAD_WEB_ARCHIVE_REF="${FUNREAD_WEB_ARCHIVE_REF:-d793914832686ab3af76cf93a6b4e721ad9e0ff7}"
+FUNREAD_WEB_ARCHIVE_SHA256="${FUNREAD_WEB_ARCHIVE_SHA256:-f31368893bd0238b9d6edf45213351b28abe7b2e170c1da8989fb9939fba5f19}"
+FUNREAD_WEB_ARCHIVE_URL="${FUNREAD_WEB_ARCHIVE_URL:-https://github.com/farfarfun/funread-web/archive/${FUNREAD_WEB_ARCHIVE_REF}.tar.gz}"
 FUNREAD_WEB_PYTHON_BIN="${FUNREAD_WEB_PYTHON_BIN:-python3}"
 FUNREAD_WEB_NPM_BIN="${FUNREAD_WEB_NPM_BIN:-}"
 FUNREAD_WEB_BACKEND_HOST="${FUNREAD_WEB_BACKEND_HOST:-127.0.0.1}"
@@ -34,7 +36,7 @@ usage() {
 用法: ./setup.sh [command]
 
 命令:
-  install / upgrade  安装或升级 funread API，并拉取、构建 funread-web
+  install / upgrade  安装固定版本的 funread API，并下载、校验、构建 funread-web
   start              先启动后端，再启动前端
   run                先启动后端，前台运行前端（不写前端 PID）
   stop               先停止前端，再停止后端
@@ -48,8 +50,9 @@ usage() {
 
 常用环境变量:
   FUNREAD_WEB_SERVICE_HOME      安装目录（默认 ~/opt/funread-web）
-  FUNREAD_WEB_BACKEND_VERSION  funread 版本（默认最新）
-  FUNREAD_WEB_GIT_REF          funread-web 分支或 tag（默认 master）
+  FUNREAD_WEB_BACKEND_VERSION  funread 版本（默认 1.1.108）
+  FUNREAD_WEB_ARCHIVE_URL      funread-web 已发布归档 URL（默认固定提交）
+  FUNREAD_WEB_ARCHIVE_SHA256   归档 SHA-256（默认校验固定发布归档）
   FUNREAD_WEB_BACKEND_HOST / FUNREAD_WEB_BACKEND_PORT（默认 127.0.0.1:18811）
   FUNREAD_WEB_FRONTEND_HOST / FUNREAD_WEB_FRONTEND_PORT（默认 127.0.0.1:8811）
   FUNREAD_DATABASE_URL         后端数据库地址（不设时使用 funread 默认本地 SQLite）
@@ -65,24 +68,53 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || die "未找到 $1（$2）"
 }
 
-_resolve_npm() {
+_resolve_pnpm() {
   if [[ -n "${FUNREAD_WEB_NPM_BIN}" ]]; then
     [[ -x "${FUNREAD_WEB_NPM_BIN}" ]] || die "FUNREAD_WEB_NPM_BIN 无效: ${FUNREAD_WEB_NPM_BIN}"
+    [[ "$(basename "${FUNREAD_WEB_NPM_BIN}")" == pnpm* ]] \
+      || die "FUNREAD_WEB_NPM_BIN 必须指向 pnpm，才能使用发布归档中的锁文件"
     echo "${FUNREAD_WEB_NPM_BIN}"
     return
   fi
-  # 优先 pnpm：前端仓库多数用 only-allow pnpm 锁定包管理器，裸 npm install
-  # 会在 preinstall 阶段直接失败。
   if command -v pnpm >/dev/null 2>&1; then
     command -v pnpm
     return
   fi
-  command -v npm >/dev/null 2>&1 || die "未找到 npm/pnpm（可先运行 fundeploy dev nodejs install）"
-  command -v npm
+  die "未找到 pnpm（可先运行 fundeploy dev pnpm install；发布安装必须使用锁文件）"
 }
 
-_npm_is_pnpm() {
-  [[ "$(basename "$1")" == pnpm* ]]
+_sha256_of() {
+  local file="$1"
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "${file}" | awk '{print $1}'; return 0; fi
+  if command -v shasum >/dev/null 2>&1; then shasum -a 256 "${file}" | awk '{print $1}'; return 0; fi
+  if command -v openssl >/dev/null 2>&1; then openssl dgst -sha256 "${file}" | awk '{print $NF}'; return 0; fi
+  return 1
+}
+
+download_frontend_archive() {
+  require_command curl "请安装 curl"
+  require_command tar "请安装 tar"
+  local tmpdir archive extracted actual
+  tmpdir="$(mktemp -d "${FUNREAD_WEB_SERVICE_HOME}/.archive.XXXXXX")"
+  trap 'rm -rf "${tmpdir}"' RETURN EXIT
+  archive="${tmpdir}/funread-web.tar.gz"
+
+  echo "==> 下载前端归档: ${FUNREAD_WEB_ARCHIVE_URL}"
+  _fundeploy_github_download_curl -fsSL "${FUNREAD_WEB_ARCHIVE_URL}" -o "${archive}" \
+    || die "前端归档下载失败: ${FUNREAD_WEB_ARCHIVE_URL}"
+  actual="$(_sha256_of "${archive}")" || die "无法计算 SHA-256（需要 sha256sum、shasum 或 openssl）"
+  [[ "${actual}" == "${FUNREAD_WEB_ARCHIVE_SHA256}" ]] \
+    || die "前端归档 SHA-256 不匹配（期望 ${FUNREAD_WEB_ARCHIVE_SHA256}，实际 ${actual}）"
+
+  tar -xzf "${archive}" -C "${tmpdir}" || die "前端归档解压失败"
+  extracted="${tmpdir}/funread-web-${FUNREAD_WEB_ARCHIVE_REF}"
+  [[ -f "${extracted}/package.json" && -f "${extracted}/pnpm-lock.yaml" ]] \
+    || die "前端归档内容不完整或与固定提交不匹配"
+  [[ ! -e "${SOURCE_DIR}" ]] || fundeploy_safe_rm "${SOURCE_DIR}" \
+    || die "无法替换旧前端目录: ${SOURCE_DIR}"
+  mv "${extracted}" "${SOURCE_DIR}" || die "安装前端归档失败"
+  trap - RETURN EXIT
+  rm -rf "${tmpdir}"
 }
 
 wait_for_listener() {
@@ -105,9 +137,8 @@ backend_spec() {
 
 cmd_install() {
   require_command "${FUNREAD_WEB_PYTHON_BIN}" "请安装 Python 3.12+"
-  require_command git "请先安装 git"
-  local npm_bin
-  npm_bin="$(_resolve_npm)"
+  local pnpm_bin
+  pnpm_bin="$(_resolve_pnpm)"
   ensure_dirs
 
   echo "==> 安装后端: $(backend_spec)"
@@ -122,23 +153,11 @@ cmd_install() {
     "${VENV_DIR}/bin/python" -m pip install --upgrade "$(backend_spec)" || die "后端安装失败"
   fi
 
-  echo "==> 获取前端: ${FUNREAD_WEB_GIT_URL} (${FUNREAD_WEB_GIT_REF})"
-  if [[ -d "${SOURCE_DIR}/.git" ]]; then
-    git -C "${SOURCE_DIR}" fetch --depth 1 origin "${FUNREAD_WEB_GIT_REF}"
-    git -C "${SOURCE_DIR}" checkout --detach FETCH_HEAD
-  elif [[ -e "${SOURCE_DIR}" ]]; then
-    die "${SOURCE_DIR} 已存在但不是 git 仓库"
-  else
-    git clone --depth 1 --branch "${FUNREAD_WEB_GIT_REF}" "${FUNREAD_WEB_GIT_URL}" "${SOURCE_DIR}"
-  fi
+  download_frontend_archive
   (
     cd "${SOURCE_DIR}"
-    if _npm_is_pnpm "${npm_bin}"; then
-      "${npm_bin}" install
-    else
-      "${npm_bin}" install --include=dev --no-package-lock
-    fi
-    "${npm_bin}" run build
+    "${pnpm_bin}" install --frozen-lockfile
+    "${pnpm_bin}" run build
   ) || die "前端安装或构建失败"
   echo "已安装。运行 ./setup.sh start 启动。"
 }
