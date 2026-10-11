@@ -7,6 +7,15 @@
 
 ### 新增
 
+- `paperclip`：补上上游早已有、而本脚本一直没暴露的一等公民命令：
+  `check [canary|prod]`（只查版本不改动任何东西）、`rollback`（回退到 install store
+  里保留的上一份 payload）、`doctor [--repair]`、`health`、`channels`，以及
+  `service-install`（透传 `--enable-linger` / `--no-start-on-login` /
+  `--no-start-now`——此前 fundeploy 管理的 Paperclip 根本不会开机自启：`start` 内部的
+  `ensureCurrent()` 会自愈 systemd 单元文件，但 `systemctl --user enable` 和
+  `loginctl enable-linger` 只有官方 `service install` 会做）。
+- `paperclip`：新增 `PAPERCLIP_UPGRADE_YES=1`，用于在非交互环境确认降级。
+
 - `funread-web`：新增 `upgrade`（装完额外打印前后端的版本对比）与
   `rollback <版本>`（前后端一起钉到同一版本，回退前在跑就装完自动起回来）。
   `rollback` 会先用 `npm view` 确认私有源上真有这个版本再动安装——`install` 的
@@ -16,6 +25,34 @@
   不是多余的。
 
 ### 修复
+
+- `paperclip`：`upgrade` 把官方 `update --check --json` 的退出码 **10** 当成了失败。
+  这个退出码是「有可用更新」的信号（payload 里 `if (options.check) process.exitCode = 10`，
+  性质同 `diff`），不是错误——于是唯一真正需要升级的那种情况反而被判成「拿不到版本
+  信息」。现在只看 stdout 能不能解析成 JSON，不看返回值。顺带给 `paperclip_cli` 加了
+  `PAPERCLIP_CLI_NO_DIAGNOSE`，免得这种「非零但成功」的调用白跑一次损坏探测。
+- `paperclip`：canary 机器上 `upgrade prod` 会卡死。`--latest` 指向的 stable 往往比
+  当前 canary 版本旧（实测本机 `2026.1008.0-canary.4` → `2026.1005.0`），官方 `update`
+  把这种情况当显式降级、要求 `-y` 确认，而此前脚本既不检测也不传，非交互环境里就停在
+  上游的交互提示上。现在先问 `update --check --json`：`downgrade:true` 时经
+  `fundeploy_confirm_destructive` 确认后才补 `-y`，`updateAvailable:false` 时直接跳过
+  （不再白停一次服务）。
+- `paperclip`：服务本来就没在跑时 `upgrade` / `rollback` 会在第一步中止。升级前备份
+  刻意放在停服之前（embedded PostgreSQL 是服务的子进程、随服务一起停，停完再让官方
+  `update` 自己备份就是空转，所以是自己先备份一次再传 `--no-backup`），但服务已经停着
+  时那个库也没在跑，`db:backup` 必然连不上，`set -e` 下整条升级就断在这里。现在先探
+  数据库端口，连不上就跳过备份并说明原因——数据在磁盘上，换 payload 不会动它。
+- `paperclip`：无服务管理器时 fundeploy 托管的后台进程缺 `</dev/null`，会继承调用者的
+  终端 stdin，在交互式 shell 里一读 stdin 就被 `SIGTTIN` 停住，表现为「起来了但没响应」。
+- `paperclip`：消毒用的临时 npmrc 会泄漏到 `/tmp`。它此前在脚本顶层无条件创建并挂
+  `trap … EXIT`，而 `run` / `logs` 这些路径以 `exec` 收尾，`exec` 换掉进程映像后 EXIT
+  trap 不会触发。现在改成只在 `install` / `upgrade` / `plugin install` 期间按官方
+  `install.sh` 的做法写一份仅含两行 registry 的最小 npmrc（同时也是 npm allow-scripts
+  缺陷 npm/cli#9783 的官方同款解法，替掉了原来那段 grep 式 `~/.npmrc` 消毒），并在
+  `exec` 之前显式清理。
+- `fundeploy service status`：Paperclip 的端口兜底值 `3100` 是错的，改为 `8804`——
+  config.json 的 `server.port` 和 `paperclipai health` 默认探的都是 8804。配置还没生成
+  时这里会去探一个根本没人监听的端口，把「未安装」显示成「已停止」。
 
 - `funread-web`：`install` / `start` / `run` 会在默认配置目录下按需补一份
   `config.toml`，不补的话新机器上 `start` 必然失败。funread 1.1.111 的两个 CLI
@@ -74,6 +111,42 @@
 
 ### 变更
 
+- **破坏性**：`paperclip` 整体重构为「直驱官方 CLI」，删掉约 430 行自造机制
+  （1240 行 → 1066 行，其中代码 736 行，与兄弟脚本的 589 / 614 持平）。
+  删掉的两大块：
+  （1）约 295 行 npm 镜像预装机制。它要解决「依赖树 1.4G 下得慢」，但上游把
+  `registry.npmjs.org` 在 `install.sh` 和 `cli/src/commands/install.ts` 两层硬钉死
+  （`--registry=`、`--@paperclipai:registry=`、四种 `NPM_CONFIG_*` 拼写、一次性
+  `npm_config_userconfig`），这是有上游测试守着的防 registry 投毒设计，任何 flag 和
+  环境变量都换不掉镜像——这套机制在解决一个它解决不了的问题，而且自己带来了 bug。
+  （2）约 130 行 macOS arm64 embedded-postgres 补丁（pnpm `allowBuilds`、
+  `hydrate-symlinks`、删 launchd 里的 `DATABASE_URL`），改为调用上游现成的
+  `doctor --repair --yes`（它会检查配置、install store、manifest、`current` 链接、
+  shim、PATH、目录权限等并尝试修复）；刻意放在 `start` 之前，因为官方
+  `paperclipai run` 自己也是 `onboard` + `doctor --repair` 之后才启动。
+  手搓的版本比较与「already up to date」判断也交回 `update --check --json`。
+  **迁移**：`PAPERCLIP_NPM_MIRROR` 与 `PAPERCLIP_NPM_PREFETCH` 两个变量已移除
+  （设了也从来没能改变实际下载源）。受限网络改用 `PAPERCLIP_HTTPS_PROXY` +
+  `PAPERCLIP_NO_PROXY`——那是唯一能透进官方 managed install 的通道；
+  `PAPERCLIP_NPM_FETCH_*`（取回重试与超时）和 `PAPERCLIP_INSTALL_VIA_NPX` 保留。
+- `paperclip`：仍不采用官方文档推荐的 `curl -O https://paperclip.ing/install.sh`
+  + sha256 引导路径，因为那条路径当前是坏的：`paperclip.ing` 上那份（文档指向、
+  也是唯一发布了 `.sha256` 的）落后于 master 的 #11792，给 CLI 传了 `install` 并不
+  接受的 `--no-prompt`（交接直接失败）、`MIN_NODE_MAJOR=20`（上游已要求 24.11+）、
+  用 `${value,,}` 这种 bash 4 语法在 macOS 自带 bash 3.2 上崩、第三方脚本无 SHA 固定
+  （上游 issue #10739 在跟踪）；master 上那份正确的 `scripts/install.sh` 没有发布
+  checksum（`.sha256` 返回 404），无从校验；它的 Node 引导还会在见到 `~/.nvm` 时
+  直接 `fail`。而只要 PATH 上已有 node 24+，install.sh 的 Node 引导块会被整个跳过，
+  它就只剩 `npx --yes --registry=… paperclipai@latest install --yes` 这一行——也正是
+  本脚本执行的那条。终态与 install.sh 一致，但不引入一个过期、且在装了 nvm 的机器上
+  根本跑不起来的脚本依赖。
+- `paperclip`：`nvm use 24` 不再在每次 CLI 调用前执行。managed install 的 shim
+  已经用绝对路径把自己那份 node 钉死（`exec '<nvm>/…/v24.x/bin/node' '<payload>/dist/index.js'`），
+  经 shim 的调用自带正确的 node；版本门槛因此收窄到真正需要它的 npx 引导路径
+  （那时还没有 shim）与 `run` / `start`，`status` / `logs` / `stop` 这些热路径不再
+  每次 `source nvm.sh` 并改写 PATH。
+- `paperclip`：交互菜单的选项补成「命令 + 中文描述」并用 `pick="${pick%% *}"` 还原，
+  与仓库其余服务一致（此前是裸命令名，是全仓唯一的偏离）。
 - **破坏性**：`sub2api` 默认监听地址由 `0.0.0.0` 改为 `127.0.0.1`。sub2api 是
   订阅 API 网关，`data/` 下存着上游渠道 key 与用户 token，默认绑全网卡不符合
   SPEC §9.3 的安全默认值要求；同仓库其余服务默认都是 `127.0.0.1`，
@@ -115,7 +188,8 @@
 
 ### 废弃
 
-- 无
+- `paperclip`：`PAPERCLIP_NPM_MIRROR` / `PAPERCLIP_NPM_PREFETCH` 已移除（见「变更」
+  里的迁移说明）。`update` 作为 `upgrade` 的别名继续保留。
 
 ## [0.1.17] - 2026-09-27
 

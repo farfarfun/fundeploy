@@ -1,28 +1,83 @@
 #!/usr/bin/env bash
-# Paperclip (https://github.com/paperclipai/paperclip) 本机服务。
-# CLI 安装、升级和后台服务均交给 Paperclip 官方命令管理。
+# Paperclip 本机服务。CLI 安装、升级、诊断和后台服务全部交给 Paperclip 官方命令，
+# 本脚本只做两件上游没有、或在本仓环境里必须补的事：中文封装，以及没有服务管理器
+# 的机器上的后台托管。
+#
+# 上游（本脚本对齐 paperclipai 2026.1008.0-canary.4 的 CLI 表面）:
+#   https://github.com/paperclipai/paperclip
+#   npm 包 paperclipai。managed install 的产物布局：
+#     ${PAPERCLIP_HOME}/cli/installs/npm/<版本>   payload（整棵依赖树，实测约 1.4G）
+#     ${PAPERCLIP_HOME}/cli/current               指向当前版本的符号链接
+#     ~/.local/bin/paperclipai                    shim
+#     ${PAPERCLIP_HOME}/instances/<实例>/config.json  实例配置
+#
+# 为什么不走官方 install.sh：
+#   官方文档推荐 `curl -O https://paperclip.ing/install.sh` + sha256 校验，但 paperclip.ing
+#   上那份是过期快照（落后于 master 的 #11792，上游 issue #10739 在跟踪）：给 CLI 传了
+#   `install` 并不接受的 --no-prompt（交接直接失败）、MIN_NODE_MAJOR=20（上游已要求
+#   24.11+）、用了 ${value,,} 这种 bash 4 语法（macOS 自带 bash 3.2 上崩）、第三方脚本
+#   无 SHA 固定。而 master 上那份正确的 scripts/install.sh 没有发布 .sha256（404），
+#   无从校验。它的 Node 引导还会在见到 ~/.nvm 时直接 fail（"nvm was detected..."）。
+#   反过来，只要 PATH 上已有 node 24+，install.sh 的 Node 引导块会被整个跳过，它就只
+#   剩下面这一行 —— 也正是本脚本 cmd_install 执行的那条：
+#     npx --yes --registry https://registry.npmjs.org paperclipai@latest install --yes
+#   所以这里直接驱动官方 CLI（INSTALLING.md 的 "Install Sources" 记载的正式路径），
+#   终态与 install.sh 完全一致，但不引入一个过期、且在装了 nvm 的机器上根本跑不起来
+#   的脚本依赖。
+#
+# PID 归属：
+#   有服务管理器（Linux systemd --user / macOS LaunchAgent）时 PID 完全由官方
+#   `paperclipai service` 持有，本脚本不写 PID 文件，start/stop/restart/status/logs
+#   只是转调。但 systemd --user 需要一个用户级 systemd 实例，容器、WSL1 和没有登录
+#   会话的终端里不存在；官方 service start/stop/status 在那种机器上只打印一条 reason
+#   就以 0 退出（commands/service.ts 的 resolveManager 返回 null 而非抛错），对调用方
+#   是彻底的「假成功」—— 返回 0、什么都没启动。官方给出的唯一出路是 `paperclipai run`，
+#   而那是前台的、不自守护的进程。因此这种机器上由本脚本用 nohup + PID 文件托管一条
+#   后台通道，让那五个命令在容器里也是真的。运行时文件落在
+#   ${PAPERCLIP_HOME}/run/<实例>/，刻意不放仓库内的 .run/：fundeploy 以 apt / Homebrew /
+#   ~/.local/fundeploy 形式分发，运行时根本不存在「仓库工作区」。
+#
+# 为什么 upgrade / rollback / uninstall 不直接转调上游同名命令：
+#   - 官方 `update` 只会重启「服务管理器下的」那个实例，看不见本脚本 nohup 托管的进程；
+#     不先停就会在服务运行中替换 payload。
+#   - 官方 `service uninstall` 在无服务管理器的机器上同样「假成功」，不先收掉托管进程
+#     就会把正在运行的 payload 删掉。
+#   - canary 机器上 `--latest` 指向的 stable 往往比当前版本旧，官方 update 把这种情况
+#     当显式降级、要求 -y 确认，不处理的话非交互环境里会卡住。
+#   - 官方 update 的 pre-update 数据库备份要连得上数据库，而 embedded PostgreSQL 随服务
+#     一起停；所以备份必须在停服之前自己做一次，再给 update 传 --no-backup。
+#
+# 依赖: Node.js 24.11+（只有 npx 引导首次安装那一步需要；此后 shim 用绝对路径钉死了
+#   自己那份 node）、curl；可选 nc（端口探测，缺了用 /dev/tcp）。
+#
+# 用法：
+#   ./setup.sh                      # gum 菜单
+#   ./setup.sh install              # 官方 managed install（正式版）
+#   ./setup.sh install-canary       # 官方 managed install（开发版）
+#   ./setup.sh check [canary|prod]  # 只看有没有新版，不改动任何东西
+#   ./setup.sh upgrade [canary|prod]# 备份 → 停服 → 官方 update → doctor --repair → 重启
+#   ./setup.sh rollback             # 回退到 install store 里保留的上一份 payload
+#   ./setup.sh doctor [--repair]    # 官方诊断（--repair 尝试自动修复）
+#   ./setup.sh health               # 官方健康检查（不可达时返回非 0）
+#   ./setup.sh channels             # 查看发布通道和当前跟随的通道
+#   ./setup.sh start / stop / restart / status / logs / run
+#   ./setup.sh uninstall            # 卸载服务和 CLI，保留数据目录
+#
+# 环境变量：
+#   PAPERCLIP_HOME                  数据目录，默认 ~/.paperclip
+#   PAPERCLIP_INSTANCE_ID           实例 id，默认 default
+#   PAPERCLIP_FALLBACK=off          关掉无服务管理器时的后台托管，维持官方行为
+#   PAPERCLIP_HTTPS_PROXY           npm 下载代理，如 http://127.0.0.1:7890
+#   PAPERCLIP_NO_PROXY              配合上一项的排除列表
+#   PAPERCLIP_NETWORK_HINT=0        隐藏「依赖树约 1.4G」的提示
+#   PAPERCLIP_INSTALL_VIA_NPX=1     强制 install 走 npx（默认复用已装 CLI 以省一份下载）
+#   PAPERCLIP_NPM_PREFER_OFFLINE=1  优先用 npm cache，减少重装同版本时的网络往返
+#   PAPERCLIP_NPM_FETCH_RETRIES / _FETCH_TIMEOUT 等  覆盖 npm 取回重试与超时
+#   NONINTERACTIVE=1                onboard 自动追加 --yes；降级需配合下面两个之一
+#   PAPERCLIP_UPGRADE_YES=1         非交互下确认降级
+#   PAPERCLIP_UNINSTALL_YES=1       非交互下确认卸载
 
 set -euo pipefail
-
-# 已知 npm bug（npm/cli#9783、#9912、#9968）：用户 .npmrc 中的 allow-scripts
-# 配置会被 npm 读入后传给内部再次触发的 npm install（例如 paperclipai 安装器
-# 自身的依赖安装），而该内部安装是 project-scoped 的，npm 会把继承来的
-# allow-scripts 策略误判为显式传入 --allow-scripts 并直接报错 EALLOWSCRIPTS。
-# 仅 unset 环境变量并不够（该配置本就来自 .npmrc 文件而非环境变量），这里生成
-# 一份去掉 allow-scripts 的用户配置副本，并通过 npm_config_userconfig 让所有
-# 子进程改用它。
-unset npm_config_allow_scripts
-if command -v npm >/dev/null 2>&1; then
-  _paperclip_npm_userconfig="$(npm config get userconfig 2>/dev/null || true)"
-  if [[ -n "${_paperclip_npm_userconfig}" && -f "${_paperclip_npm_userconfig}" ]] &&
-    grep -Eq '^[[:space:]]*allow-scripts[[:space:]]*=' "${_paperclip_npm_userconfig}" 2>/dev/null; then
-    _paperclip_sanitized_npmrc="$(mktemp "${TMPDIR:-/tmp}/fundeploy-paperclip-npmrc.XXXXXX")"
-    grep -Ev '^[[:space:]]*allow-scripts[[:space:]]*=' "${_paperclip_npm_userconfig}" >"${_paperclip_sanitized_npmrc}"
-    export npm_config_userconfig="${_paperclip_sanitized_npmrc}"
-    trap 'rm -f "${_paperclip_sanitized_npmrc}"' EXIT
-  fi
-  unset _paperclip_npm_userconfig
-fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../../lib/fundeploy-common.sh
@@ -30,13 +85,9 @@ source "${SCRIPT_DIR}/../../lib/fundeploy-common.sh"
 
 PAPERCLIP_HOME="${PAPERCLIP_HOME:-${HOME}/.paperclip}"
 PAPERCLIP_INSTANCE_ID="${PAPERCLIP_INSTANCE_ID:-default}"
-# 官方源。两个用途：npx 回落那一步的 registry，以及预装产物的 integrity 校验基准
-# （见 paperclip_verify_payload_scope）。除非官方换域名，不要改。
+# 官方源。用途只有一个：npx 引导那一步的 registry。除非官方换域名，不要改 ——
+# managed install 自己也把它钉死（见 paperclip_prepare_npm_env 的注释）。
 PAPERCLIP_NPM_REGISTRY="${PAPERCLIP_NPM_REGISTRY:-https://registry.npmjs.org}"
-# 整棵依赖树的预装源（见 paperclip_prefetch_payload）。留空则沿用本机 npm 自己的
-# registry（npm config get registry）；设为 off 关闭预装，严格走官方路径。
-PAPERCLIP_NPM_MIRROR="${PAPERCLIP_NPM_MIRROR:-}"
-PAPERCLIP_NPM_PREFETCH="${PAPERCLIP_NPM_PREFETCH:-auto}"
 # 受限网络下的 npm 取回加固。npm 默认 fetch-retries=2、fetch-timeout=5min，而本项目
 # 单个 tarball 可达 370M（@openai/codex-linux-x64），直连跨境链路极易在中途断流，
 # 一旦失败整棵 1.4G 依赖树都要重来，因此默认把重试次数和超时都放宽。
@@ -54,11 +105,6 @@ PAPERCLIP_UPDATE_HEALTH_TIMEOUT_SEC="${PAPERCLIP_UPDATE_HEALTH_TIMEOUT_SEC:-180}
 PAPERCLIP_CONFIG_PATH="${PAPERCLIP_HOME}/instances/${PAPERCLIP_INSTANCE_ID}/config.json"
 
 # ===== 无服务管理器时的后台托管 =====
-# 官方 service start/stop/status 在检测不到服务管理器时只打印一条 reason 就以 0 退出
-# （见 paperclip_service_state 的注释），于是容器、WSL1 或没有登录会话的机器上
-# `fundeploy service paperclip start` 是彻底的空转：返回 0、什么都没启动。官方给出的
-# 唯一出路是 `paperclipai run`，但那是前台的。这里补一条 fundeploy 自管的后台通道
-# （nohup + PID 文件），让 start/stop/restart/status/logs 在这些机器上也是真的。
 # ${PAPERCLIP_HOME} 下官方只用 cli/ 和 instances/，run/ 不会撞上它。
 PAPERCLIP_RUN_DIR="${PAPERCLIP_RUN_DIR:-${PAPERCLIP_HOME}/run/${PAPERCLIP_INSTANCE_ID}}"
 PAPERCLIP_PID_FILE="${PAPERCLIP_RUN_DIR}/paperclip.pid"
@@ -75,23 +121,34 @@ usage() {
   cat <<USAGE
 用法: ./setup.sh [command [args...]]
 
-命令:
-  install          官方 managed install（正式版）
+安装与版本:
+  install          官方 managed install（正式版；别名 install-prod）
   install-canary   官方 managed install（开发版）
-  install-prod     install 的别名
-  upgrade [canary|prod] 官方升级、备份、迁移及服务重启（默认 canary；别名 update）
-  service-install [--enable-linger] [--no-start-on-login]
-                   注册后台服务并设置开机自启；无登录会话的机器需 --enable-linger
-  onboard          首次配置；NONINTERACTIVE=1 时默认追加 --yes
+  check [canary|prod]   只查有没有新版，不改动任何东西（官方 update --check --json）
+  upgrade [canary|prod] 备份 → 停服 → 官方 update → doctor --repair → 重启 → 健康检查
+                        默认 canary；别名 update。降级需确认（见 PAPERCLIP_UPGRADE_YES）
+  rollback         回退到 install store 里保留的上一份 payload（官方 update --rollback）
+  channels         查看发布通道（stable / beta / nightly / canary）和当前跟随的通道
+
+诊断与配置:
+  doctor [--repair]     官方诊断；--repair 尝试自动修复（配置、store、shim、PATH、目录权限）
+  health [--json]       官方健康检查，API 不可达时返回非 0
+  onboard               首次配置；NONINTERACTIVE=1 时默认追加 --yes
+  service-install [--enable-linger] [--no-start-on-login] [--no-start-now]
+                        注册后台服务并设置开机自启；无登录会话的机器需 --enable-linger
+
+插件:
   plugin list                  列出 awesome-paperclip 收录的插件
   plugin install [npm-package] 安装插件；不指定包名时从清单选择
   plugin installed             列出当前已安装的插件
+
+生命周期:
   start             后台启动并等待 /api/health 通过
   run               使用 paperclipai run 前台启动
   stop              停止后台服务
-  restart           热重启后台服务；未在运行时自动改为 start
-  status            查看 supervisor、版本与健康状态
-  logs [options]    查看服务日志，例如 logs -f
+  restart [--wait]  热重启；未在运行时自动改为 start
+  status [--json]   查看 supervisor、版本与健康状态
+  logs [-f] [-n N]  查看服务日志
   uninstall         卸载官方服务和 CLI，保留 ${PAPERCLIP_HOME} 数据
 
 说明:
@@ -107,24 +164,31 @@ usage() {
   - start 和 upgrade 完成后检查 PostgreSQL、Paperclip 端口及 /api/health。
 
 受限网络（install / upgrade 下载约 1.4G）:
-  - PAPERCLIP_NPM_MIRROR      整棵依赖树的预装源，如 https://registry.npmmirror.com；
-                              留空则沿用本机 npm 自己的 registry
-  - PAPERCLIP_NPM_PREFETCH=off  关闭预装，严格走官方直连 npmjs.org 的路径
+  - 官方 managed install 把 registry 钉死在 registry.npmjs.org 并自己改写 npmrc，这是
+    刻意的防投毒设计（有上游测试守着），换镜像对它无效。能透进去的只有环境变量，
+    因此这里只提供代理和取回参数两类开关：
   - PAPERCLIP_HTTPS_PROXY     npm 代理，如 http://127.0.0.1:7890；留空为直连
   - PAPERCLIP_NO_PROXY        配合上一项的排除列表
   - PAPERCLIP_NETWORK_HINT=0  隐藏直连提示
   - PAPERCLIP_INSTALL_VIA_NPX=1  强制 install 走 npx（默认复用已有 CLI 以省一份下载）
   - PAPERCLIP_NPM_PREFER_OFFLINE=1  优先用 npm cache，减少重装同版本时的网络往返
   - PAPERCLIP_NPM_FETCH_RETRIES / _FETCH_TIMEOUT 等可覆盖 npm 取回重试与超时
-
-  官方 managed install 把 registry 钉死在 npmjs.org，改 npm 配置对它无效。本脚本改为
-  先用可达的源把整棵树装到官方的 payload 路径，再让官方 install 走它的「payload 已存在
-  即复用」分支（实测几秒、零下载）。预装后会用 npmjs.org 的 integrity 逐个核对
-  @paperclipai/*，不一致就丢弃并回落官方直连路径。详见 paperclip_prefetch_payload。
 USAGE
 }
 
 die() { echo "错误: $*" >&2; exit 1; }
+
+# ------------------------------------------------------------------ Node 运行时
+#
+# Paperclip 自己要求 Node 24.11+，但 managed install 装完后的 shim 已经用绝对路径把
+# 自己那份 node 钉死了：
+#   export PATH='<nvm>/versions/node/v24.x/bin':"$PATH"
+#   exec '<nvm>/versions/node/v24.x/bin/node' '<payload>/dist/index.js' "$@"
+# 所以经 shim 的调用自带正确的 node，PATH 上是不是旧版无关。真正需要版本门槛的只有
+# npx 引导首次安装那一步（那时还没有 shim），以及 run / start 可能解析到非 shim 的
+# paperclipai 的情况。本脚本自己的 node -e 小工具（解析 config.json、service status
+# --json）只需要任意可用的 node，因此分成两级，避免在 status / logs / stop 这些热路径
+# 上每次都去 source nvm.sh 并改写 PATH。
 
 node_version_meets() {
   local min="$1"
@@ -156,12 +220,20 @@ require_node() {
   node_version_meets "${PAPERCLIP_NODE_MIN_VERSION}" || die "需要 Node.js ${PAPERCLIP_NODE_MIN_VERSION}+，当前: $(node --version)。可执行: nvm install ${PAPERCLIP_NODE_MIN_MAJOR}"
 }
 
+# 本脚本自己的 node -e 小工具用：只要有 node 就行，不切版本。
+require_node_any() {
+  command -v node >/dev/null 2>&1 || die "需要 Node.js（https://nodejs.org/）"
+}
+
+# ------------------------------------------------------------------ 配置与 CLI
+
 paperclip_load_config() {
   PAPERCLIP_DATABASE_MODE=""
   PAPERCLIP_DATABASE_DIR="${PAPERCLIP_HOME}/instances/${PAPERCLIP_INSTANCE_ID}/db"
   PAPERCLIP_DATABASE_PORT=5432
   PAPERCLIP_SERVER_PORT=8804
   [[ -f "${PAPERCLIP_CONFIG_PATH}" ]] || return 0
+  require_node_any
 
   local values
   values="$(node -e '
@@ -187,7 +259,6 @@ paperclip_executable() {
 }
 
 paperclip_cli() {
-  require_node
   local executable rc=0
   executable="$(paperclip_executable)" || die "未找到 paperclipai，请先执行: $0 install"
   paperclip_load_config
@@ -198,12 +269,16 @@ paperclip_cli() {
   fi
   # paperclip_executable 只判断 -x：payload 被删或损坏而 shim 仍在时，官方 CLI 只会
   # 抛 node 的原始堆栈。失败后补一次探测把它翻译成可执行的建议；正常路径零开销。
-  if ((rc != 0)) && ! "$executable" --version >/dev/null 2>&1; then
+  # PAPERCLIP_CLI_NO_DIAGNOSE=1 关掉这次探测，供 update --check 那类「用退出码传信息、
+  # 非零不代表失败」的调用使用（见 paperclip_update_check）。
+  if ((rc != 0)) && [[ "${PAPERCLIP_CLI_NO_DIAGNOSE:-0}" != "1" ]] && ! "$executable" --version >/dev/null 2>&1; then
     echo "提示: ${executable} 无法运行，paperclipai 安装可能已损坏，可执行: $0 install" >&2
   fi
   return "$rc"
 }
 
+# ------------------------------------------------------------- 官方服务状态判读
+#
 # service start / stop / status 在检测不到服务管理器时只打印一条 reason 就以 0 退出
 # （commands/service.ts 的 resolveManager 返回 null 而非抛错），对调用方是「假成功」。
 # 这里统一解析 --json 输出，取出 supported / pid / message 供上层判断。
@@ -247,6 +322,65 @@ paperclip_require_fallback() {
 可选做法: $0 run 前台启动，或在有登录会话的 shell 执行 $0 service-install --enable-linger"
 }
 
+# ------------------------------------------------------------------ 端口与健康
+
+paperclip_port_open() {
+  local port="$1"
+  if command -v nc >/dev/null 2>&1; then
+    nc -z 127.0.0.1 "$port" >/dev/null 2>&1
+  else
+    (exec 3<>"/dev/tcp/127.0.0.1/${port}") 2>/dev/null
+  fi
+}
+
+# 单次探测：端口通且 /api/health 返回 2xx。
+# 刻意用 curl 而不是官方 `paperclipai health`：后者每次都要起一个 node 进程加载整个 CLI
+# bundle，按秒轮询最多 180 次扛不住。`health` 作为用户命令单独暴露（cmd_health）。
+paperclip_health_ok() {
+  { [[ "${PAPERCLIP_DATABASE_MODE}" != "embedded-postgres" ]] || paperclip_port_open "${PAPERCLIP_DATABASE_PORT}"; } &&
+    paperclip_port_open "${PAPERCLIP_SERVER_PORT}" &&
+    curl --fail --silent --show-error --max-time 3 "http://127.0.0.1:${PAPERCLIP_SERVER_PORT}/api/health" >/dev/null
+}
+
+# 等端口和 /api/health 就绪；超时返回 1，由调用方决定怎么报错。
+# 首探就通过时不打提示：升级编排里 cmd_start 已经等过一轮，再打一遍只是噪音；而官方
+# service start 可能在服务真正就绪前就返回，所以那一轮等待本身不能省。
+paperclip_wait_for_health() {
+  local timeout="$1" deadline=$((SECONDS + $1)) targets="Paperclip ${PAPERCLIP_SERVER_PORT} 和 /api/health"
+  paperclip_health_ok && return 0
+  [[ "${PAPERCLIP_DATABASE_MODE}" != "embedded-postgres" ]] || targets="PostgreSQL ${PAPERCLIP_DATABASE_PORT}、${targets}"
+  echo "==> 检查 ${targets}（最长 ${timeout} 秒）" >&2
+  while ((SECONDS <= deadline)); do
+    sleep 1
+    paperclip_health_ok && return 0
+  done
+  return 1
+}
+
+# embedded PostgreSQL 是服务的子进程，但 nohup 托管的进程被收掉后它可能变成孤儿占住
+# 5432，换 payload 或重启时就会失败。这不是 macOS 专属问题，所有平台都要收。
+paperclip_stop_embedded_postgres() {
+  local pid_file="${PAPERCLIP_DATABASE_DIR}/postmaster.pid"
+  [[ -f "$pid_file" ]] || return 0
+
+  local pid command_line i
+  pid="$(sed -n '1{s/[[:space:]]//g;p;}' "$pid_file")"
+  [[ "$pid" =~ ^[0-9]+$ ]] || die "无效的 PostgreSQL PID 文件: ${pid_file}"
+  kill -0 "$pid" 2>/dev/null || return 0
+  command_line="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+  [[ "$command_line" == *postgres* && "$command_line" == *"${PAPERCLIP_DATABASE_DIR}"* ]] || die "PID ${pid} 不是 ${PAPERCLIP_DATABASE_DIR} 的 PostgreSQL，拒绝停止"
+
+  echo "==> 停止 embedded PostgreSQL（PID ${pid}）" >&2
+  kill -TERM "$pid"
+  for ((i = 0; i < 30; i++)); do
+    kill -0 "$pid" 2>/dev/null || return 0
+    sleep 1
+  done
+  die "embedded PostgreSQL 在 30 秒内未停止，已中止升级"
+}
+
+# ------------------------------------------------------------ fundeploy 后台托管
+
 # 输出 fundeploy 托管进程的 PID；未在运行时返回 1。
 paperclip_fallback_pid() {
   local pid command_line
@@ -258,22 +392,6 @@ paperclip_fallback_pid() {
   command_line="$(ps -p "$pid" -o command= 2>/dev/null || true)"
   [[ "$command_line" == *paperclipai* ]] || return 1
   printf '%s\n' "$pid"
-}
-
-# 等端口和 /api/health 就绪；超时返回 1，由调用方决定怎么报错。
-paperclip_wait_for_health() {
-  local timeout="$1" deadline=$((SECONDS + $1)) targets="Paperclip ${PAPERCLIP_SERVER_PORT} 和 /api/health"
-  [[ "${PAPERCLIP_DATABASE_MODE}" != "embedded-postgres" ]] || targets="PostgreSQL ${PAPERCLIP_DATABASE_PORT}、${targets}"
-  echo "==> 检查 ${targets}（最长 ${timeout} 秒）" >&2
-  while ((SECONDS <= deadline)); do
-    if { [[ "${PAPERCLIP_DATABASE_MODE}" != "embedded-postgres" ]] || paperclip_port_open "${PAPERCLIP_DATABASE_PORT}"; } &&
-      paperclip_port_open "${PAPERCLIP_SERVER_PORT}" &&
-      curl --fail --silent --show-error --max-time 3 "http://127.0.0.1:${PAPERCLIP_SERVER_PORT}/api/health" >/dev/null; then
-      return 0
-    fi
-    sleep 1
-  done
-  return 1
 }
 
 paperclip_start_fallback() {
@@ -312,7 +430,9 @@ paperclip_start_fallback() {
     # cwd 对齐官方单元的 WorkingDirectory=%h：别让服务继承调用者的目录，否则
     # agent 的 fallback cwd 会随在哪儿执行 start 而变。
     cd "${HOME}" || exit 1
-    nohup "${launcher[@]}" >>"${PAPERCLIP_LOG_FILE}" 2>&1 &
+    # </dev/null 必须有：不断开 stdin 的话后台进程会继承调用者的终端，交互式 shell
+    # 里它一读 stdin 就被 SIGTTIN 停住，看起来是「起来了但没响应」。
+    nohup "${launcher[@]}" </dev/null >>"${PAPERCLIP_LOG_FILE}" 2>&1 &
     echo $!
   )" || die "启动失败"
   [[ "$pid" =~ ^[0-9]+$ ]] || die "启动失败，未取到后台进程 PID（日志 ${PAPERCLIP_LOG_FILE}）"
@@ -395,16 +515,45 @@ paperclip_logs_fallback() {
   exec tail "${tail_args[@]}" "${PAPERCLIP_LOG_FILE}"
 }
 
-# paperclipai 的 managed install 把 registry 硬编码为 registry.npmjs.org，并且会另写
-# 一份只含 registry 两行的临时 .npmrc、用 npm_config_userconfig 强制 npm 子进程改用它，
-# 同时在命令行再传一次 --registry / --@paperclipai:registry（cli/src/commands/install.ts
-# 的 PUBLIC_NPM_REGISTRY）。这是刻意的防 registry 投毒设计，有测试守着，因此：
+# ------------------------------------------------------------------- npm 取回环境
+#
+# 官方 managed install 把 registry 钉死在 registry.npmjs.org：它另写一份只含 registry
+# 两行的临时 .npmrc、用 npm_config_userconfig 强制 npm 子进程改用它，同时在命令行再传
+# 一次 --registry / --@paperclipai:registry（cli/src/commands/install.ts 的
+# PUBLIC_NPM_REGISTRY）。这是刻意的防 registry 投毒设计，有上游测试守着，因此：
 #   - ~/.npmrc 里的 registry、proxy、fetch-* 对它一概无效（文件被整体替换）；
 #   - npm_config_registry 环境变量也压不过它（命令行优先级最高）。
 # 唯一能透进去的是环境变量：它以 env: { ...process.env, npm_config_userconfig } 启动
-# npm。所以这里只设它没有在命令行显式传入的那些键 —— 取回重试/超时和代理 —— 不去和
-# 它的 --registry 对抗。
-paperclip_apply_npm_network_env() {
+# npm。所以这里只设它没有在命令行显式传入的那些键 —— 取回重试/超时和代理。
+#
+# 另外最外层那次 `npx paperclipai@latest` 仍然会读 ~/.npmrc，并把读到的配置以
+# npm_config_* 注入子进程环境。已知 npm bug（npm/cli#9783、#9912、#9968）会把这样继承
+# 来的 allow-scripts 误判成显式传入的 --allow-scripts 并直接报 EALLOWSCRIPTS，而只
+# unset 环境变量不够（配置本就来自文件）。所以这里照官方 install.sh 的做法，自己也写
+# 一份最小 npmrc 顶掉 ~/.npmrc。刻意只在 install / upgrade / plugin install 期间生效，
+# 不在脚本顶层无条件执行：status / logs / run 那些路径用 exec 收尾，EXIT trap 不触发，
+# 临时文件会留在 /tmp 里。
+PAPERCLIP_NPMRC_FILE=""
+
+paperclip_npmrc_cleanup() {
+  [[ -n "${PAPERCLIP_NPMRC_FILE}" ]] || return 0
+  rm -f "${PAPERCLIP_NPMRC_FILE}"
+  PAPERCLIP_NPMRC_FILE=""
+}
+
+paperclip_prepare_npm_env() {
+  unset npm_config_allow_scripts
+  if [[ -z "${PAPERCLIP_NPMRC_FILE}" ]] && command -v npm >/dev/null 2>&1; then
+    if PAPERCLIP_NPMRC_FILE="$(mktemp "${TMPDIR:-/tmp}/fundeploy-paperclip-npmrc.XXXXXX" 2>/dev/null)"; then
+      local registry="${PAPERCLIP_NPM_REGISTRY%/}"
+      printf 'registry=%s/\n@paperclipai:registry=%s/\n' "$registry" "$registry" >"${PAPERCLIP_NPMRC_FILE}"
+      export npm_config_userconfig="${PAPERCLIP_NPMRC_FILE}"
+      trap paperclip_npmrc_cleanup EXIT
+    else
+      PAPERCLIP_NPMRC_FILE=""
+    fi
+  fi
+
   export npm_config_fetch_retries="${PAPERCLIP_NPM_FETCH_RETRIES}"
   export npm_config_fetch_retry_mintimeout="${PAPERCLIP_NPM_FETCH_RETRY_MINTIMEOUT}"
   export npm_config_fetch_retry_maxtimeout="${PAPERCLIP_NPM_FETCH_RETRY_MAXTIMEOUT}"
@@ -414,9 +563,7 @@ paperclip_apply_npm_network_env() {
   fi
 
   local proxy="${PAPERCLIP_HTTPS_PROXY}"
-  if [[ -z "$proxy" ]]; then
-    return 0
-  fi
+  [[ -n "$proxy" ]] || return 0
   # 代理只做隧道（HTTPS 经 CONNECT 透传，TLS 仍是端到端），因此本机 http:// 代理是
   # 正常用法，这里不像 GitHub 下载改写那样强制 https://。但仍限定已知 scheme，避免把
   # registry 地址或 shell 片段误填进来后静默生效。
@@ -437,475 +584,87 @@ paperclip_apply_npm_network_env() {
 }
 
 paperclip_print_network_hint() {
-  if [[ "${PAPERCLIP_NETWORK_HINT:-1}" == "0" || -n "${PAPERCLIP_HTTPS_PROXY}" ]]; then
-    return 0
-  fi
-  paperclip_prefetch_registry >/dev/null 2>&1 && return 0
+  [[ "${PAPERCLIP_NETWORK_HINT:-1}" == "0" || -n "${PAPERCLIP_HTTPS_PROXY}" ]] && return 0
   cat >&2 <<'HINT'
 提示: Paperclip 的依赖树实测约 1.4G（@openai/codex 370M、@paperclipai/server 360M、
-      @anthropic-ai/* 220M），而 managed install 固定直连 registry.npmjs.org。
-      受限网络可设 PAPERCLIP_NPM_MIRROR=<https 镜像> 让整棵树改从该源预装，
-      或设 PAPERCLIP_HTTPS_PROXY=http://127.0.0.1:7890 之类的本机代理。
-      PAPERCLIP_NETWORK_HINT=0 可隐藏本行。
+      @anthropic-ai/* 220M）。官方 managed install 把 registry 钉死在 npmjs.org，换
+      镜像对它无效（刻意的防投毒设计，有上游测试守着），受限网络请走代理：
+      PAPERCLIP_HTTPS_PROXY=http://127.0.0.1:7890。PAPERCLIP_NETWORK_HINT=0 隐藏本行。
 HINT
 }
 
-# ===== 整树预装（受限网络的主要加速手段）=====
-#
-# 上游把 registry 钉死在 npmjs.org 且无法从外部覆盖（见 paperclip_apply_npm_network_env），
-# 所以无法直接让它改走镜像。但 install-store 的 installNpmPayload() 在 payload 目录
-# 已存在时，只跑一次冒烟检查就复用，完全跳过 npm install：
-#
-#   const payloadPath = payloadPathFor(paths, "npm", version);
-#   if (fs.existsSync(payloadPath)) { await smokePayload(...); return { reused: true }; }
-#
-# 实测该分支 4.5 秒、零下载（输出 "Activated cached paperclipai ..."）。于是这里先用
-# 可达的源把整棵树装到正式 payload 路径，再把 manifest / current 链接 / shim 的写入交回
-# 官方 install。好处是整树都走镜像 —— 包括官方额外钉死的 @paperclipai 那 434M，而只改
-# @scope:registry 环境变量的做法覆盖不到它。
-#
-# 代价：依赖的 integrity 来自镜像的 packument 而非 npmjs.org，相当于把上游刻意的防投毒
-# 决策换成了对镜像的信任。因此预装后强制用 npmjs.org 的单版本端点逐个核对 @paperclipai/*
-# 的 integrity（该 scope 承载 CLI 与 server 本体，被替换等价于任意代码执行），不一致就
-# 丢弃 staging、回落官方直连路径。实测 registry.npmmirror.com 与 npmjs.org 字节一致。
-
-# 输出预装用的 registry；未启用或无可用源时返回 1。
-paperclip_prefetch_registry() {
-  [[ "${PAPERCLIP_NPM_PREFETCH}" == "off" ]] && return 1
-  local url="${PAPERCLIP_NPM_MIRROR}"
-  if [[ -z "$url" ]]; then
-    command -v npm >/dev/null 2>&1 || return 1
-    url="$(npm config get registry 2>/dev/null || true)"
-  fi
-  url="${url%/}"
-  [[ -n "$url" && "$url" != "null" && "$url" != "undefined" ]] || return 1
-  # 与 fundeploy-github-download.sh 的约定一致：只接受 https://。预装源能决定装进
-  # payload 的每一个字节，不允许降级到明文 http://。
-  if [[ "$url" != https://* ]]; then
-    echo "[fundeploy paperclip] 忽略非 https:// 的预装源（${url}）" >&2
-    return 1
-  fi
-  # 已经是官方源时预装没有意义：官方 install 自己就走它，且能命中同一份 npm cache。
-  [[ "$url" == "${PAPERCLIP_NPM_REGISTRY%/}" ]] && return 1
-  printf '%s\n' "$url"
-}
-
-# 从 npmjs.org 的单版本端点解析 tag 或精确版本，输出 "版本<TAB>integrity"。
-# 用单版本端点而不是完整 packument：paperclipai 已有 1700+ 个版本，完整 packument 很大，
-# 而 /paperclipai/canary 这种响应实测仅约 3KB。
-paperclip_npm_official_manifest() {
-  local spec="$1"
-  command -v curl >/dev/null 2>&1 || return 1
-  _fundeploy_github_download_curl -fsSL --max-time 60 \
-    "${PAPERCLIP_NPM_REGISTRY%/}/paperclipai/${spec}" 2>/dev/null | node -e '
-    let body = "";
-    process.stdin.on("data", (chunk) => (body += chunk)).on("end", () => {
-      try {
-        const manifest = JSON.parse(body);
-        if (!manifest.version || !manifest.dist || !manifest.dist.integrity) process.exit(1);
-        console.log(manifest.version + "\t" + manifest.dist.integrity);
-      } catch {
-        process.exit(1);
-      }
-    });
-  ' 2>/dev/null
-}
-
-# 从 install 的参数推出要预装的 npm spec；git-ref 安装不走 npm payload，返回 1。
-paperclip_prefetch_spec() {
-  local spec="latest" expect_version=0 arg
-  for arg in "$@"; do
-    if ((expect_version)); then
-      spec="$arg"
-      expect_version=0
-      continue
-    fi
-    case "$arg" in
-      --ref | --ref=* | --repo | --repo=*) return 1 ;;
-      --canary) spec="canary" ;;
-      --version) expect_version=1 ;;
-      --version=*) spec="${arg#--version=}" ;;
-    esac
-  done
-  printf '%s\n' "$spec"
-}
-
-# 预检目标版本的 @paperclipai/* 依赖在预装源上是否取得到；缺失时输出清单并返回 1。
-#
-# 必须预检，因为常见镜像恰好缺的就是这个 scope：registry.npmmirror.com 永久没有
-# @paperclipai/server（解包 276M，超过 cnpm 的 256M 上限，其同步日志为
-# "too many large versions ... maximum unpacked size: 268435456"，见 cnpm/unpkg-white-list），
-# 而它是必需依赖。没有预检就会白跑一次整树 npm install —— npm 要把依赖图解析完才报
-# ETARGET。这里只要两三个小请求。
-#
-# 只检查这个 scope：实测 @openai/codex（370M）和 @anthropic-ai/claude-agent-sdk-linux-x64
-# 在 npmmirror 上都有，缺口集中在 @paperclipai，它也正是上游在命令行额外钉死的那一个。
-paperclip_prefetch_source_check() {
-  local registry="$1" version="$2"
-  node -e '
-    const official = process.argv[1].replace(/\/$/, "");
-    const mirror = process.argv[2].replace(/\/$/, "");
-    const version = process.argv[3];
-    const get = (url) => fetch(url, { signal: AbortSignal.timeout(30000) });
-    (async () => {
-      let manifest;
-      try {
-        const response = await get(`${official}/paperclipai/${version}`);
-        if (!response.ok) throw new Error("HTTP " + response.status);
-        manifest = await response.json();
-      } catch (err) {
-        console.error("  无法从官方源读取依赖清单: " + err.message);
-        process.exit(1);
-      }
-      const deps = Object.entries(manifest.dependencies || {}).filter(
-        ([name]) => name === "paperclipai" || name.startsWith("@paperclipai/"),
-      );
-      const missing = [];
-      await Promise.all(
-        deps.map(async ([name, range]) => {
-          const exact = String(range).replace(/^[\^~=v]+/, "");
-          try {
-            const response = await get(`${mirror}/${name}/${exact}`);
-            if (!response.ok) missing.push(`${name}@${exact}（HTTP ${response.status}）`);
-          } catch (err) {
-            missing.push(`${name}@${exact}（${err.message}）`);
-          }
-        }),
-      );
-      if (missing.length) {
-        for (const item of missing) console.error("  缺: " + item);
-        process.exit(1);
-      }
-      console.log(String(deps.length));
-    })();
-  ' "${PAPERCLIP_NPM_REGISTRY}" "$registry" "$version" 2>&1
-}
-
-# 用 npmjs.org 的 integrity 核对预装产物里的 @paperclipai/*；成功时输出核对过的包数。
-paperclip_verify_payload_scope() {
-  local lockfile="$1"
-  [[ -f "$lockfile" ]] || return 1
-  node -e '
-    const fs = require("node:fs");
-    const registry = process.argv[2].replace(/\/$/, "");
-    let lock;
-    try {
-      lock = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-    } catch (err) {
-      console.error("  无法读取 lockfile: " + err.message);
-      process.exit(1);
-    }
-    const targets = [];
-    for (const [location, info] of Object.entries(lock.packages || {})) {
-      const name = location.replace(/^.*node_modules\//, "");
-      if (name !== "paperclipai" && !name.startsWith("@paperclipai/")) continue;
-      if (!info.version || !info.integrity) continue;
-      targets.push({ name, version: info.version, integrity: info.integrity });
-    }
-    if (!targets.length) {
-      console.error("  lockfile 中没有 @paperclipai 包，无法核对");
-      process.exit(1);
-    }
-    (async () => {
-      const problems = [];
-      await Promise.all(
-        targets.map(async (target) => {
-          const url = `${registry}/${target.name}/${target.version}`;
-          let official;
-          try {
-            const response = await fetch(url, { signal: AbortSignal.timeout(30000) });
-            if (!response.ok) throw new Error("HTTP " + response.status);
-            official = (await response.json()).dist?.integrity;
-          } catch (err) {
-            problems.push(`${target.name}@${target.version}: 无法向 npmjs.org 核对（${err.message}）`);
-            return;
-          }
-          if (official !== target.integrity) {
-            problems.push(`${target.name}@${target.version}: 镜像 ${target.integrity} != npmjs.org ${official}`);
-          }
-        }),
-      );
-      if (problems.length) {
-        for (const problem of problems) console.error("  " + problem);
-        process.exit(1);
-      }
-      console.log(String(targets.length));
-    })();
-  ' "$lockfile" "${PAPERCLIP_NPM_REGISTRY}" 2>&1
-}
-
-# 把整棵树装进 staging 并自检；失败时由调用方清理 staging。
-paperclip_prefetch_into_staging() {
-  local registry="$1" version="$2" staging="$3"
-  echo "==> 从 ${registry} 预装 paperclipai@${version} 整棵依赖树（约 1.4G，首次较久）" >&2
-  # 与上游 installNpmPayload 的命令保持一致，只替换 registry：同样不传 --ignore-scripts，
-  # 否则原生模块的 postinstall 不会执行，冒烟检查过不去。
-  npm install --prefix "$staging" "paperclipai@${version}" \
-    --registry="$registry" --no-audit --no-fund >&2 || {
-    echo "==> 预装失败（镜像可能缺该版本），回落官方直连路径" >&2
-    return 1
-  }
-
-  # 复刻上游 smokePayload：入口必须存在，且自报版本要与目标一致。先于 integrity 核对，
-  # 装坏了就没必要再发网络请求。
-  local entrypoint="${staging}/node_modules/paperclipai/dist/index.js"
-  [[ -f "$entrypoint" ]] || {
-    echo "==> 预装产物缺少 CLI 入口 ${entrypoint}，丢弃" >&2
-    return 1
-  }
-  local reported
-  reported="$(node "$entrypoint" --version 2>/dev/null | awk 'NR==1{print $1}')"
-  [[ "$reported" == "$version" ]] || {
-    echo "==> 预装产物自报版本 ${reported:-未知}，与目标 ${version} 不符，丢弃" >&2
-    return 1
-  }
-
-  local verified
-  if ! verified="$(paperclip_verify_payload_scope "${staging}/package-lock.json")"; then
-    echo "${verified}" >&2
-    echo "==> @paperclipai/* 的 integrity 与 npmjs.org 不一致或无法核对，丢弃预装产物并回落官方直连路径" >&2
-    return 1
-  fi
-  echo "==> 已用 npmjs.org 核对 ${verified} 个 @paperclipai 包的 integrity" >&2
-  return 0
-}
-
-# 成功时 stdout 输出已就绪 payload 的版本号。
-paperclip_prefetch_payload() {
-  local registry="$1" spec="$2"
-  local resolved version
-  resolved="$(paperclip_npm_official_manifest "$spec")" || {
-    echo "==> 无法从 ${PAPERCLIP_NPM_REGISTRY} 解析 paperclipai@${spec}，跳过预装" >&2
-    return 1
-  }
-  version="${resolved%%$'\t'*}"
-  # 对齐上游 payloadPathFor 的校验，顺带挡住解析结果里的路径穿越。
-  [[ "$version" =~ ^[A-Za-z0-9._-]+$ ]] || {
-    echo "==> 解析到的版本号不合法（${version}），跳过预装" >&2
-    return 1
-  }
-
-  local installs_root="${PAPERCLIP_HOME}/cli/installs/npm"
-  local payload="${installs_root}/${version}"
-  if [[ -d "$payload" ]]; then
-    echo "==> payload 已存在，官方 install 将直接复用: ${version}" >&2
-    printf '%s\n' "$version"
-    return 0
-  fi
-
-  command -v npm >/dev/null 2>&1 || return 1
-
-  local checked
-  if ! checked="$(paperclip_prefetch_source_check "$registry" "$version")"; then
-    echo "${checked}" >&2
-    cat >&2 <<HINT
-==> ${registry} 取不到 paperclipai@${version} 的 @paperclipai 依赖，跳过预装、改走官方直连。
-    registry.npmmirror.com 永久缺 @paperclipai/server（解包 276M，超过 cnpm 的 256M
-    上限），换一个不做大小限制的源即可，例如:
-      PAPERCLIP_NPM_MIRROR=https://mirrors.cloud.tencent.com/npm
-HINT
-    return 1
-  fi
-  echo "==> 预检通过：${registry} 具备 ${checked} 个 @paperclipai 依赖" >&2
-
-  mkdir -p "$installs_root" || return 1
-  # 前缀刻意不同于上游的 .<version>.tmp-<pid>：上游的 finally 只删自己那个，而带这个
-  # 前缀的目录也不会被 payloadPathFor 当成某个版本的 payload。
-  local staging="${installs_root}/.fundeploy-prefetch-${version}.$$"
-  rm -rf "$staging"
-  if ! paperclip_prefetch_into_staging "$registry" "$version" "$staging"; then
-    rm -rf "$staging"
-    return 1
-  fi
-  # rename 是原子的，所以官方 install 看到的 payload 要么不存在、要么已完整自检通过。
-  mv "$staging" "$payload" || {
-    rm -rf "$staging"
-    return 1
-  }
-  echo "==> 预装完成: ${payload}" >&2
-  printf '%s\n' "$version"
-}
-
-# 剔除参数里的通道选择（--canary / --version），改为精确钉到已预装的版本。
-paperclip_pin_version_args() {
-  local version="$1"
-  shift
-  local pinned=() skip_next=0 arg
-  for arg in "$@"; do
-    if ((skip_next)); then
-      skip_next=0
-      continue
-    fi
-    case "$arg" in
-      --canary) ;;
-      --version) skip_next=1 ;;
-      --version=*) ;;
-      *) pinned+=("$arg") ;;
-    esac
-  done
-  pinned+=(--version "$version")
-  printf '%s\n' "${pinned[@]}"
-}
+# --------------------------------------------------------------------- 安装
 
 cmd_install() {
-  require_node
-  paperclip_apply_npm_network_env
+  paperclip_prepare_npm_env
   paperclip_print_network_hint
 
-  local prefetched="" registry spec
-  if registry="$(paperclip_prefetch_registry)" && spec="$(paperclip_prefetch_spec "$@")"; then
-    prefetched="$(paperclip_prefetch_payload "$registry" "$spec")" || prefetched=""
-  fi
-
-  local args=("$@")
-  if [[ -n "$prefetched" ]]; then
-    # 预装期间上游可能又发了一版（canary 实测几小时一个）。那时 tag 已指向新版本，官方
-    # install 的复用分支落空，刚预装的 1.4G 白下。所以只在 tag 仍指向预装版本时保留原
-    # 通道参数，否则精确钉到预装的那一个。代价是 manifest 的 channel 记为 pinned，裸
-    # `paperclipai update` 会卡在该版本 —— 本脚本的 upgrade 始终显式传 --canary/--latest，
-    # 不受影响。
-    local recheck=""
-    recheck="$(paperclip_npm_official_manifest "$spec")" || recheck=""
-    if [[ -n "$recheck" && "${recheck%%$'\t'*}" != "$prefetched" ]]; then
-      echo "==> ${spec} 已更新到 ${recheck%%$'\t'*}；为复用预装 payload 改按精确版本安装 ${prefetched}（channel 记为 pinned）" >&2
-      mapfile -t args < <(paperclip_pin_version_args "$prefetched" "$@")
-    fi
-  fi
-
-  # 执行器优先级：预装 payload 自带的 CLI > 本机已装的 CLI > npx。
-  # npx paperclipai@latest 会把全部依赖再下一份到 ~/.npm/_npx（实测 1.4G），而它唯一的
-  # 用途是执行一次 install 子命令。前两条路都能省掉这一份；预装成功时连首次安装也不再
-  # 需要 npx。install 子命令自己会解析目标版本，与执行它的 CLI 版本无关，所以复用已有
-  # CLI 不会装到旧版。
-  local via_npx="${PAPERCLIP_INSTALL_VIA_NPX:-0}"
-  local entrypoint="" executable
-  [[ -n "$prefetched" ]] &&
-    entrypoint="${PAPERCLIP_HOME}/cli/installs/npm/${prefetched}/node_modules/paperclipai/dist/index.js"
-  if [[ "$via_npx" != "1" && -n "$entrypoint" && -f "$entrypoint" ]]; then
-    echo "==> 用预装 payload 自带的 CLI 执行 managed install" >&2
-    PAPERCLIP_HOME="${PAPERCLIP_HOME}" node "$entrypoint" install --yes "${args[@]}"
-  elif [[ "$via_npx" != "1" ]] &&
+  # 执行器优先级：本机已装的 CLI > npx。
+  # npx paperclipai@latest 会把整棵依赖树再下一份到 ~/.npm/_npx（实测 1.4G），而它唯一
+  # 的用途是执行一次 install 子命令。install 自己会解析目标版本，与执行它的 CLI 版本
+  # 无关，所以复用已有 CLI 不会装到旧版。PAPERCLIP_INSTALL_VIA_NPX=1 是本机 CLI 损坏
+  # 时的逃生门。
+  local executable
+  if [[ "${PAPERCLIP_INSTALL_VIA_NPX:-0}" != "1" ]] &&
     executable="$(paperclip_executable)" && "$executable" --version >/dev/null 2>&1; then
     echo "==> 复用本机 paperclipai 执行 managed install（跳过 npx 的重复下载）" >&2
-    PAPERCLIP_HOME="${PAPERCLIP_HOME}" "$executable" install --yes "${args[@]}"
+    PAPERCLIP_HOME="${PAPERCLIP_HOME}" PAPERCLIP_INSTANCE_ID="${PAPERCLIP_INSTANCE_ID}" \
+      "$executable" install --yes "$@"
   else
+    # 只有这条路需要版本门槛：此时还没有 shim，npx 用的就是 PATH 上那个 node。
+    require_node
     command -v npx >/dev/null 2>&1 || die "未找到 npx（Node.js 自带）"
-    PAPERCLIP_HOME="${PAPERCLIP_HOME}" npx --yes --registry "${PAPERCLIP_NPM_REGISTRY}" paperclipai@latest install --yes "${args[@]}"
+    PAPERCLIP_HOME="${PAPERCLIP_HOME}" npx --yes --registry "${PAPERCLIP_NPM_REGISTRY}" paperclipai@latest install --yes "$@"
   fi
   paperclip_cli --version
 }
 
-paperclip_port_open() {
-  local port="$1"
-  if command -v nc >/dev/null 2>&1; then
-    nc -z 127.0.0.1 "$port" >/dev/null 2>&1
-  else
-    (exec 3<>"/dev/tcp/127.0.0.1/${port}") 2>/dev/null
-  fi
+# ------------------------------------------------------------------ 版本与升级
+
+paperclip_channel_option() {
+  case "${1:-canary}" in
+    canary) printf '%s\n' --canary ;;
+    prod | latest | stable) printf '%s\n' --latest ;;
+    *) die "未知更新渠道: ${1}（支持 canary / prod）" ;;
+  esac
 }
 
-paperclip_stop_embedded_postgres() {
-  local pid_file="${PAPERCLIP_DATABASE_DIR}/postmaster.pid"
-  [[ -f "$pid_file" ]] || return 0
-
-  local pid command_line i
-  pid="$(sed -n '1{s/[[:space:]]//g;p;}' "$pid_file")"
-  [[ "$pid" =~ ^[0-9]+$ ]] || die "无效的 PostgreSQL PID 文件: ${pid_file}"
-  kill -0 "$pid" 2>/dev/null || return 0
-  command_line="$(ps -p "$pid" -o command= 2>/dev/null || true)"
-  [[ "$command_line" == *postgres* && "$command_line" == *"${PAPERCLIP_DATABASE_DIR}"* ]] || die "PID ${pid} 不是 ${PAPERCLIP_DATABASE_DIR} 的 PostgreSQL，拒绝停止"
-
-  echo "==> 停止 embedded PostgreSQL（PID ${pid}）" >&2
-  kill -TERM "$pid"
-  for ((i = 0; i < 30; i++)); do
-    kill -0 "$pid" 2>/dev/null || return 0
-    sleep 1
-  done
-  die "embedded PostgreSQL 在 30 秒内未停止，已中止升级"
-}
-
-paperclip_allow_embedded_postgres_build() {
-  [[ "${PAPERCLIP_DATABASE_MODE}" == "embedded-postgres" ]] || return 0
-  [[ "$(uname -s)" == "Darwin" && "$(uname -m)" == "arm64" ]] || return 0
-  command -v pnpm >/dev/null 2>&1 || return 0
-
-  local package="@embedded-postgres/darwin-arm64" package_path project_dir major key current merged
-  package_path="$(pnpm list -g --depth=-1 --json 2>/dev/null | node -e '
+# 依次输出四行 currentVersion / targetVersion / updateAvailable / downgrade；
+# 拿不到可解析的 JSON 时返回非 0（离线、或 CLI 还没装）。
+# 同样刻意分行而非 \t 拼接，理由见 paperclip_service_state。
+#
+# 刻意不看 paperclip_cli 的返回值：--check 把「有可用更新」用退出码 10 表示（像 diff
+# 那样的信号式退出码，payload 里 `if (options.check) process.exitCode = 10`），当成失败
+# 就恰好把唯一需要升级的那种情况判成「查不到版本」。判据只有一个：stdout 能不能解析。
+paperclip_update_check() {
+  local json
+  json="$(PAPERCLIP_CLI_NO_DIAGNOSE=1 paperclip_cli update "$1" --check --json 2>/dev/null)" || true
+  [[ -n "$json" ]] || return 1
+  printf '%s' "$json" | node -e '
     const fs = require("node:fs");
-    const rows = JSON.parse(fs.readFileSync(0, "utf8"));
-    const hit = rows.find((row) => row.dependencies?.paperclipai?.path);
-    if (hit) process.stdout.write(hit.dependencies.paperclipai.path);
-  ' 2>/dev/null || true)"
-  [[ -n "$package_path" ]] || return 0
-  project_dir="$(dirname "$(dirname "$package_path")")"
-  major="$(pnpm --version | cut -d. -f1)"
-
-  if ((major >= 11)); then
-    key=allowBuilds
-    current="$(pnpm --dir "$project_dir" config get "$key" --json 2>/dev/null || true)"
-    merged="$(printf '%s' "$current" | node -e '
-      const fs = require("node:fs");
-      let value = {};
-      try { value = JSON.parse(fs.readFileSync(0, "utf8")); } catch {}
-      value[process.argv[1]] = true;
-      process.stdout.write(JSON.stringify(value));
-    ' "$package")"
-  else
-    key=onlyBuiltDependencies
-    current="$(pnpm --dir "$project_dir" config get "$key" --json 2>/dev/null || true)"
-    merged="$(printf '%s' "$current" | node -e '
-      const fs = require("node:fs");
-      let value = [];
-      try { value = JSON.parse(fs.readFileSync(0, "utf8")); } catch {}
-      if (!value.includes(process.argv[1])) value.push(process.argv[1]);
-      process.stdout.write(JSON.stringify(value));
-    ' "$package")"
-  fi
-
-  pnpm --dir "$project_dir" config set --location=project --json "$key" "$merged"
+    let value;
+    try { value = JSON.parse(fs.readFileSync(0, "utf8")); } catch { process.exit(1); }
+    if (!value || typeof value !== "object") process.exit(1);
+    console.log(String(value.currentVersion || ""));
+    console.log(String(value.targetVersion || ""));
+    console.log(value.updateAvailable === true ? "true" : "false");
+    console.log(value.downgrade === true ? "true" : "false");
+  ' 2>/dev/null || return 1
 }
 
-paperclip_hydrate_embedded_postgres() {
-  [[ "${PAPERCLIP_DATABASE_MODE}" == "embedded-postgres" ]] || return 0
-  [[ "$(uname -s)" == "Darwin" && "$(uname -m)" == "arm64" ]] || return 0
-
-  local -a roots=()
-  local root scripts script package_root
-  [[ -d "${PAPERCLIP_HOME}/cli" ]] && roots+=("${PAPERCLIP_HOME}/cli")
-  if command -v pnpm >/dev/null 2>&1; then
-    root="$(pnpm root -g 2>/dev/null || true)"
-    [[ -d "$root" ]] && roots+=("$root")
-  fi
-  if command -v npm >/dev/null 2>&1; then
-    root="$(npm root -g 2>/dev/null || true)"
-    [[ -d "$root" ]] && roots+=("$root")
-  fi
-  ((${#roots[@]} > 0)) || die "找不到 Paperclip 安装目录，无法修复 embedded PostgreSQL 软链接"
-
-  scripts="$(find "${roots[@]}" -type f -path '*/@embedded-postgres/darwin-arm64/scripts/hydrate-symlinks.js' 2>/dev/null)"
-  [[ -n "$scripts" ]] || die "找不到 @embedded-postgres/darwin-arm64/scripts/hydrate-symlinks.js"
-  while IFS= read -r script; do
-    package_root="${script%/scripts/hydrate-symlinks.js}"
-    (cd "$package_root" && node scripts/hydrate-symlinks.js)
-    node -e '
-      const fs = require("node:fs");
-      const path = require("node:path");
-      const root = process.argv[1];
-      const rows = JSON.parse(fs.readFileSync(path.join(root, "native/pg-symlinks.json"), "utf8"));
-      if (!rows.length || rows.some(({target}) => !fs.lstatSync(path.join(root, target)).isSymbolicLink())) process.exit(1);
-    ' "$package_root" || die "embedded PostgreSQL 动态库软链接修复失败: ${package_root}"
-  done <<<"$scripts"
-}
-
-paperclip_remove_launchd_database_url() {
-  [[ "${PAPERCLIP_DATABASE_MODE}" == "embedded-postgres" && "$(uname -s)" == "Darwin" ]] || return 0
-  local label="ing.paperclip.paperclipai.${PAPERCLIP_INSTANCE_ID}"
-  [[ "${PAPERCLIP_INSTANCE_ID}" != "default" ]] || label="ing.paperclip.paperclipai"
-  local plist="${HOME}/Library/LaunchAgents/${label}.plist"
-  [[ -f "$plist" ]] || return 0
-  if /usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:DATABASE_URL' "$plist" >/dev/null 2>&1; then
-    /usr/libexec/PlistBuddy -c 'Delete :EnvironmentVariables:DATABASE_URL' "$plist" || die "无法从 ${plist} 删除 DATABASE_URL"
-  fi
+paperclip_read_update_check() {
+  PAPERCLIP_UPDATE_CURRENT=""
+  PAPERCLIP_UPDATE_TARGET=""
+  PAPERCLIP_UPDATE_AVAILABLE=""
+  PAPERCLIP_UPDATE_DOWNGRADE=""
+  local state
+  state="$(paperclip_update_check "$1")" || return 1
+  {
+    read -r PAPERCLIP_UPDATE_CURRENT || true
+    read -r PAPERCLIP_UPDATE_TARGET || true
+    read -r PAPERCLIP_UPDATE_AVAILABLE || true
+    read -r PAPERCLIP_UPDATE_DOWNGRADE || true
+  } <<<"$state"
 }
 
 paperclip_wait_for_update_health() {
@@ -921,69 +680,38 @@ paperclip_wait_for_update_health() {
   die "Paperclip 升级后未在 ${PAPERCLIP_UPDATE_HEALTH_TIMEOUT_SEC} 秒内通过健康检查（payload 已更新，服务可能仍在启动，可用 $0 status / logs 确认）"
 }
 
-cmd_upgrade() {
-  local channel="${1:-canary}" option
-  case "$channel" in
-    canary) option=--canary ;;
-    prod) option=--latest ;;
-    *) die "未知更新渠道: ${channel}（支持 canary / prod）" ;;
-  esac
-
-  local spec
-  case "$channel" in
-    canary) spec=canary ;;
-    prod) spec=latest ;;
-  esac
-
-  paperclip_apply_npm_network_env
-  paperclip_print_network_hint
-
-  # 预装刻意放在停服之前：它要下约 1.4G，而之后 update 命中 payload 复用分支只要几秒。
-  # 先装好再停服，能把停机时间从「下载整棵依赖树」压到「一次冒烟检查」。
-  local prefetched="" registry
-  if registry="$(paperclip_prefetch_registry)"; then
-    prefetched="$(paperclip_prefetch_payload "$registry" "$spec")" || prefetched=""
-  fi
-
-  # 版本没变就不必停服再启：update 在版本相同时只会打印 already up-to-date，但停服、
-  # 重启和健康检查照样走一遍，白中断一次。
-  local current=""
-  if [[ -n "$prefetched" ]]; then
-    current="$(paperclip_cli --version 2>/dev/null | awk 'NR==1{print $1}')" || current=""
-    if [[ -n "$current" && "$current" == "$prefetched" ]]; then
-      echo "==> 已是 ${spec} 通道最新版 ${current}，跳过更新（未重启服务；需重启用: $0 restart）" >&2
-      return 0
-    fi
-  fi
+# 备份 → 停服 → 一次官方 update（参数由调用方给）→ doctor --repair → 重启 → 健康检查。
+# upgrade 和 rollback 共用这套编排。
+paperclip_apply_update() {
+  local -a update_args=("$@")
 
   paperclip_load_config
-  [[ ! -f "${PAPERCLIP_CONFIG_PATH}" ]] || paperclip_cli db:backup
+  # 备份刻意放在停服之前：官方 update 的 pre-update 备份要连得上数据库，而 embedded
+  # PostgreSQL 是服务的子进程、随服务一起停，停完再让它备份就是空转。所以先自己备份
+  # 一次，再给 update 传 --no-backup。
+  #
+  # 服务本来就没在跑时 embedded PostgreSQL 也没在跑，db:backup 必然连不上。那种情况跳过
+  # 而不是中止升级：数据就在 ${PAPERCLIP_DATABASE_DIR} 的磁盘上，换 payload 不会动它，
+  # 真正需要备份的是「运行中的库可能正在写」这一种。外部数据库与服务生命周期无关，照备。
+  if [[ -f "${PAPERCLIP_CONFIG_PATH}" ]] &&
+    { [[ "${PAPERCLIP_DATABASE_MODE}" != "embedded-postgres" ]] || paperclip_port_open "${PAPERCLIP_DATABASE_PORT}"; }; then
+    paperclip_cli db:backup
+  elif [[ -f "${PAPERCLIP_CONFIG_PATH}" ]]; then
+    echo "==> 跳过升级前备份：embedded PostgreSQL 未在运行（数据仍在 ${PAPERCLIP_DATABASE_DIR}，换 payload 不会改动它）" >&2
+  fi
 
   # 两条通道都要停：官方 service stop 在无服务管理器的机器上会「假成功」（返回 0 且
-  # 什么都没停，见 paperclip_service_state 的注释），fundeploy 托管的那个进程只能从
-  # PID 文件收。刻意不走 cmd_stop —— 它在 PAPERCLIP_FALLBACK=off 时会 die，而这里要的
-  # 是尽力而为，真正的护栏是紧随其后的端口检查。
+  # 什么都没停），fundeploy 托管的那个进程只能从 PID 文件收。刻意不走 cmd_stop ——
+  # 它在 PAPERCLIP_FALLBACK=off 时会 die，而这里要的是尽力而为，真正的护栏是紧随
+  # 其后的端口检查。
   paperclip_cli service stop || true
   paperclip_stop_fallback --quiet
-  # 原先只在 service stop 失败时才查端口，但「假成功」会让端口检查被整个跳过 —— 用
-  # run 前台启动的实例正属于这种情况，继续下去就会在服务运行中替换 payload。
-  # 因此改为无条件确认端口已释放。
+  # 「假成功」会让上面两步都没停下任何东西，继续下去就是在服务运行中替换 payload；
+  # 用 run 前台启动的实例正属于这种情况。因此无条件确认端口已释放。
   if paperclip_port_open "${PAPERCLIP_SERVER_PORT}"; then
     die "Paperclip 仍在监听 ${PAPERCLIP_SERVER_PORT}（可能由 $0 run 前台启动，不受服务管理器管辖），请先停止后重试"
   fi
   [[ "${PAPERCLIP_DATABASE_MODE}" != "embedded-postgres" ]] || paperclip_stop_embedded_postgres
-  paperclip_allow_embedded_postgres_build
-
-  # 与 cmd_install 同一个竞态：预装期间 tag 可能已经前进，那时复用分支落空、刚下的
-  # 1.4G 白费，故改为精确钉到预装的版本。
-  local update_args=("$option") recheck=""
-  if [[ -n "$prefetched" ]]; then
-    recheck="$(paperclip_npm_official_manifest "$spec")" || recheck=""
-    if [[ -n "$recheck" && "${recheck%%$'\t'*}" != "$prefetched" ]]; then
-      echo "==> ${spec} 已更新到 ${recheck%%$'\t'*}；为复用预装 payload 改按精确版本更新 ${prefetched}（channel 记为 pinned）" >&2
-      update_args=(--version "$prefetched")
-    fi
-  fi
 
   if ! paperclip_cli update "${update_args[@]}" --no-backup; then
     # 放在子 shell 里尽力拉起来：cmd_start 失败时走 die（即 exit），`|| true` 拦不住，
@@ -991,11 +719,75 @@ cmd_upgrade() {
     (cmd_start) || true
     return 1
   fi
-  paperclip_hydrate_embedded_postgres
-  paperclip_remove_launchd_database_url
+
+  # 取代此前三段 macOS arm64 专属的 embedded-postgres 补丁（pnpm allowBuilds、
+  # hydrate-symlinks、删 launchd 里的 DATABASE_URL）：上游现在有专门的修复命令，会检查
+  # 配置、install store、manifest、current 链接、shim、PATH、目录权限等并尝试修好。
+  # 刻意放在 start 之前 —— 官方 `paperclipai run` 自己也是 onboard + doctor --repair
+  # 之后才启动。不让它的返回值挡住启动：服务停着时「数据库连不上」这类检查会判失败，
+  # 而真正的闸门是启动后的健康检查。
+  paperclip_cli doctor --repair --yes ||
+    echo "提示: doctor --repair 未全部通过，继续启动；可在启动后执行 $0 doctor 看详情" >&2
+
   cmd_start
   paperclip_wait_for_update_health
 }
+
+cmd_check() {
+  local option
+  option="$(paperclip_channel_option "${1:-canary}")"
+  if ! paperclip_read_update_check "$option"; then
+    die "无法取得 ${1:-canary} 通道的版本信息（网络不可达，或还没装 paperclipai）"
+  fi
+  echo "当前版本: ${PAPERCLIP_UPDATE_CURRENT:-未知}"
+  echo "通道目标: ${PAPERCLIP_UPDATE_TARGET:-未知}"
+  if [[ "${PAPERCLIP_UPDATE_DOWNGRADE}" == "true" ]]; then
+    echo "结论: 目标版本比当前版本旧，执行 upgrade 会是一次降级（需确认）"
+  elif [[ "${PAPERCLIP_UPDATE_AVAILABLE}" == "true" ]]; then
+    echo "结论: 有新版本可升级，执行: $0 upgrade ${1:-canary}"
+  else
+    echo "结论: 已是该通道最新版"
+  fi
+}
+
+cmd_upgrade() {
+  local channel="${1:-canary}" option
+  option="$(paperclip_channel_option "$channel")"
+  paperclip_prepare_npm_env
+  paperclip_print_network_hint
+
+  local -a update_args=("$option")
+  # 先问官方要不要动，别自己比版本号。拿不到结果（离线、首次安装）时不阻塞，照常往下走。
+  if paperclip_read_update_check "$option"; then
+    if [[ "${PAPERCLIP_UPDATE_DOWNGRADE}" == "true" ]]; then
+      # canary 机器上 --latest 指向的 stable 往往比当前版本旧；官方 update 把这种情况
+      # 当显式降级、要求 -y 确认，不补的话非交互环境里会卡住。
+      echo "==> ${channel} 通道的 ${PAPERCLIP_UPDATE_TARGET} 比当前 ${PAPERCLIP_UPDATE_CURRENT} 旧，这是一次降级。" >&2
+      fundeploy_confirm_destructive \
+        "确认把 Paperclip 从 ${PAPERCLIP_UPDATE_CURRENT} 降级到 ${PAPERCLIP_UPDATE_TARGET}？（会先备份数据库）" \
+        PAPERCLIP_UPGRADE_YES || return 1
+      update_args+=(-y)
+    elif [[ "${PAPERCLIP_UPDATE_AVAILABLE}" != "true" ]]; then
+      echo "==> 已是 ${channel} 通道最新版 ${PAPERCLIP_UPDATE_CURRENT}，跳过更新（未重启服务；需重启用: $0 restart）" >&2
+      return 0
+    else
+      echo "==> ${channel} 通道有新版本: ${PAPERCLIP_UPDATE_CURRENT} → ${PAPERCLIP_UPDATE_TARGET}" >&2
+    fi
+  fi
+
+  paperclip_apply_update "${update_args[@]}"
+}
+
+cmd_rollback() {
+  paperclip_prepare_npm_env
+  paperclip_apply_update --rollback
+}
+
+cmd_channels() { paperclip_cli channels "$@"; }
+cmd_doctor() { paperclip_cli doctor "$@"; }
+cmd_health() { paperclip_cli health "$@"; }
+
+# ------------------------------------------------------------------ 配置与插件
 
 cmd_onboard() {
   if [[ "${NONINTERACTIVE:-}" == "1" ]]; then
@@ -1035,7 +827,7 @@ cmd_plugin_list() {
 
 cmd_plugin_install() {
   local package="${1:-}" pick name url description i
-  paperclip_apply_npm_network_env
+  paperclip_prepare_npm_env
   if [[ -n "$package" ]]; then
     shift
     paperclip_cli plugin install "$package" "$@"
@@ -1070,6 +862,8 @@ cmd_plugin() {
     *) die "未知插件命令: ${action}（支持 list / install / installed）" ;;
   esac
 }
+
+# ------------------------------------------------------------------- 生命周期
 
 # start / restart 内部的 ensureCurrent() 会写 ~/.config/systemd/user 单元并
 # daemon-reload，所以单元文件本身能自愈；但 systemctl --user enable（开机自启）和
@@ -1166,6 +960,8 @@ cmd_run() {
   fi
   paperclip_load_config
   [[ "${PAPERCLIP_DATABASE_MODE}" != "embedded-postgres" ]] || unset DATABASE_URL
+  # exec 之前清掉临时 npmrc：EXIT trap 在 exec 换掉进程映像后不会触发。
+  paperclip_npmrc_cleanup
   exec env PAPERCLIP_HOME="${PAPERCLIP_HOME}" PAPERCLIP_INSTANCE_ID="${PAPERCLIP_INSTANCE_ID}" "$executable" run "$@"
 }
 
@@ -1181,13 +977,20 @@ cmd_uninstall() {
   echo "已卸载 Paperclip 服务和 CLI；数据保留在 ${PAPERCLIP_HOME}。"
 }
 
+# ---------------------------------------------------------------------- 入口
+
 dispatch() {
   local cmd="${1:-}"
   shift || true
   case "$cmd" in
     install | install-prod) cmd_install "$@" ;;
     install-canary) cmd_install --canary "$@" ;;
-    update|upgrade) cmd_upgrade "$@" ;;
+    check) cmd_check "$@" ;;
+    update | upgrade) cmd_upgrade "$@" ;;
+    rollback) cmd_rollback "$@" ;;
+    channels) cmd_channels "$@" ;;
+    doctor) cmd_doctor "$@" ;;
+    health) cmd_health "$@" ;;
     service-install) cmd_service_install "$@" ;;
     onboard) cmd_onboard "$@" ;;
     plugin) cmd_plugin "$@" ;;
@@ -1211,16 +1014,39 @@ interactive_main() {
   while true; do
     local pick
     pick="$(fundeploy_ui_choose "fundeploy / service / paperclip / 选择动作" \
-      "install-canary" "install-prod" "upgrade" "service-install" "onboard" \
-      "plugin list" "plugin install" "plugin installed" \
-      "start" "run" "stop" "restart" "status" "logs" "uninstall" "help" "quit")" || break
+      "install-canary  安装开发版（官方 managed install）" \
+      "install-prod    安装正式版（官方 managed install）" \
+      "check           只查有没有新版，不改动任何东西" \
+      "upgrade         备份 → 停服 → 官方 update → 修复 → 重启" \
+      "rollback        回退到保留的上一份 payload" \
+      "channels        查看发布通道与当前跟随的通道" \
+      "doctor          官方诊断（只读）" \
+      "doctor-repair   官方诊断并尝试自动修复" \
+      "health          官方健康检查" \
+      "service-install 注册后台服务并设置开机自启" \
+      "onboard         首次配置向导" \
+      "plugin-list     列出 awesome-paperclip 收录的插件" \
+      "plugin-install  从清单里选一个插件安装" \
+      "plugin-installed 列出已安装的插件" \
+      "start           后台启动并等健康检查通过" \
+      "run             前台运行" \
+      "stop            停止" \
+      "restart         热重启" \
+      "status          查看 supervisor、版本与健康状态" \
+      "logs            查看日志（跟随输出）" \
+      "uninstall       卸载服务和 CLI，保留数据" \
+      "help            命令帮助" \
+      "quit            返回")" || break
     [[ -n "$pick" ]] || break
+    pick="${pick%% *}"
     case "$pick" in
       quit) break ;;
       help) usage; continue ;;
-      "plugin list") ( dispatch plugin list ) ;;
-      "plugin install") ( dispatch plugin install ) ;;
-      "plugin installed") ( dispatch plugin installed ) ;;
+      doctor-repair) ( dispatch doctor --repair ) ;;
+      plugin-list) ( dispatch plugin list ) ;;
+      plugin-install) ( dispatch plugin install ) ;;
+      plugin-installed) ( dispatch plugin installed ) ;;
+      logs) ( dispatch logs -f ) ;;
       *) ( dispatch "$pick" ) ;;
     esac
     echo ""

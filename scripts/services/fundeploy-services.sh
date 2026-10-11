@@ -265,7 +265,10 @@ cmd_status() {
     ' "$paperclip_config" 2>/dev/null || true)"
     IFS=$'\t' read -r paperclip_config_host paperclip_config_port <<<"$paperclip_config_values"
   fi
-  PAPERCLIP_PORT="${PAPERCLIP_PORT:-${paperclip_config_port:-3100}}"
+  # 兜底值要和 Paperclip 自己的默认端口一致（config.json 的 server.port、以及
+  # paperclipai health 默认探的 localhost:8804），否则配置还没生成时这里会去探一个
+  # 根本没人监听的端口，把「未安装」显示成「已停止」。
+  PAPERCLIP_PORT="${PAPERCLIP_PORT:-${paperclip_config_port:-8804}}"
   PAPERCLIP_HOST="${PAPERCLIP_HOST:-${paperclip_config_host:-127.0.0.1}}"
   pid_pc=""
   pc_listener_pid="$(listener_pid_for_port "${PAPERCLIP_PORT}")"

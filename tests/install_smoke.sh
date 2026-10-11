@@ -127,20 +127,35 @@ export -f curl
 unset -f curl
 PAPERCLIP_NPX_MARKER="${TMP}/paperclip-npx"
 PAPERCLIP_CLI_MARKER="${TMP}/paperclip-cli"
+PAPERCLIP_ENV_MARKER="${TMP}/paperclip-env"
+PAPERCLIP_STARTED_MARKER="${TMP}/paperclip-started"
+PAPERCLIP_STOPPED_MARKER="${TMP}/paperclip-stopped"
+# upgrade 先问官方 update --check --json 要不要动、是不是降级，再决定停不停服。两条渠道
+# 各返回一种结果，用来分别覆盖「有新版可升」和「目标版本更旧（需确认）」两条分支。
+# --check 刻意用退出码 10 表示「有可用更新」（payload 里 `if (options.check)
+# process.exitCode = 10`，像 diff 那样的信号式退出码），不是失败 —— 把它当失败就恰好
+# 把唯一需要升级的那种情况判成「查不到版本」，所以这里照搬这个返回值。
+PAPERCLIP_CHECK_LATEST='{"mode":"npm","currentVersion":"2026.1001.0","targetVersion":"2026.1008.0","updateAvailable":true,"downgrade":false,"channel":"stable"}'
+PAPERCLIP_CHECK_CANARY='{"mode":"npm","currentVersion":"2026.1008.0-canary.4","targetVersion":"2026.1001.0","updateAvailable":false,"downgrade":true,"channel":"canary"}'
 npx() { printf '%s\n' "$*" >"${PAPERCLIP_NPX_MARKER}"; }
 paperclipai() {
   printf '%s\n' "$*" >>"${PAPERCLIP_CLI_MARKER}"
   printf '%s|%s\n' "${DATABASE_URL-unset}" "$*" >>"${PAPERCLIP_ENV_MARKER}"
-  # 供 nc 存根模拟端口时序，见下方 nc()。
-  [[ "$*" != "service start" ]] || : >"${PAPERCLIP_STARTED_MARKER}"
+  case "$*" in
+    'update --latest --check --json') printf '%s\n' "${PAPERCLIP_CHECK_LATEST}"; return 10 ;;
+    'update --canary --check --json') printf '%s\n' "${PAPERCLIP_CHECK_CANARY}"; return 0 ;;
+    # 供 nc 存根模拟端口时序，见下方 nc()。
+    'service start') : >"${PAPERCLIP_STARTED_MARKER}"; rm -f "${PAPERCLIP_STOPPED_MARKER}" ;;
+    'service stop') : >"${PAPERCLIP_STOPPED_MARKER}"; rm -f "${PAPERCLIP_STARTED_MARKER}" ;;
+  esac
 }
-PAPERCLIP_ENV_MARKER="${TMP}/paperclip-env"
-PAPERCLIP_STARTED_MARKER="${TMP}/paperclip-started"
-export PAPERCLIP_NPX_MARKER PAPERCLIP_CLI_MARKER PAPERCLIP_ENV_MARKER PAPERCLIP_STARTED_MARKER
+export PAPERCLIP_NPX_MARKER PAPERCLIP_CLI_MARKER PAPERCLIP_ENV_MARKER
+export PAPERCLIP_STARTED_MARKER PAPERCLIP_STOPPED_MARKER
+export PAPERCLIP_CHECK_LATEST PAPERCLIP_CHECK_CANARY
 export -f npx paperclipai
-# install 的执行器优先级：预装 payload 自带的 CLI > 本机已装 CLI > npx。本机已有能跑的
-# CLI 时必须复用它 —— npx paperclipai@latest 会把整棵依赖树（实测 1.4G）再下一份到
-# ~/.npm/_npx，而它唯一的用途只是执行一次 install 子命令。
+# install 的执行器优先级：本机已装的 CLI > npx。本机已有能跑的 CLI 时必须复用它 ——
+# npx paperclipai@latest 会把整棵依赖树（实测 1.4G）再下一份到 ~/.npm/_npx，而它唯一的
+# 用途只是执行一次 install 子命令。
 PAPERCLIP_NODE_MIN_VERSION=0 bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/paperclip/setup.sh" install-canary >/dev/null || exit 1
 [[ ! -f "${PAPERCLIP_NPX_MARKER}" ]] || exit 1
 grep -Fxq -- 'install --yes --canary' "${PAPERCLIP_CLI_MARKER}" || exit 1
@@ -168,56 +183,77 @@ PAPERCLIP_HOME="${PAPERCLIP_TEST_HOME}" PAPERCLIP_NODE_MIN_VERSION=0 \
 PAPERCLIP_HOME="${PAPERCLIP_TEST_HOME}" PAPERCLIP_NODE_MIN_VERSION=0 \
   bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/paperclip/setup.sh" logs -f >/dev/null || exit 1
 
-PAPERCLIP_FAKE_GLOBAL="${TMP}/paperclip-pnpm/project"
-PAPERCLIP_NATIVE="${PAPERCLIP_FAKE_GLOBAL}/node_modules/.pnpm/native/node_modules/@embedded-postgres/darwin-arm64"
-mkdir -p "${PAPERCLIP_NATIVE}/native/lib" "${PAPERCLIP_NATIVE}/scripts"
-touch "${PAPERCLIP_NATIVE}/native/lib/libreal.dylib"
-printf '%s\n' '[{"source":"native/lib/libreal.dylib","target":"native/lib/libalias.dylib"}]' >"${PAPERCLIP_NATIVE}/native/pg-symlinks.json"
-cat >"${PAPERCLIP_NATIVE}/scripts/hydrate-symlinks.js" <<'EOF'
-const fs = require('node:fs');
-try { fs.symlinkSync('libreal.dylib', 'native/lib/libalias.dylib'); } catch {}
-EOF
-uname() { [[ "${1:-}" == "-m" ]] && printf '%s\n' arm64 || printf '%s\n' Darwin; }
-pnpm() {
-  case "$*" in
-    'list -g --depth=-1 --json') printf '[{"dependencies":{"paperclipai":{"path":"%s/node_modules/paperclipai"}}}]\n' "${PAPERCLIP_FAKE_GLOBAL}" ;;
-    '--version') printf '%s\n' 12.1.0 ;;
-    *'config get allowBuilds --json') printf '%s\n' '{}' ;;
-    *'config set --location=project --json allowBuilds'*) printf '%s\n' "$*" >"${PAPERCLIP_PNPM_MARKER}" ;;
-    'root -g') printf '%s\n' "${PAPERCLIP_FAKE_GLOBAL}/node_modules" ;;
-    *) return 64 ;;
-  esac
-}
-# nc 既要记录探测过哪些端口，也要模拟真实时序：本次 upgrade 的 service start 之前端口
-# 必须是关闭的，否则 upgrade 的「停服后端口必须已释放」护栏会判定服务还在跑并中止升级。
+# 官方一等公民命令的透传：doctor / health / channels 直接转调，不做任何本地复现。
+for command in doctor health channels; do
+  PAPERCLIP_HOME="${PAPERCLIP_TEST_HOME}" PAPERCLIP_NODE_MIN_VERSION=0 \
+    bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/paperclip/setup.sh" "$command" >/dev/null || exit 1
+done
+# check 只读：问一次 update --check --json 就给结论，不许碰服务。
+PAPERCLIP_HOME="${PAPERCLIP_TEST_HOME}" PAPERCLIP_NODE_MIN_VERSION=0 \
+  bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/paperclip/setup.sh" check prod |
+  grep -Fq '2026.1008.0' || exit 1
+
+# nc 既要记录探测过哪些端口，也要模拟真实时序：service stop 之前端口是开着的（升级前
+# 备份要连得上 embedded PostgreSQL），停完必须变成关闭的（否则 upgrade 的「停服后端口
+# 必须已释放」护栏会判定服务还在跑并中止升级），service start 之后又要重新开着（健康
+# 检查才能通过）。
 nc() {
   printf '%s\n' "$*" >>"${PAPERCLIP_PORT_MARKER}"
-  [[ -f "${PAPERCLIP_STARTED_MARKER}" ]]
+  [[ ! -f "${PAPERCLIP_STOPPED_MARKER}" ]] || [[ -f "${PAPERCLIP_STARTED_MARKER}" ]]
 }
+# 健康检查轮询刻意用 curl 而不是 paperclipai health：后者每次都要起一个 node 进程加载
+# 整个 CLI bundle，按秒轮询最多 180 次扛不住。health 作为用户命令另行暴露（见上）。
 curl() { printf '%s\n' "$*" >"${PAPERCLIP_HEALTH_MARKER}"; }
-PAPERCLIP_PNPM_MARKER="${TMP}/paperclip-pnpm-config"
 PAPERCLIP_PORT_MARKER="${TMP}/paperclip-ports"
 PAPERCLIP_HEALTH_MARKER="${TMP}/paperclip-health"
-export DATABASE_URL=must-not-leak PAPERCLIP_FAKE_GLOBAL PAPERCLIP_PNPM_MARKER PAPERCLIP_PORT_MARKER PAPERCLIP_HEALTH_MARKER
-export -f uname pnpm nc curl
-# 清掉上面 start/restart 留下的存根：本次 upgrade 必须从「服务已停、端口已释放」开始。
-rm -f "${PAPERCLIP_STARTED_MARKER}"
+export DATABASE_URL=must-not-leak PAPERCLIP_PORT_MARKER PAPERCLIP_HEALTH_MARKER
+export -f nc curl
+# 本次 upgrade 模拟最常见的场景：服务正在运行（端口开着），由 upgrade 自己停它。
+rm -f "${PAPERCLIP_STARTED_MARKER}" "${PAPERCLIP_STOPPED_MARKER}"
 PAPERCLIP_HOME="${PAPERCLIP_TEST_HOME}" PAPERCLIP_NODE_MIN_VERSION=0 \
   bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/paperclip/setup.sh" update prod >/dev/null || exit 1
-# start 先探一次 service status --json，才能决定走官方 supervisor 还是 fundeploy 自管的
-# 后台进程（容器 / WSL1 / 无登录会话的机器上官方 service start 是空转）。
-[[ "$(tail -n 5 "${PAPERCLIP_CLI_MARKER}")" == $'db:backup\nservice stop\nupdate --latest --no-backup\nservice status --json\nservice start' ]] || exit 1
-grep -Fq 'allowBuilds {"@embedded-postgres/darwin-arm64":true}' "${PAPERCLIP_PNPM_MARKER}" || exit 1
-[[ -L "${PAPERCLIP_NATIVE}/native/lib/libalias.dylib" ]] || exit 1
+# 备份刻意在停服之前（embedded PostgreSQL 随服务一起停，停完再备份是空转），所以给官方
+# update 传 --no-backup；doctor --repair 取代了此前三段 macOS arm64 专属补丁，且刻意在
+# start 之前（官方 paperclipai run 自己也是 onboard + doctor --repair 后才启动）；start
+# 先探一次 service status --json，才能决定走官方 supervisor 还是 fundeploy 自管的后台
+# 进程（容器 / WSL1 / 无登录会话的机器上官方 service start 是空转）。
+[[ "$(tail -n 6 "${PAPERCLIP_CLI_MARKER}")" == $'db:backup\nservice stop\nupdate --latest --no-backup\ndoctor --repair --yes\nservice status --json\nservice start' ]] || exit 1
 grep -Fxq -- '-z 127.0.0.1 5432' "${PAPERCLIP_PORT_MARKER}" || exit 1
 grep -Fxq -- '-z 127.0.0.1 8804' "${PAPERCLIP_PORT_MARKER}" || exit 1
 grep -Fq -- 'http://127.0.0.1:8804/api/health' "${PAPERCLIP_HEALTH_MARKER}" || exit 1
 ! grep -Fq 'must-not-leak|' "${PAPERCLIP_ENV_MARKER}" || exit 1
 PAPERCLIP_HOME="${PAPERCLIP_TEST_HOME}" PAPERCLIP_NODE_MIN_VERSION=0 PAPERCLIP_UNINSTALL_YES=1 \
   bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/paperclip/setup.sh" uninstall >/dev/null || exit 1
-for expected in "service start" "service stop" "service restart --wait" "service status --json" "service logs -f" "db:backup" "update --latest --no-backup" "service uninstall" "uninstall"; do
+for expected in "service start" "service stop" "service restart --wait" "service status --json" "service logs -f" \
+  "doctor" "health" "channels" "update --latest --check --json" "db:backup" "update --latest --no-backup" \
+  "doctor --repair --yes" "service uninstall" "uninstall"; do
   grep -Fxq -- "$expected" "${PAPERCLIP_CLI_MARKER}" || exit 1
 done
+
+# canary 机器上 --latest 指向的 stable 常比当前版本旧，官方 update 把这种情况当显式降级、
+# 要求 -y 确认。非交互且未显式确认时必须在动手之前就拒绝（连备份都不做），否则会卡在
+# update 自己的交互提示上。
+: >"${PAPERCLIP_CLI_MARKER}"
+rm -f "${PAPERCLIP_STARTED_MARKER}" "${PAPERCLIP_STOPPED_MARKER}"
+NONINTERACTIVE=1 PAPERCLIP_HOME="${PAPERCLIP_TEST_HOME}" PAPERCLIP_NODE_MIN_VERSION=0 \
+  bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/paperclip/setup.sh" upgrade canary >/dev/null 2>&1 && exit 1
+grep -Fxq -- 'update --canary --check --json' "${PAPERCLIP_CLI_MARKER}" || exit 1
+! grep -Fxq -- 'db:backup' "${PAPERCLIP_CLI_MARKER}" || exit 1
+# 显式确认后才补 -y 交给官方 update。
+: >"${PAPERCLIP_CLI_MARKER}"
+NONINTERACTIVE=1 PAPERCLIP_UPGRADE_YES=1 PAPERCLIP_HOME="${PAPERCLIP_TEST_HOME}" PAPERCLIP_NODE_MIN_VERSION=0 \
+  bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/paperclip/setup.sh" upgrade canary >/dev/null || exit 1
+grep -Fxq -- 'update --canary -y --no-backup' "${PAPERCLIP_CLI_MARKER}" || exit 1
+
+# rollback 与 upgrade 共用同一套停服 → update → doctor --repair → 重启编排。
+# 这次从「服务已经停着」开始：embedded PostgreSQL 随服务一起停，连不上，升级前备份必须
+# 跳过而不是让 db:backup 失败把整个 rollback 中止掉。
+: >"${PAPERCLIP_CLI_MARKER}"
+rm -f "${PAPERCLIP_STARTED_MARKER}"
+: >"${PAPERCLIP_STOPPED_MARKER}"
+PAPERCLIP_HOME="${PAPERCLIP_TEST_HOME}" PAPERCLIP_NODE_MIN_VERSION=0 \
+  bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/paperclip/setup.sh" rollback >/dev/null || exit 1
+[[ "$(<"${PAPERCLIP_CLI_MARKER}")" == $'service stop\nupdate --rollback --no-backup\ndoctor --repair --yes\nservice status --json\nservice start' ]] || exit 1
 
 PAPERCLIP_PLUGIN_MARKER="${TMP}/paperclip-plugin-installed"
 gum() {
@@ -234,7 +270,7 @@ bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/paperclip/setup.sh" plugin li
 PAPERCLIP_NODE_MIN_VERSION=0 bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/paperclip/setup.sh" plugin install >/dev/null || exit 1
 [[ "$(<"${PAPERCLIP_PLUGIN_MARKER}")" == "plugin install @tomismeta/paperclip-aperture" ]] || exit 1
 unset DATABASE_URL
-unset -f npx gum paperclipai uname pnpm nc curl
+unset -f npx gum paperclipai nc curl
 bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/fundeploy-services.sh" || exit 1
 bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/tools/port-kill/setup.sh" || exit 1
 bash -n "${FUNDEPLOY_ROOT}/libexec/fundeploy/tools/brew/setup.sh" || exit 1
