@@ -373,6 +373,44 @@ grep -qF "${HOME}/.farfarfun/funread/web/funread-web.{pid,log}" <<<"${out}" || e
 # 「not running」而端口还被占着。存活判断必须走端口而不是 PID 文件 —— 路径本身会变。
 [[ "$(grep -c '^  _stop_if_running$' "${funread_setup}")" == 2 ]] || exit 1
 sed -n '/^_stop_if_running() {/,/^}/p' "${funread_setup}" | grep -q 'listener_pid_for_port' || exit 1
+# 「先停服」带来一个新的失败模式：停完之后换包挂掉（实测撞过一次私有 npm 源 ETIMEDOUT），
+# set -u/-e 让脚本就地退出，于是后端已换新版、前端还是旧版、两个端口都没人听，而输出里
+# 一个字都没提服务现在是停的。必须有一句明确提示 + 恢复办法。
+#
+# 这条按行为跑而不是按文本断言：`source <脚本> help` 会把函数都定义出来再干净退出，
+# 之后把探活、停服、换包三个点替换掉，就能在不装任何东西的情况下走完真实的 cmd_upgrade。
+out="$(
+  (
+    # shellcheck disable=SC1090
+    source "${funread_setup}" help >/dev/null
+    _fundeploy_listener_pid_for_port() { echo 4242; }   # 装作两个端口都在听
+    cmd_stop() { echo "（停服）"; }
+    _resolve_npm() { echo npm; }
+    _backend_version() { echo 1.1.113; }
+    _npm_global_version() { echo 1.1.113; }
+    cmd_install() { die "假装换包失败"; }
+    cmd_upgrade
+  ) 2>&1 || true
+)"
+grep -q '现在是停着的' <<<"${out}" || exit 1
+grep -q '起回来' <<<"${out}" || exit 1
+# 换包成功时不能再打这句：那之后 start 失败有它自己的报错。
+out="$(
+  (
+    # shellcheck disable=SC1090
+    source "${funread_setup}" help >/dev/null
+    _fundeploy_listener_pid_for_port() { echo 4242; }
+    cmd_stop() { echo "（停服）"; }
+    _resolve_npm() { echo npm; }
+    _backend_version() { echo 1.1.114; }
+    _npm_global_version() { echo 1.1.114; }
+    cmd_install() { echo "（换包）"; }
+    cmd_start() { die "假装起不来"; }
+    cmd_upgrade
+  ) 2>&1 || true
+)"
+! grep -q '现在是停着的' <<<"${out}" || exit 1
+grep -q '假装起不来' <<<"${out}" || exit 1
 NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" dev --help >/dev/null || exit 1
 out="$(NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" tool list)"
 grep -q "brew" <<<"${out}" || exit 1

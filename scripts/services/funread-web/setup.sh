@@ -517,14 +517,36 @@ cmd_install() {
 # stop 报「not running」而端口还被占着，接着 start 又撞 address in use。先停再装就绕开了。
 #
 # 存活判断走端口而不是 PID 文件，正是因为上面那条：PID 文件的位置本身会变，端口不会。
+#
+# 停完立刻挂上 EXIT trap：cmd_install 中途失败时 set -e 会让脚本就地退出，用户只看到包
+# 管理器那几行报错，没有一句说「机器上的服务现在是停的」。实测撞过一次 —— 私有 npm 源
+# 一个 ETIMEDOUT，结果后端已经换成新版、前端还是旧版、两个端口都没人听，而输出里一个字
+# 都没提服务状态。用 EXIT 而不是 ERR：die 走的是 exit，ERR 接不住。
 _WAS_RUNNING=0
+_LEFT_STOPPED=0
+
+_warn_if_left_stopped() {
+  [[ "${_LEFT_STOPPED}" == 1 ]] || return 0
+  echo "" >&2
+  echo "注意: 原先服务在运行，已为换包停掉，但换包没走完 —— 现在是停着的。" >&2
+  echo "      修掉上面的报错后重跑本命令，或先 start 把当前装着的那份起回来。" >&2
+}
+
 _stop_if_running() {
   _WAS_RUNNING=0
   if [[ -n "$(_fundeploy_listener_pid_for_port "${FUNREAD_WEB_BACKEND_PORT}")" \
      || -n "$(_fundeploy_listener_pid_for_port "${FUNREAD_WEB_FRONTEND_PORT}")" ]]; then
     _WAS_RUNNING=1
     cmd_stop
+    _LEFT_STOPPED=1
+    trap _warn_if_left_stopped EXIT
   fi
+}
+
+# 换包成功后撤掉这条提示：后面 start 失败有它自己的报错，再附一句「换包没走完」是错的。
+_install_done() {
+  _LEFT_STOPPED=0
+  trap - EXIT
 }
 
 cmd_upgrade() {
@@ -535,6 +557,7 @@ cmd_upgrade() {
 
   _stop_if_running
   cmd_install
+  _install_done
 
   # 重新探一次包管理器：首装可能刚把包装到另一个全局 bin 目录下。
   npm_bin="$(_resolve_npm)"
@@ -574,6 +597,7 @@ cmd_rollback() {
   FUNREAD_WEB_BACKEND_VERSION="${version}"
   FUNREAD_WEB_FRONTEND_VERSION="${version}"
   cmd_install
+  _install_done
 
   if [[ "${_WAS_RUNNING}" == 1 ]]; then
     echo "==> 回退前服务在运行，重新启动"

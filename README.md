@@ -161,7 +161,9 @@ brew uninstall fundeploy
   从 `${XDG_CONFIG_HOME:-~/.config}/farfarfun/funread-{api,web}/` 换到了 `~/.farfarfun/funread/{api,web}/`，
   而 `rollback 1.1.113` 能把机器退回旧布局。
   `upgrade` 与 `rollback` 都会先停服再换包、装完按原状态起回来——在跑着的进程底下换全局 npm 包，
-  node 还开着那棵树里的文件；存活判断走端口探测，因为 PID 文件的位置本身会随版本变
+  node 还开着那棵树里的文件；存活判断走端口探测，因为 PID 文件的位置本身会随版本变。
+  换包中途失败（私有 npm 源偶发 `ETIMEDOUT`）会明确提示服务当前是停着的并给出恢复办法，
+  不会只丢一句包管理器的报错就退出
 - `fundeploy service funlesson-web install|start|run|stop|restart|status|uninstall`：funlesson-api（后端，私有
   PyPI）+ funlesson-web（前端，私有 npm）一起装/起/停，只提供合并命令
 - `fundeploy service funfluid-web install|start|run|stop|restart|status|uninstall`：funfluid-api（后端）
