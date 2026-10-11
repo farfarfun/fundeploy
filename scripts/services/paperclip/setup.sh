@@ -53,6 +53,24 @@ PAPERCLIP_NODE_MIN_MAJOR="${PAPERCLIP_NODE_MIN_MAJOR:-24}"
 PAPERCLIP_UPDATE_HEALTH_TIMEOUT_SEC="${PAPERCLIP_UPDATE_HEALTH_TIMEOUT_SEC:-180}"
 PAPERCLIP_CONFIG_PATH="${PAPERCLIP_HOME}/instances/${PAPERCLIP_INSTANCE_ID}/config.json"
 
+# ===== 无服务管理器时的后台托管 =====
+# 官方 service start/stop/status 在检测不到服务管理器时只打印一条 reason 就以 0 退出
+# （见 paperclip_service_state 的注释），于是容器、WSL1 或没有登录会话的机器上
+# `fundeploy service paperclip start` 是彻底的空转：返回 0、什么都没启动。官方给出的
+# 唯一出路是 `paperclipai run`，但那是前台的。这里补一条 fundeploy 自管的后台通道
+# （nohup + PID 文件），让 start/stop/restart/status/logs 在这些机器上也是真的。
+# ${PAPERCLIP_HOME} 下官方只用 cli/ 和 instances/，run/ 不会撞上它。
+PAPERCLIP_RUN_DIR="${PAPERCLIP_RUN_DIR:-${PAPERCLIP_HOME}/run/${PAPERCLIP_INSTANCE_ID}}"
+PAPERCLIP_PID_FILE="${PAPERCLIP_RUN_DIR}/paperclip.pid"
+PAPERCLIP_LOG_FILE="${PAPERCLIP_LOG_FILE:-${PAPERCLIP_RUN_DIR}/paperclip.log}"
+# auto：无服务管理器时自动接管；off：维持官方行为（只报不支持并退出）。
+PAPERCLIP_FALLBACK="${PAPERCLIP_FALLBACK:-auto}"
+PAPERCLIP_START_HEALTH_TIMEOUT_SEC="${PAPERCLIP_START_HEALTH_TIMEOUT_SEC:-180}"
+# 与官方 systemd 单元的 TimeoutStopSec=300 对齐：SIGTERM 后服务要排空正在跑的
+# heartbeat run，提前 KILL 会打断执行中的任务。
+PAPERCLIP_STOP_TIMEOUT_SEC="${PAPERCLIP_STOP_TIMEOUT_SEC:-300}"
+PAPERCLIP_LOG_TAIL_LINES="${PAPERCLIP_LOG_TAIL_LINES:-200}"
+
 usage() {
   cat <<USAGE
 用法: ./setup.sh [command [args...]]
@@ -68,22 +86,25 @@ usage() {
   plugin list                  列出 awesome-paperclip 收录的插件
   plugin install [npm-package] 安装插件；不指定包名时从清单选择
   plugin installed             列出当前已安装的插件
-  start             启动官方后台服务
+  start             后台启动并等待 /api/health 通过
   run               使用 paperclipai run 前台启动
-  stop              停止官方后台服务
-  restart           热重启官方后台服务；未在运行时自动改为 start
-  status            查看官方 supervisor 与健康状态
-  logs [options]    查看官方服务日志，例如 logs -f
+  stop              停止后台服务
+  restart           热重启后台服务；未在运行时自动改为 start
+  status            查看 supervisor、版本与健康状态
+  logs [options]    查看服务日志，例如 logs -f
   uninstall         卸载官方服务和 CLI，保留 ${PAPERCLIP_HOME} 数据
 
 说明:
-  - Linux 使用 systemd --user，macOS 使用 LaunchAgent。
-  - systemd --user 需要一个用户级 systemd 实例；容器、WSL1 或没有登录会话的
-    终端里不存在，官方 CLI 会提示改用 run。此时先在有登录会话的 shell 执行
-    service-install --enable-linger（等价于 loginctl enable-linger）。
+  - Linux 优先用 systemd --user，macOS 用 LaunchAgent。
+  - systemd --user 需要一个用户级 systemd 实例；容器、WSL1 或没有登录会话的终端里
+    不存在。这种机器上 start/stop/restart/status/logs 自动改由 fundeploy 用
+    nohup + PID 文件托管（PID ${PAPERCLIP_PID_FILE}、日志 ${PAPERCLIP_LOG_FILE}），
+    代价是不开机自启。想走官方 supervisor 就先在有登录会话的 shell 执行
+    service-install --enable-linger（等价于 loginctl enable-linger）；
+    设 PAPERCLIP_FALLBACK=off 可关掉这条兜底通道。
   - 配置由 paperclipai onboard / configure 管理。
   - PAPERCLIP_INSTANCE_ID 默认为 ${PAPERCLIP_INSTANCE_ID}。
-  - upgrade 完成后检查 PostgreSQL、Paperclip 端口及 /api/health。
+  - start 和 upgrade 完成后检查 PostgreSQL、Paperclip 端口及 /api/health。
 
 受限网络（install / upgrade 下载约 1.4G）:
   - PAPERCLIP_NPM_MIRROR      整棵依赖树的预装源，如 https://registry.npmmirror.com；
@@ -201,6 +222,177 @@ paperclip_service_state() {
     console.log(pid);
     console.log(String(value.message || "").replace(/\s+/g, " ").trim());
   ' 2>/dev/null || return 1
+}
+
+# 把 paperclip_service_state 的三行读进 PAPERCLIP_SERVICE_{SUPPORTED,PID,MESSAGE}。
+# 拿不到状态时 SUPPORTED 置为 unknown —— 那种情况下不猜，交给官方命令自己报错。
+paperclip_read_service_state() {
+  PAPERCLIP_SERVICE_SUPPORTED=unknown
+  PAPERCLIP_SERVICE_PID=""
+  PAPERCLIP_SERVICE_MESSAGE=""
+  local state
+  state="$(paperclip_service_state)" || return 0
+  # read 读到最后一行若无换行会返回非 0，但变量已赋值，故逐行 || true。
+  {
+    read -r PAPERCLIP_SERVICE_SUPPORTED || true
+    read -r PAPERCLIP_SERVICE_PID || true
+    IFS= read -r PAPERCLIP_SERVICE_MESSAGE || true
+  } <<<"$state"
+}
+
+# 官方 supervisor 不可用时是否该由 fundeploy 接管；关掉兜底时直接 die。
+paperclip_require_fallback() {
+  [[ "${PAPERCLIP_FALLBACK}" != "off" ]] && return 0
+  die "${PAPERCLIP_SERVICE_MESSAGE:-未检测到可用的服务管理器}（PAPERCLIP_FALLBACK=off）
+可选做法: $0 run 前台启动，或在有登录会话的 shell 执行 $0 service-install --enable-linger"
+}
+
+# 输出 fundeploy 托管进程的 PID；未在运行时返回 1。
+paperclip_fallback_pid() {
+  local pid command_line
+  pid="$(_fundeploy_read_pid_file "${PAPERCLIP_PID_FILE}")"
+  [[ -n "$pid" ]] || return 1
+  _fundeploy_process_alive "$pid" || return 1
+  # PID 会被复用，而这个文件可能是上次重启前留下的。只认命令行里确实是
+  # paperclipai 的进程，否则宁可当成「没在运行」，也不能朝陌生进程发 SIGTERM。
+  command_line="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+  [[ "$command_line" == *paperclipai* ]] || return 1
+  printf '%s\n' "$pid"
+}
+
+# 等端口和 /api/health 就绪；超时返回 1，由调用方决定怎么报错。
+paperclip_wait_for_health() {
+  local timeout="$1" deadline=$((SECONDS + $1)) targets="Paperclip ${PAPERCLIP_SERVER_PORT} 和 /api/health"
+  [[ "${PAPERCLIP_DATABASE_MODE}" != "embedded-postgres" ]] || targets="PostgreSQL ${PAPERCLIP_DATABASE_PORT}、${targets}"
+  echo "==> 检查 ${targets}（最长 ${timeout} 秒）" >&2
+  while ((SECONDS <= deadline)); do
+    if { [[ "${PAPERCLIP_DATABASE_MODE}" != "embedded-postgres" ]] || paperclip_port_open "${PAPERCLIP_DATABASE_PORT}"; } &&
+      paperclip_port_open "${PAPERCLIP_SERVER_PORT}" &&
+      curl --fail --silent --show-error --max-time 3 "http://127.0.0.1:${PAPERCLIP_SERVER_PORT}/api/health" >/dev/null; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+paperclip_start_fallback() {
+  require_node
+  local executable
+  executable="$(paperclip_executable)" || die "未找到 paperclipai，请先执行: $0 install"
+  paperclip_load_config
+
+  local running
+  if running="$(paperclip_fallback_pid)"; then
+    echo "Paperclip 已由 fundeploy 在后台运行（PID ${running}，日志 ${PAPERCLIP_LOG_FILE}）。"
+    return 0
+  fi
+
+  # 端口上已经有别的进程（例如一个 $0 run 的前台实例）时再起一个只会抢不到端口后
+  # 自己退出，白写一份 PID 文件。
+  local listener
+  listener="$(_fundeploy_listener_pid_for_port "${PAPERCLIP_SERVER_PORT}")"
+  [[ -z "$listener" ]] ||
+    die "端口 ${PAPERCLIP_SERVER_PORT} 已被 PID ${listener} 占用（可能是 $0 run 的前台实例），请先停止后重试"
+
+  mkdir -p "${PAPERCLIP_RUN_DIR}" || die "无法创建运行目录 ${PAPERCLIP_RUN_DIR}"
+  rm -f "${PAPERCLIP_PID_FILE}"
+  echo "==> ${PAPERCLIP_SERVICE_MESSAGE:-未检测到可用的服务管理器}" >&2
+  echo "==> 改由 fundeploy 托管后台进程；PID ${PAPERCLIP_PID_FILE}，日志 ${PAPERCLIP_LOG_FILE}" >&2
+
+  # 刻意不设 PAPERCLIP_SERVICE_MANAGED=1：它只用于让 run 跳过「同实例已在 supervisor
+  # 下运行」的检查，而这里恰好需要保留那层保护。
+  local -a launcher=(env)
+  [[ "${PAPERCLIP_DATABASE_MODE}" != "embedded-postgres" ]] || launcher+=(-u DATABASE_URL)
+  launcher+=("PAPERCLIP_HOME=${PAPERCLIP_HOME}" "PAPERCLIP_INSTANCE_ID=${PAPERCLIP_INSTANCE_ID}"
+    "$executable" run --instance "${PAPERCLIP_INSTANCE_ID}")
+
+  local pid
+  pid="$(
+    # cwd 对齐官方单元的 WorkingDirectory=%h：别让服务继承调用者的目录，否则
+    # agent 的 fallback cwd 会随在哪儿执行 start 而变。
+    cd "${HOME}" || exit 1
+    nohup "${launcher[@]}" >>"${PAPERCLIP_LOG_FILE}" 2>&1 &
+    echo $!
+  )" || die "启动失败"
+  [[ "$pid" =~ ^[0-9]+$ ]] || die "启动失败，未取到后台进程 PID（日志 ${PAPERCLIP_LOG_FILE}）"
+  echo "$pid" >"${PAPERCLIP_PID_FILE}"
+
+  if paperclip_wait_for_health "${PAPERCLIP_START_HEALTH_TIMEOUT_SEC}"; then
+    echo "Paperclip 已启动（PID ${pid}，http://127.0.0.1:${PAPERCLIP_SERVER_PORT} ），健康检查通过。"
+    return 0
+  fi
+
+  if ! _fundeploy_process_alive "$pid"; then
+    rm -f "${PAPERCLIP_PID_FILE}"
+    echo "==> 进程已退出，日志末尾：" >&2
+    tail -n 40 "${PAPERCLIP_LOG_FILE}" >&2 || true
+    die "Paperclip 启动失败（完整日志: ${PAPERCLIP_LOG_FILE}）"
+  fi
+  echo "==> 进程仍在（PID ${pid}），日志末尾：" >&2
+  tail -n 40 "${PAPERCLIP_LOG_FILE}" >&2 || true
+  die "Paperclip 未在 ${PAPERCLIP_START_HEALTH_TIMEOUT_SEC} 秒内通过健康检查（可用 $0 status / logs 确认，$0 stop 停止）"
+}
+
+# 停止 fundeploy 托管的进程并清掉 PID 文件。
+# --quiet：没东西可停时不出声，供官方 stop 之后的收尾调用（那条路径已经有输出了）。
+paperclip_stop_fallback() {
+  local quiet="" pid
+  [[ "${1:-}" != "--quiet" ]] || quiet=1
+  if ! pid="$(paperclip_fallback_pid)"; then
+    [[ -n "$quiet" ]] || echo "Paperclip 未在运行（无 fundeploy 托管进程）。"
+    rm -f "${PAPERCLIP_PID_FILE}"
+    return 0
+  fi
+  echo "==> 停止 fundeploy 托管的 Paperclip（PID ${pid}，最长等 ${PAPERCLIP_STOP_TIMEOUT_SEC} 秒排空运行中的任务）" >&2
+  _fundeploy_stop_pid "$pid" "${PAPERCLIP_STOP_TIMEOUT_SEC}"
+  rm -f "${PAPERCLIP_PID_FILE}"
+  echo "已停止 fundeploy 托管的 Paperclip。"
+}
+
+paperclip_status_fallback() {
+  paperclip_load_config
+  local pid version health="不通过"
+  version="$(paperclip_cli --version 2>/dev/null | awk 'NR==1{print $1}')" || version=""
+  curl --fail --silent --show-error --max-time 3 \
+    "http://127.0.0.1:${PAPERCLIP_SERVER_PORT}/api/health" >/dev/null 2>&1 && health="通过"
+
+  if pid="$(paperclip_fallback_pid)"; then
+    echo "fundeploy 托管: 运行中（PID ${pid}）"
+  elif [[ -f "${PAPERCLIP_PID_FILE}" ]]; then
+    echo "fundeploy 托管: 未运行（PID 文件 ${PAPERCLIP_PID_FILE} 已失效）"
+  else
+    echo "fundeploy 托管: 未运行"
+  fi
+  echo "版本: ${version:-未知}"
+  echo "端口 ${PAPERCLIP_SERVER_PORT}: $(paperclip_port_open "${PAPERCLIP_SERVER_PORT}" && echo 监听中 || echo 未监听)"
+  echo "健康检查 http://127.0.0.1:${PAPERCLIP_SERVER_PORT}/api/health: ${health}"
+  echo "日志: ${PAPERCLIP_LOG_FILE}"
+}
+
+# 官方 service logs 读 journalctl / launchd 日志，对 fundeploy 托管的进程无效，
+# 这里改 tail 它自己那份。只认 -f / -n，其余参数提示后忽略。
+paperclip_logs_fallback() {
+  [[ -f "${PAPERCLIP_LOG_FILE}" ]] ||
+    die "没有 fundeploy 托管的日志（${PAPERCLIP_LOG_FILE} 不存在）；该实例可能未用 $0 start 启动"
+  local lines="${PAPERCLIP_LOG_TAIL_LINES}" follow=0 expect_lines=0 arg
+  for arg in "$@"; do
+    if ((expect_lines)); then
+      lines="$arg"
+      expect_lines=0
+      continue
+    fi
+    case "$arg" in
+      -f | --follow) follow=1 ;;
+      -n | --lines) expect_lines=1 ;;
+      -n*) lines="${arg#-n}" ;;
+      --lines=*) lines="${arg#--lines=}" ;;
+      *) echo "提示: fundeploy 托管日志走 tail，忽略不支持的参数 ${arg}" >&2 ;;
+    esac
+  done
+  local -a tail_args=(-n "$lines")
+  ((follow == 0)) || tail_args+=(-f)
+  exec tail "${tail_args[@]}" "${PAPERCLIP_LOG_FILE}"
 }
 
 # paperclipai 的 managed install 把 registry 硬编码为 registry.npmjs.org，并且会另写
@@ -718,22 +910,14 @@ paperclip_remove_launchd_database_url() {
 
 paperclip_wait_for_update_health() {
   paperclip_load_config
-  local deadline=$((SECONDS + PAPERCLIP_UPDATE_HEALTH_TIMEOUT_SEC)) targets="Paperclip ${PAPERCLIP_SERVER_PORT} 和 /api/health"
-  [[ "${PAPERCLIP_DATABASE_MODE}" != "embedded-postgres" ]] || targets="PostgreSQL ${PAPERCLIP_DATABASE_PORT}、${targets}"
-  echo "==> 检查 ${targets}" >&2
-  while ((SECONDS <= deadline)); do
-    if { [[ "${PAPERCLIP_DATABASE_MODE}" != "embedded-postgres" ]] || paperclip_port_open "${PAPERCLIP_DATABASE_PORT}"; } &&
-      paperclip_port_open "${PAPERCLIP_SERVER_PORT}" &&
-      curl --fail --silent --show-error --max-time 3 "http://127.0.0.1:${PAPERCLIP_SERVER_PORT}/api/health" >/dev/null; then
-      echo "Paperclip 升级完成，健康检查通过。"
-      return 0
-    fi
-    sleep 1
-  done
-  # 此时 payload 已替换且 service start 已执行过，服务很可能只是还在启动 —— 先把状态
+  if paperclip_wait_for_health "${PAPERCLIP_UPDATE_HEALTH_TIMEOUT_SEC}"; then
+    echo "Paperclip 升级完成，健康检查通过。"
+    return 0
+  fi
+  # 此时 payload 已替换且 start 已执行过，服务很可能只是还在启动 —— 先把状态
   # 打出来，避免把「仍在启动」误读成「升级失败」。
   echo "==> 健康检查未通过，当前服务状态：" >&2
-  paperclip_cli service status || true
+  cmd_status || true
   die "Paperclip 升级后未在 ${PAPERCLIP_UPDATE_HEALTH_TIMEOUT_SEC} 秒内通过健康检查（payload 已更新，服务可能仍在启动，可用 $0 status / logs 确认）"
 }
 
@@ -775,9 +959,13 @@ cmd_upgrade() {
   paperclip_load_config
   [[ ! -f "${PAPERCLIP_CONFIG_PATH}" ]] || paperclip_cli db:backup
 
+  # 两条通道都要停：官方 service stop 在无服务管理器的机器上会「假成功」（返回 0 且
+  # 什么都没停，见 paperclip_service_state 的注释），fundeploy 托管的那个进程只能从
+  # PID 文件收。刻意不走 cmd_stop —— 它在 PAPERCLIP_FALLBACK=off 时会 die，而这里要的
+  # 是尽力而为，真正的护栏是紧随其后的端口检查。
   paperclip_cli service stop || true
-  # 原先只在 service stop 失败时才查端口，但无服务管理器时 stop 会「假成功」（返回 0
-  # 且什么都没停，见 paperclip_service_state 的注释），端口检查会被整个跳过 —— 用
+  paperclip_stop_fallback --quiet
+  # 原先只在 service stop 失败时才查端口，但「假成功」会让端口检查被整个跳过 —— 用
   # run 前台启动的实例正属于这种情况，继续下去就会在服务运行中替换 payload。
   # 因此改为无条件确认端口已释放。
   if paperclip_port_open "${PAPERCLIP_SERVER_PORT}"; then
@@ -798,12 +986,14 @@ cmd_upgrade() {
   fi
 
   if ! paperclip_cli update "${update_args[@]}" --no-backup; then
-    paperclip_cli service start || true
+    # 放在子 shell 里尽力拉起来：cmd_start 失败时走 die（即 exit），`|| true` 拦不住，
+    # 会把 update 的失败吞成整脚本退出。这里要保留 update 本身的失败语义。
+    (cmd_start) || true
     return 1
   fi
   paperclip_hydrate_embedded_postgres
   paperclip_remove_launchd_database_url
-  paperclip_cli service start
+  cmd_start
   paperclip_wait_for_update_health
 }
 
@@ -889,28 +1079,75 @@ cmd_service_install() {
   paperclip_cli service install "$@"
 }
 
+cmd_start() {
+  paperclip_read_service_state
+  if [[ "${PAPERCLIP_SERVICE_SUPPORTED}" != "false" ]]; then
+    # supervisor 可用（含状态拿不到的情况）时维持官方路径：systemd 的 Type=notify /
+    # launchd 自己会等到就绪，不必再叠一层健康检查。
+    paperclip_cli service start "$@"
+    return
+  fi
+  paperclip_require_fallback
+  paperclip_start_fallback
+}
+
+cmd_stop() {
+  paperclip_read_service_state
+  if [[ "${PAPERCLIP_SERVICE_SUPPORTED}" != "false" ]]; then
+    paperclip_cli service stop "$@"
+    # 无条件再停一次 fundeploy 托管的进程：机器从「无 supervisor」变成「有 supervisor」
+    # 后，上次 start 留下的那个进程不受 supervisor 管辖，只能从 PID 文件收尾。
+    paperclip_stop_fallback --quiet
+    return
+  fi
+  # 关掉兜底时也不该假成功：官方 stop 在这种机器上什么都不会停。
+  paperclip_require_fallback
+  paperclip_stop_fallback
+}
+
+cmd_status() {
+  paperclip_read_service_state
+  if [[ "${PAPERCLIP_SERVICE_SUPPORTED}" != "false" ]]; then
+    local rc=0
+    paperclip_cli service status "$@" || rc=$?
+    # 仅在确实留有 PID 文件时才追加，避免正常 supervisor 机器上多出无关输出。
+    [[ -f "${PAPERCLIP_PID_FILE}" ]] || return "$rc"
+    echo ""
+  else
+    echo "官方服务管理器不可用: ${PAPERCLIP_SERVICE_MESSAGE:-未检测到可用的服务管理器}"
+  fi
+  paperclip_status_fallback
+}
+
+cmd_logs() {
+  paperclip_read_service_state
+  if [[ "${PAPERCLIP_SERVICE_SUPPORTED}" != "false" ]]; then
+    paperclip_cli service logs "$@"
+    return
+  fi
+  paperclip_require_fallback
+  paperclip_logs_fallback "$@"
+}
+
 cmd_restart() {
-  local state supported="" pid="" message=""
-  if ! state="$(paperclip_service_state)"; then
+  paperclip_read_service_state
+
+  if [[ "${PAPERCLIP_SERVICE_SUPPORTED}" == "false" ]]; then
+    paperclip_require_fallback
+    paperclip_stop_fallback
+    paperclip_start_fallback
+    return
+  fi
+
+  if [[ "${PAPERCLIP_SERVICE_SUPPORTED}" == "unknown" ]]; then
     # 状态拿不到就交给官方 restart 自己报错，不猜测。
     paperclip_cli service restart "$@"
     return
   fi
-  # read 读到最后一行若无换行会返回非 0，但变量已赋值，故逐行 || true。
-  {
-    read -r supported || true
-    read -r pid || true
-    IFS= read -r message || true
-  } <<<"$state"
-
-  if [[ "$supported" == "false" ]]; then
-    die "${message:-未检测到可用的服务管理器}
-可选做法: $0 run 前台启动，或在有登录会话的 shell 执行 $0 service-install --enable-linger"
-  fi
 
   # 官方 service restart 只做热重启：writeHotRestartIntent 第一步就是 if (!status.pid)
   # throw，所以服务没在跑时它永远失败 —— 那种场景要的其实是 start。
-  if [[ -z "$pid" ]]; then
+  if [[ -z "${PAPERCLIP_SERVICE_PID}" ]]; then
     echo "==> 服务未在运行（无 supervisor pid），改为 start" >&2
     paperclip_cli service start
     return
@@ -920,8 +1157,13 @@ cmd_restart() {
 
 cmd_run() {
   require_node
-  local executable
+  local executable running
   executable="$(paperclip_executable)" || die "未找到 paperclipai，请先执行: $0 install"
+  # 官方 run 自带的「同实例已在 supervisor 下运行」检查覆盖不到 fundeploy 托管的进程
+  # （那种机器上根本没有 supervisor），不挡住就会起第二个实例去抢同一个端口。
+  if running="$(paperclip_fallback_pid)"; then
+    die "Paperclip 已由 fundeploy 在后台运行（PID ${running}），请先执行: $0 stop"
+  fi
   paperclip_load_config
   [[ "${PAPERCLIP_DATABASE_MODE}" != "embedded-postgres" ]] || unset DATABASE_URL
   exec env PAPERCLIP_HOME="${PAPERCLIP_HOME}" PAPERCLIP_INSTANCE_ID="${PAPERCLIP_INSTANCE_ID}" "$executable" run "$@"
@@ -931,6 +1173,9 @@ cmd_uninstall() {
   echo "Paperclip 数据目录 ${PAPERCLIP_HOME} 不会删除。" >&2
   fundeploy_confirm_destructive "确认卸载 Paperclip 官方服务和 CLI？" PAPERCLIP_UNINSTALL_YES || return 1
 
+  # 先停再卸：官方 service uninstall 在无服务管理器的机器上同样「假成功」，
+  # 不先收掉 fundeploy 托管的进程就会在服务运行中删掉它的 payload。
+  paperclip_stop_fallback
   paperclip_cli service uninstall
   paperclip_cli uninstall
   echo "已卸载 Paperclip 服务和 CLI；数据保留在 ${PAPERCLIP_HOME}。"
@@ -947,8 +1192,11 @@ dispatch() {
     onboard) cmd_onboard "$@" ;;
     plugin) cmd_plugin "$@" ;;
     run) cmd_run "$@" ;;
+    start) cmd_start "$@" ;;
+    stop) cmd_stop "$@" ;;
     restart) cmd_restart "$@" ;;
-    start | stop | status | logs) paperclip_cli service "$cmd" "$@" ;;
+    status) cmd_status "$@" ;;
+    logs) cmd_logs "$@" ;;
     uninstall) cmd_uninstall ;;
     help | -h | --help) usage ;;
     *) echo "未知命令: ${cmd}" >&2; usage >&2; exit 2 ;;

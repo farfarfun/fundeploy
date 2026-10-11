@@ -132,7 +132,11 @@ brew uninstall fundeploy
 
 - `fundeploy service status`：服务总览
 - `fundeploy service airflow|celery|paperclip|code-server|new-api|sub2api|funmill|open-pencil|funflix-web|funread-web|funlesson-web|funfluid-web|fungame-web`
-- `fundeploy service paperclip start|stop|restart|status|logs`：转发到 Paperclip 官方 `service` 命令（Linux systemd user / macOS LaunchAgent）
+- `fundeploy service paperclip start|stop|restart|status|logs`：优先转发到 Paperclip 官方 `service`
+  命令（Linux systemd user / macOS LaunchAgent）；检测不到服务管理器的机器（容器、WSL1、无登录会话）
+  上官方命令只会打印一句「不支持」就以 0 退出、什么都不启动，此时自动改由 fundeploy 用
+  nohup + PID 文件托管后台进程并等 `/api/health` 通过，代价是不开机自启
+  （`PAPERCLIP_FALLBACK=off` 可关掉这条兜底通道）
 - `fundeploy service funflix-web install|upgrade|rollback <版本>|start|run|stop|restart|status|migrate|user-create|uninstall`：
   funflix-api（后端，PyPI，依赖核心库 funflix）+ funflix-web（前端，私有 npm）一起装/起/停，只提供合并命令。
   新机器装完先 `migrate`（建表）再 `user-create <用户名>`（建登录账号）——1.0.30 起是整站门禁，没账号登不进去
