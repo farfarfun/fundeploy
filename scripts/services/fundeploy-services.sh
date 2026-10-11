@@ -301,13 +301,11 @@ cmd_status() {
   ffx_be_listener_pid="$(listener_pid_for_port "${FUNFLIX_WEB_BACKEND_PORT}")"
   ffx_fe_listener_pid="$(listener_pid_for_port "${FUNFLIX_WEB_FRONTEND_PORT}")"
 
-  FUNREAD_WEB_SERVICE_HOME="${FUNREAD_WEB_SERVICE_HOME:-${HOME}/opt/funread-web}"
+  # funread-api / funread-web 各自管理自己的 PID 文件，这里只用端口探测判断是否在跑。
   FUNREAD_WEB_BACKEND_HOST="${FUNREAD_WEB_BACKEND_HOST:-127.0.0.1}"
   FUNREAD_WEB_BACKEND_PORT="${FUNREAD_WEB_BACKEND_PORT:-18811}"
   FUNREAD_WEB_FRONTEND_HOST="${FUNREAD_WEB_FRONTEND_HOST:-127.0.0.1}"
   FUNREAD_WEB_FRONTEND_PORT="${FUNREAD_WEB_FRONTEND_PORT:-8811}"
-  frd_be_pid="$(read_pid_file "${FUNREAD_WEB_SERVICE_HOME}/run/backend.pid")"
-  frd_fe_pid="$(read_pid_file "${FUNREAD_WEB_SERVICE_HOME}/run/frontend.pid")"
   frd_be_listener_pid="$(listener_pid_for_port "${FUNREAD_WEB_BACKEND_PORT}")"
   frd_fe_listener_pid="$(listener_pid_for_port "${FUNREAD_WEB_FRONTEND_PORT}")"
 
@@ -417,17 +415,17 @@ cmd_status() {
       "${FUNFLIX_WEB_FRONTEND_HOST}:${FUNFLIX_WEB_FRONTEND_PORT}" \
       "$(http_probe "http://${FUNFLIX_WEB_FRONTEND_HOST}:${FUNFLIX_WEB_FRONTEND_PORT}/web")"
     _status_csv_line \
-      "funread" \
-      "$(service_state_from_pid_and_port "$frd_be_pid" "$frd_be_listener_pid")" \
-      "$(service_pid_display "$frd_be_pid" "$frd_be_listener_pid")" \
+      "funread-api" \
+      "$(service_state_from_pid_and_port "" "$frd_be_listener_pid")" \
+      "$(service_pid_display "" "$frd_be_listener_pid")" \
       "${FUNREAD_WEB_BACKEND_HOST}:${FUNREAD_WEB_BACKEND_PORT}" \
       "$(http_probe "http://${FUNREAD_WEB_BACKEND_HOST}:${FUNREAD_WEB_BACKEND_PORT}/healthz")"
     _status_csv_line \
       "funread-web" \
-      "$(service_state_from_pid_and_port "$frd_fe_pid" "$frd_fe_listener_pid")" \
-      "$(service_pid_display "$frd_fe_pid" "$frd_fe_listener_pid")" \
+      "$(service_state_from_pid_and_port "" "$frd_fe_listener_pid")" \
+      "$(service_pid_display "" "$frd_fe_listener_pid")" \
       "${FUNREAD_WEB_FRONTEND_HOST}:${FUNREAD_WEB_FRONTEND_PORT}" \
-      "$(http_probe "http://${FUNREAD_WEB_FRONTEND_HOST}:${FUNREAD_WEB_FRONTEND_PORT}/")"
+      "$(http_probe "http://${FUNREAD_WEB_FRONTEND_HOST}:${FUNREAD_WEB_FRONTEND_PORT}/web")"
     _status_csv_line \
       "funlesson-api" \
       "$(service_state_from_pid_and_port "" "$fls_be_listener_pid")" \
@@ -477,11 +475,11 @@ cmd_status() {
   echo "  • celery 状态列 wbf 为 worker / beat / flower：√ 运行中，× 未运行；与 Airflow 同机时请区分 FLOWER_PORT。"
   echo "  • funmill-api / funmill-backend（dagu/windmill）各自管理自己的 PID/日志，此表仅按端口探测判断存活；一起装/起/停请用 fundeploy service funmill。"
   echo "  • funflix-api / funflix-web 各自管理自己的 PID/日志，此表仅按端口探测判断存活；一起装/起/停请用 fundeploy service funflix-web。"
-  echo "  • funread / funread-web 由 fundeploy 管理 PID/日志；一起装/起/停请用 fundeploy service funread-web。"
+  echo "  • funread-api / funread-web 各自管理自己的 PID/日志，此表仅按端口探测判断存活；一起装/起/停请用 fundeploy service funread-web。"
   echo "  • funlesson-api / funlesson-web 各自管理自己的 PID/日志，此表仅按端口探测判断存活；一起装/起/停请用 fundeploy service funlesson-web。"
   echo "  • funfluid-api / funfluid-web 各自管理自己的 PID/日志，此表仅按端口探测判断存活；一起装/起/停请用 fundeploy service funfluid-web。"
   echo "  • fungame-backend / fungame-admin / fungame-client 各自管理自己的 PID/日志，此表仅按端口探测判断存活；一起装/起/停请用 fundeploy service fungame-web。"
-  echo "  • 安装路径: airflow ${AIRFLOW_HOME} | celery ${CELERY_HOME} | paperclip ${PAPERCLIP_HOME} | code-server ${CODE_SERVER_SERVICE_HOME} | new-api ${NEW_API_SERVICE_HOME} | sub2api ${SUB2API_SERVICE_HOME} | funread-web ${FUNREAD_WEB_SERVICE_HOME}"
+  echo "  • 安装路径: airflow ${AIRFLOW_HOME} | celery ${CELERY_HOME} | paperclip ${PAPERCLIP_HOME} | code-server ${CODE_SERVER_SERVICE_HOME} | new-api ${NEW_API_SERVICE_HOME} | sub2api ${SUB2API_SERVICE_HOME}"
   echo "  • 详情: fundeploy service <服务> status"
   echo ""
   echo "工具（无统一守护进程）: fundeploy dev / fundeploy tool"

@@ -7,9 +7,23 @@
 
 ### 新增
 
-- 无
+- `funread-web`：新增 `upgrade`（装完额外打印前后端的版本对比）与
+  `rollback <版本>`（前后端一起钉到同一版本，回退前在跑就装完自动起回来）。
+  `rollback` 会先用 `npm view` 确认私有源上真有这个版本再动安装——`install` 的
+  顺序是先后端后前端，前端拉不到而后端已经降级的话，会停在前后端版本不一致的
+  中间态上。npm 上 `@farfarfun/funread-web` 的版本号是跳着的（`1.1.106`–`1.1.108`
+  三次发版都因到 Codeup registry 的链路丢包而从未发布成功），所以这个前置检查
+  不是多余的。
 
 ### 修复
+
+- `fundeploy service status`：`FUNREAD_WEB_SERVICE_HOME` 在「安装路径」那行仍被
+  展开，但它的赋值已随 funread-web 改走正式包而删掉了，`set -u` 下该行会以
+  `unbound variable` 中断整条命令：状态表已经打出来了，但「安装路径」及其后的
+  「详情」「工具」三行全丢，退出码变成 1——拿退出码判断的调用方会把一次正常的
+  status 当成失败。funread-web 不再有安装目录（后端在 uv tool / pip 的环境里，
+  前端是全局 npm 包），已从该行移除，与同样装正式包的 funflix-web /
+  funlesson-web 一致。
 
 - `celery`：Flower 的 basic auth 凭据不再以 `--basic-auth=user:pass` 形式进入
   命令行。守护进程存活期间该参数一直在 `/proc/<pid>/cmdline` 里，而这个文件对
@@ -44,6 +58,23 @@
   重复的独立「许可证」小节；服务清单补上 `funmill` / `funfluid-web` /
   `fungame-web`，并写明「默认只监听回环」的约定。
 - CHANGELOG：修正 `[0.1.15]` 的错误归属（见下）。
+- **破坏性**：`funread-web` 从「源码构建」改为「装正式包 + 转发上游 CLI」，与
+  funflix-web / funlesson-web 对齐。后端由 `funread[api]` 装进脚本自建的 venv
+  改为装 PyPI 上的 `funread-api`（uv tool / pip 自适应，复用机器上已有的那一份）；
+  前端由 `git clone` + `pnpm run build` 改为装私有 npm 上的
+  `@farfarfun/funread-web`。PID 与日志不再由本脚本 `nohup` 托管，改由两个 CLI
+  各自写在实际解析到的 config 同目录下，`start`/`run`/`stop`/`status` 只是转发
+  `funread-api server …` 与 `funread-web server …`。
+  **迁移**：`FUNREAD_WEB_SERVICE_HOME` / `FUNREAD_WEB_GIT_URL` /
+  `FUNREAD_WEB_GIT_REF` / `FUNREAD_WEB_PYTHON_BIN` 四个变量已移除，改用
+  `FUNREAD_WEB_{BACKEND,FRONTEND}_{PACKAGE,VERSION,CONFIG}`；旧的
+  `~/opt/funread-web` 不会被自动清理，确认服务已按新路径起得来之后手动删掉即可。
+  前端在私有源上，首次安装前机器上需要一次性的 scope 映射
+  （`npm config set @farfarfun:registry …`，pnpm 不接受命令行覆盖）。
+  `install`/`upgrade`/`rollback` 故意不转调上游 CLI 的同名命令：`funread-api upgrade`
+  写死 `uv tool install`、`funread-web upgrade` 写死 `npm install -g`，在用 pip /
+  pnpm 装过的机器上会各装出第二份副本，PATH 里仍是旧版——升级看着成功其实没生效。
+  `install` 后会核对「刚装的那份是不是 PATH 上会跑到的那份」，不一致就告警。
 - `funflix-web`：前端 npm 包名跟随上游改为 `@farfarfun/funflix-web`（bin 名仍是
   `funflix-web`，与 `funfluid-web` 的写法对齐）。`install` / `upgrade` 会先摘掉
   改 scope 前装的裸名全局包——它占着 `bin/funflix-web`，不清掉新包会在建 bin

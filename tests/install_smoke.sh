@@ -290,8 +290,17 @@ for service in funflix-web funread-web funlesson-web funfluid-web fungame-web; d
   grep -q '^  run ' <<<"${out}" || exit 1
 done
 
+# funread-web 已和 funflix-web / funlesson-web 一样改为「装正式包 + 转发上游 CLI」：
+# start/run/stop/status 都是转发给 funread-api / funread-web 自己的 server 子命令，
+# PID 与日志归那两个 CLI 管，脚本里不再有 Bash 托管的 .run/ 目录。这里正反各断一条，
+# 防止哪天又退回到脚本自己 nohup + 写 PID 文件的旧形态。负向断言特意写成带斜杠的
+# `.run/` 目录形式，而不是裸 `nohup`：文件头注释里就有「不 nohup」这句话，按词断言会误命中。
 out="$(NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" service funread-web --help)"
-grep -q '\.run' "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/funread-web/setup.sh" || exit 1
+grep -q '^  rollback ' <<<"${out}" || exit 1
+funread_setup="${FUNDEPLOY_ROOT}/libexec/fundeploy/services/funread-web/setup.sh"
+grep -q 'funread-api server start' "${funread_setup}" || exit 1
+grep -q 'funread-web server start' "${funread_setup}" || exit 1
+! grep -qE '^[^#]*\.run/' "${funread_setup}" || exit 1
 NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" dev --help >/dev/null || exit 1
 out="$(NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" tool list)"
 grep -q "brew" <<<"${out}" || exit 1
