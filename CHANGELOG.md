@@ -9,7 +9,8 @@
 
 - `paperclip`：补上上游早已有、而本脚本一直没暴露的一等公民命令：
   `check [canary|prod]`（只查版本不改动任何东西）、`rollback`（回退到 install store
-  里保留的上一份 payload）、`doctor [--repair]`、`health`、`channels`，以及
+  里保留的上一份 payload）、`backup`（官方 `db:backup`）、`doctor [--repair]`、
+  `health`、`channels`，以及
   `service-install`（透传 `--enable-linger` / `--no-start-on-login` /
   `--no-start-now`——此前 fundeploy 管理的 Paperclip 根本不会开机自启：`start` 内部的
   `ensureCurrent()` 会自愈 systemd 单元文件，但 `systemctl --user enable` 和
@@ -37,11 +38,6 @@
   上游的交互提示上。现在先问 `update --check --json`：`downgrade:true` 时经
   `fundeploy_confirm_destructive` 确认后才补 `-y`，`updateAvailable:false` 时直接跳过
   （不再白停一次服务）。
-- `paperclip`：服务本来就没在跑时 `upgrade` / `rollback` 会在第一步中止。升级前备份
-  刻意放在停服之前（embedded PostgreSQL 是服务的子进程、随服务一起停，停完再让官方
-  `update` 自己备份就是空转，所以是自己先备份一次再传 `--no-backup`），但服务已经停着
-  时那个库也没在跑，`db:backup` 必然连不上，`set -e` 下整条升级就断在这里。现在先探
-  数据库端口，连不上就跳过备份并说明原因——数据在磁盘上，换 payload 不会动它。
 - `paperclip`：无服务管理器时 fundeploy 托管的后台进程缺 `</dev/null`，会继承调用者的
   终端 stdin，在交互式 shell 里一读 stdin 就被 `SIGTTIN` 停住，表现为「起来了但没响应」。
 - `paperclip`：消毒用的临时 npmrc 会泄漏到 `/tmp`。它此前在脚本顶层无条件创建并挂
@@ -119,7 +115,7 @@
 ### 变更
 
 - **破坏性**：`paperclip` 整体重构为「直驱官方 CLI」，删掉约 430 行自造机制
-  （1240 行 → 1066 行，其中代码 736 行，与兄弟脚本的 589 / 614 持平）。
+  （1240 行 → 1074 行，其中代码 742 行，与兄弟脚本的 589 / 614 持平）。
   删掉的两大块：
   （1）约 295 行 npm 镜像预装机制。它要解决「依赖树 1.4G 下得慢」，但上游把
   `registry.npmjs.org` 在 `install.sh` 和 `cli/src/commands/install.ts` 两层硬钉死
@@ -136,6 +132,16 @@
   （设了也从来没能改变实际下载源）。受限网络改用 `PAPERCLIP_HTTPS_PROXY` +
   `PAPERCLIP_NO_PROXY`——那是唯一能透进官方 managed install 的通道；
   `PAPERCLIP_NPM_FETCH_*`（取回重试与超时）和 `PAPERCLIP_INSTALL_VIA_NPX` 保留。
+- **破坏性**：`paperclip` 的 `upgrade` / `rollback` 不再自动备份数据库，备份提成独立的
+  `backup` 命令（转调官方 `db:backup`）。`update` 换的是 payload，不会动
+  `instances/<id>/db` 里的数据，payload 要退回去有 `rollback`；而一次备份在实测机器上
+  是 370M、耗时数十秒，每次升级都付这个代价并不划算。给官方 `update` 一并传了
+  `--no-backup`，把它自己那次 pre-update 备份也关掉。顺带去掉了「服务停着时升级会在第
+  一步中止」这个失败模式——embedded PostgreSQL 是服务的子进程、随服务一起停，停着时
+  `db:backup` 必然连不上，`set -e` 下整条升级就断在那里；现在没有这一步了。
+  **迁移**：原先依赖升级自动留一份备份的，改为先 `backup` 再 `upgrade`。embedded
+  PostgreSQL 模式下 `backup` 要求服务在跑，停着时会在调用上游之前就报错并提示先
+  `start`，而不是丢一个连接错误出来；用外部数据库的实例与服务生命周期无关，停着也能备。
 - `paperclip`：仍不采用官方文档推荐的 `curl -O https://paperclip.ing/install.sh`
   + sha256 引导路径，因为那条路径当前是坏的：`paperclip.ing` 上那份（文档指向、
   也是唯一发布了 `.sha256` 的）落后于 master 的 #11792，给 CLI 传了 `install` 并不

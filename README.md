@@ -132,14 +132,19 @@ brew uninstall fundeploy
 
 - `fundeploy service status`：服务总览
 - `fundeploy service airflow|celery|paperclip|code-server|new-api|sub2api|funmill|open-pencil|funflix-web|funread-web|funlesson-web|funfluid-web|fungame-web`
-- `fundeploy service paperclip install|install-canary|check|upgrade|rollback|doctor|health|channels|onboard|service-install|plugin|start|run|stop|restart|status|logs|uninstall`：
+- `fundeploy service paperclip install|install-canary|check|upgrade|rollback|backup|doctor|health|channels|onboard|service-install|plugin|start|run|stop|restart|status|logs|uninstall`：
   全部直驱 Paperclip 官方 CLI（`npx paperclipai@latest install --yes` 的 managed install，即
   `INSTALLING.md` 记载的正式路径），不引入官方 `install.sh` —— `paperclip.ing` 上那份是过期快照
   （给 CLI 传了它不接受的 `--no-prompt`、`MIN_NODE_MAJOR=20`、用 bash 4 语法在 macOS 自带 bash 3.2 上崩），
   master 上那份正确的没有发布 `.sha256`，且它的 Node 引导见到 `~/.nvm` 就直接硬退出
-- `check` 只查版本不改动任何东西；`upgrade [canary|prod]` 是「备份 → 停服 → 官方 `update` →
+- `check` 只查版本不改动任何东西；`upgrade [canary|prod]` 是「停服 → 官方 `update` →
   `doctor --repair` → 重启 → 健康检查」；canary 机器上 `upgrade prod` 是降级，需交互确认或
   `PAPERCLIP_UPGRADE_YES=1`；`rollback` 回退到 install store 里保留的上一份 payload
+- `upgrade` 不做数据库备份（官方 `update` 自己那次也用 `--no-backup` 关掉了）：它换的是
+  payload，不动数据目录，退回去有 `rollback`，而一次备份在实测机器上是 370M、耗时数十秒。
+  需要备份时显式执行 `backup`（官方 `db:backup`）。embedded PostgreSQL 是服务的子进程，
+  那种模式下 `backup` 要求服务在跑，停着时会在调用上游之前就报错并提示先 `start`；
+  用外部数据库（`database.connectionString`）的实例与服务生命周期无关，停着也能备
 - `start|stop|restart|status|logs` 优先转发到 Paperclip 官方 `service` 命令（Linux systemd user /
   macOS LaunchAgent）；检测不到服务管理器的机器（容器、WSL1、无登录会话）上官方命令只会打印一句
   「不支持」就以 0 退出、什么都不启动，此时自动改由 fundeploy 用 nohup + PID 文件托管后台进程并等

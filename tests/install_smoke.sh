@@ -193,10 +193,9 @@ PAPERCLIP_HOME="${PAPERCLIP_TEST_HOME}" PAPERCLIP_NODE_MIN_VERSION=0 \
   bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/paperclip/setup.sh" check prod |
   grep -Fq '2026.1008.0' || exit 1
 
-# nc 既要记录探测过哪些端口，也要模拟真实时序：service stop 之前端口是开着的（升级前
-# 备份要连得上 embedded PostgreSQL），停完必须变成关闭的（否则 upgrade 的「停服后端口
-# 必须已释放」护栏会判定服务还在跑并中止升级），service start 之后又要重新开着（健康
-# 检查才能通过）。
+# nc 既要记录探测过哪些端口，也要模拟真实时序：service stop 之后端口必须变成关闭的
+# （否则 upgrade 的「停服后端口必须已释放」护栏会判定服务还在跑并中止升级），service
+# start 之后又要重新开着（健康检查才能通过）。backup 的前置检查也读这个状态。
 nc() {
   printf '%s\n' "$*" >>"${PAPERCLIP_PORT_MARKER}"
   [[ ! -f "${PAPERCLIP_STOPPED_MARKER}" ]] || [[ -f "${PAPERCLIP_STARTED_MARKER}" ]]
@@ -212,12 +211,13 @@ export -f nc curl
 rm -f "${PAPERCLIP_STARTED_MARKER}" "${PAPERCLIP_STOPPED_MARKER}"
 PAPERCLIP_HOME="${PAPERCLIP_TEST_HOME}" PAPERCLIP_NODE_MIN_VERSION=0 \
   bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/paperclip/setup.sh" update prod >/dev/null || exit 1
-# 备份刻意在停服之前（embedded PostgreSQL 随服务一起停，停完再备份是空转），所以给官方
-# update 传 --no-backup；doctor --repair 取代了此前三段 macOS arm64 专属补丁，且刻意在
-# start 之前（官方 paperclipai run 自己也是 onboard + doctor --repair 后才启动）；start
+# 升级不碰数据库：给官方 update 传 --no-backup 关掉它自己那次 pre-update 备份，备份是
+# 单独的 backup 命令（见下）；doctor --repair 取代了此前三段 macOS arm64 专属补丁，且刻意
+# 在 start 之前（官方 paperclipai run 自己也是 onboard + doctor --repair 后才启动）；start
 # 先探一次 service status --json，才能决定走官方 supervisor 还是 fundeploy 自管的后台
 # 进程（容器 / WSL1 / 无登录会话的机器上官方 service start 是空转）。
-[[ "$(tail -n 6 "${PAPERCLIP_CLI_MARKER}")" == $'db:backup\nservice stop\nupdate --latest --no-backup\ndoctor --repair --yes\nservice status --json\nservice start' ]] || exit 1
+[[ "$(tail -n 5 "${PAPERCLIP_CLI_MARKER}")" == $'service stop\nupdate --latest --no-backup\ndoctor --repair --yes\nservice status --json\nservice start' ]] || exit 1
+! grep -Fxq -- 'db:backup' "${PAPERCLIP_CLI_MARKER}" || exit 1
 grep -Fxq -- '-z 127.0.0.1 5432' "${PAPERCLIP_PORT_MARKER}" || exit 1
 grep -Fxq -- '-z 127.0.0.1 8804' "${PAPERCLIP_PORT_MARKER}" || exit 1
 grep -Fq -- 'http://127.0.0.1:8804/api/health' "${PAPERCLIP_HEALTH_MARKER}" || exit 1
@@ -225,20 +225,20 @@ grep -Fq -- 'http://127.0.0.1:8804/api/health' "${PAPERCLIP_HEALTH_MARKER}" || e
 PAPERCLIP_HOME="${PAPERCLIP_TEST_HOME}" PAPERCLIP_NODE_MIN_VERSION=0 PAPERCLIP_UNINSTALL_YES=1 \
   bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/paperclip/setup.sh" uninstall >/dev/null || exit 1
 for expected in "service start" "service stop" "service restart --wait" "service status --json" "service logs -f" \
-  "doctor" "health" "channels" "update --latest --check --json" "db:backup" "update --latest --no-backup" \
+  "doctor" "health" "channels" "update --latest --check --json" "update --latest --no-backup" \
   "doctor --repair --yes" "service uninstall" "uninstall"; do
   grep -Fxq -- "$expected" "${PAPERCLIP_CLI_MARKER}" || exit 1
 done
 
 # canary 机器上 --latest 指向的 stable 常比当前版本旧，官方 update 把这种情况当显式降级、
-# 要求 -y 确认。非交互且未显式确认时必须在动手之前就拒绝（连备份都不做），否则会卡在
+# 要求 -y 确认。非交互且未显式确认时必须在动手之前就拒绝（连服务都不停），否则会卡在
 # update 自己的交互提示上。
 : >"${PAPERCLIP_CLI_MARKER}"
 rm -f "${PAPERCLIP_STARTED_MARKER}" "${PAPERCLIP_STOPPED_MARKER}"
 NONINTERACTIVE=1 PAPERCLIP_HOME="${PAPERCLIP_TEST_HOME}" PAPERCLIP_NODE_MIN_VERSION=0 \
   bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/paperclip/setup.sh" upgrade canary >/dev/null 2>&1 && exit 1
 grep -Fxq -- 'update --canary --check --json' "${PAPERCLIP_CLI_MARKER}" || exit 1
-! grep -Fxq -- 'db:backup' "${PAPERCLIP_CLI_MARKER}" || exit 1
+! grep -Fxq -- 'service stop' "${PAPERCLIP_CLI_MARKER}" || exit 1
 # 显式确认后才补 -y 交给官方 update。
 : >"${PAPERCLIP_CLI_MARKER}"
 NONINTERACTIVE=1 PAPERCLIP_UPGRADE_YES=1 PAPERCLIP_HOME="${PAPERCLIP_TEST_HOME}" PAPERCLIP_NODE_MIN_VERSION=0 \
@@ -246,14 +246,28 @@ NONINTERACTIVE=1 PAPERCLIP_UPGRADE_YES=1 PAPERCLIP_HOME="${PAPERCLIP_TEST_HOME}"
 grep -Fxq -- 'update --canary -y --no-backup' "${PAPERCLIP_CLI_MARKER}" || exit 1
 
 # rollback 与 upgrade 共用同一套停服 → update → doctor --repair → 重启编排。
-# 这次从「服务已经停着」开始：embedded PostgreSQL 随服务一起停，连不上，升级前备份必须
-# 跳过而不是让 db:backup 失败把整个 rollback 中止掉。
+# 这次从「服务已经停着」开始：停着的机器上整条编排也要能走完，不能被任何「要求服务在跑」
+# 的前置步骤卡住。
 : >"${PAPERCLIP_CLI_MARKER}"
 rm -f "${PAPERCLIP_STARTED_MARKER}"
 : >"${PAPERCLIP_STOPPED_MARKER}"
 PAPERCLIP_HOME="${PAPERCLIP_TEST_HOME}" PAPERCLIP_NODE_MIN_VERSION=0 \
   bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/paperclip/setup.sh" rollback >/dev/null || exit 1
 [[ "$(<"${PAPERCLIP_CLI_MARKER}")" == $'service stop\nupdate --rollback --no-backup\ndoctor --repair --yes\nservice status --json\nservice start' ]] || exit 1
+
+# backup 是独立命令（upgrade 不再自动备份）：只转调官方 db:backup，不碰服务。
+# embedded PostgreSQL 是服务的子进程，服务停着它也没在跑，这时必须在调用之前就拒绝，
+# 而不是把上游的连接错误丢给用户。
+: >"${PAPERCLIP_CLI_MARKER}"
+rm -f "${PAPERCLIP_STARTED_MARKER}"
+: >"${PAPERCLIP_STOPPED_MARKER}"
+PAPERCLIP_HOME="${PAPERCLIP_TEST_HOME}" PAPERCLIP_NODE_MIN_VERSION=0 \
+  bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/paperclip/setup.sh" backup >/dev/null 2>&1 && exit 1
+[[ ! -s "${PAPERCLIP_CLI_MARKER}" ]] || exit 1
+: >"${PAPERCLIP_STARTED_MARKER}"
+PAPERCLIP_HOME="${PAPERCLIP_TEST_HOME}" PAPERCLIP_NODE_MIN_VERSION=0 \
+  bash "${FUNDEPLOY_ROOT}/libexec/fundeploy/services/paperclip/setup.sh" backup >/dev/null || exit 1
+[[ "$(<"${PAPERCLIP_CLI_MARKER}")" == 'db:backup' ]] || exit 1
 
 PAPERCLIP_PLUGIN_MARKER="${TMP}/paperclip-plugin-installed"
 gum() {

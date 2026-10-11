@@ -44,8 +44,8 @@
 #     就会把正在运行的 payload 删掉。
 #   - canary 机器上 `--latest` 指向的 stable 往往比当前版本旧，官方 update 把这种情况
 #     当显式降级、要求 -y 确认，不处理的话非交互环境里会卡住。
-#   - 官方 update 的 pre-update 数据库备份要连得上数据库，而 embedded PostgreSQL 随服务
-#     一起停；所以备份必须在停服之前自己做一次，再给 update 传 --no-backup。
+#   - 官方 update 每次都会先备一次数据库（本机 370M、耗时数十秒），而它换的是 payload、
+#     不动数据目录；所以统一传 --no-backup，备份提成单独的 backup 命令按需执行。
 #
 # 依赖: Node.js 24.11+（只有 npx 引导首次安装那一步需要；此后 shim 用绝对路径钉死了
 #   自己那份 node）、curl；可选 nc（端口探测，缺了用 /dev/tcp）。
@@ -55,8 +55,9 @@
 #   ./setup.sh install              # 官方 managed install（正式版）
 #   ./setup.sh install-canary       # 官方 managed install（开发版）
 #   ./setup.sh check [canary|prod]  # 只看有没有新版，不改动任何东西
-#   ./setup.sh upgrade [canary|prod]# 备份 → 停服 → 官方 update → doctor --repair → 重启
+#   ./setup.sh upgrade [canary|prod]# 停服 → 官方 update → doctor --repair → 重启（不备份）
 #   ./setup.sh rollback             # 回退到 install store 里保留的上一份 payload
+#   ./setup.sh backup               # 备份数据库（官方 db:backup）
 #   ./setup.sh doctor [--repair]    # 官方诊断（--repair 尝试自动修复）
 #   ./setup.sh health               # 官方健康检查（不可达时返回非 0）
 #   ./setup.sh channels             # 查看发布通道和当前跟随的通道
@@ -125,9 +126,12 @@ usage() {
   install          官方 managed install（正式版；别名 install-prod）
   install-canary   官方 managed install（开发版）
   check [canary|prod]   只查有没有新版，不改动任何东西（官方 update --check --json）
-  upgrade [canary|prod] 备份 → 停服 → 官方 update → doctor --repair → 重启 → 健康检查
+  upgrade [canary|prod] 停服 → 官方 update → doctor --repair → 重启 → 健康检查
                         默认 canary；别名 update。降级需确认（见 PAPERCLIP_UPGRADE_YES）
+                        不做数据库备份，需要的话先执行 backup
   rollback         回退到 install store 里保留的上一份 payload（官方 update --rollback）
+  backup           备份数据库（官方 db:backup）；embedded PostgreSQL 模式下要求服务在跑
+                   （它是服务的子进程），外部数据库与服务生命周期无关、停着也能备
   channels         查看发布通道（stable / beta / nightly / canary）和当前跟随的通道
 
 诊断与配置:
@@ -680,26 +684,16 @@ paperclip_wait_for_update_health() {
   die "Paperclip 升级后未在 ${PAPERCLIP_UPDATE_HEALTH_TIMEOUT_SEC} 秒内通过健康检查（payload 已更新，服务可能仍在启动，可用 $0 status / logs 确认）"
 }
 
-# 备份 → 停服 → 一次官方 update（参数由调用方给）→ doctor --repair → 重启 → 健康检查。
+# 停服 → 一次官方 update（参数由调用方给）→ doctor --repair → 重启 → 健康检查。
 # upgrade 和 rollback 共用这套编排。
+#
+# 刻意不做升级前备份，也给官方 update 传 --no-backup 关掉它自己那次：实测一次备份 370M、
+# 耗时数十秒，而 update 换的是 payload，不会动 ${PAPERCLIP_DATABASE_DIR} 里的数据，payload
+# 要退回去有 rollback。备份是单独的 cmd_backup，需要就先执行一次再升级。
 paperclip_apply_update() {
   local -a update_args=("$@")
 
   paperclip_load_config
-  # 备份刻意放在停服之前：官方 update 的 pre-update 备份要连得上数据库，而 embedded
-  # PostgreSQL 是服务的子进程、随服务一起停，停完再让它备份就是空转。所以先自己备份
-  # 一次，再给 update 传 --no-backup。
-  #
-  # 服务本来就没在跑时 embedded PostgreSQL 也没在跑，db:backup 必然连不上。那种情况跳过
-  # 而不是中止升级：数据就在 ${PAPERCLIP_DATABASE_DIR} 的磁盘上，换 payload 不会动它，
-  # 真正需要备份的是「运行中的库可能正在写」这一种。外部数据库与服务生命周期无关，照备。
-  if [[ -f "${PAPERCLIP_CONFIG_PATH}" ]] &&
-    { [[ "${PAPERCLIP_DATABASE_MODE}" != "embedded-postgres" ]] || paperclip_port_open "${PAPERCLIP_DATABASE_PORT}"; }; then
-    paperclip_cli db:backup
-  elif [[ -f "${PAPERCLIP_CONFIG_PATH}" ]]; then
-    echo "==> 跳过升级前备份：embedded PostgreSQL 未在运行（数据仍在 ${PAPERCLIP_DATABASE_DIR}，换 payload 不会改动它）" >&2
-  fi
-
   # 两条通道都要停：官方 service stop 在无服务管理器的机器上会「假成功」（返回 0 且
   # 什么都没停），fundeploy 托管的那个进程只能从 PID 文件收。刻意不走 cmd_stop ——
   # 它在 PAPERCLIP_FALLBACK=off 时会 die，而这里要的是尽力而为，真正的护栏是紧随
@@ -764,7 +758,7 @@ cmd_upgrade() {
       # 当显式降级、要求 -y 确认，不补的话非交互环境里会卡住。
       echo "==> ${channel} 通道的 ${PAPERCLIP_UPDATE_TARGET} 比当前 ${PAPERCLIP_UPDATE_CURRENT} 旧，这是一次降级。" >&2
       fundeploy_confirm_destructive \
-        "确认把 Paperclip 从 ${PAPERCLIP_UPDATE_CURRENT} 降级到 ${PAPERCLIP_UPDATE_TARGET}？（会先备份数据库）" \
+        "确认把 Paperclip 从 ${PAPERCLIP_UPDATE_CURRENT} 降级到 ${PAPERCLIP_UPDATE_TARGET}？（不备份数据库，需要先 $0 backup）" \
         PAPERCLIP_UPGRADE_YES || return 1
       update_args+=(-y)
     elif [[ "${PAPERCLIP_UPDATE_AVAILABLE}" != "true" ]]; then
@@ -781,6 +775,17 @@ cmd_upgrade() {
 cmd_rollback() {
   paperclip_prepare_npm_env
   paperclip_apply_update --rollback
+}
+
+# 独立的备份命令。upgrade 以前每次都自动备一次（本机 370M、耗时数十秒），现在不再自动做，
+# 需要就显式执行这个。embedded PostgreSQL 是服务的子进程，服务停着它也没在跑、db:backup
+# 必然连不上——在这里先说清楚，而不是把上游的连接错误丢给用户自己猜。
+cmd_backup() {
+  paperclip_load_config
+  if [[ "${PAPERCLIP_DATABASE_MODE}" == "embedded-postgres" ]] && ! paperclip_port_open "${PAPERCLIP_DATABASE_PORT}"; then
+    die "embedded PostgreSQL 未在监听 ${PAPERCLIP_DATABASE_PORT}（它随 Paperclip 一起停），请先 $0 start 再备份"
+  fi
+  paperclip_cli db:backup "$@"
 }
 
 cmd_channels() { paperclip_cli channels "$@"; }
@@ -988,6 +993,7 @@ dispatch() {
     check) cmd_check "$@" ;;
     update | upgrade) cmd_upgrade "$@" ;;
     rollback) cmd_rollback "$@" ;;
+    backup) cmd_backup "$@" ;;
     channels) cmd_channels "$@" ;;
     doctor) cmd_doctor "$@" ;;
     health) cmd_health "$@" ;;
@@ -1017,8 +1023,9 @@ interactive_main() {
       "install-canary  安装开发版（官方 managed install）" \
       "install-prod    安装正式版（官方 managed install）" \
       "check           只查有没有新版，不改动任何东西" \
-      "upgrade         备份 → 停服 → 官方 update → 修复 → 重启" \
+      "upgrade         停服 → 官方 update → 修复 → 重启（不备份）" \
       "rollback        回退到保留的上一份 payload" \
+      "backup          备份数据库（embedded 模式需服务在跑）" \
       "channels        查看发布通道与当前跟随的通道" \
       "doctor          官方诊断（只读）" \
       "doctor-repair   官方诊断并尝试自动修复" \
