@@ -143,7 +143,15 @@ brew uninstall fundeploy
 - `fundeploy service funread-web install|upgrade|rollback <版本>|start|run|stop|restart|status|uninstall`：
   funread-api（后端，PyPI，依赖核心库 funread）+ @farfarfun/funread-web（前端，私有 npm）一起装/起/停，只提供合并命令。
   浏览器只访问前端端口（阅读端 `/web`，管理端 `/admin`），前端把 `/api` 与 `/healthz` 反代到后端，直连后端会撞 CORS。
-  新机器装完先 `funread-api accounts create-admin <用户名>` 建管理员——注册由邀请码控制，没码注册不进去
+  新机器装完先 `funread-api accounts create-admin <用户名>` 建管理员——注册由邀请码控制，没码注册不进去。
+  两个 CLI 的 `server start` 都要求自己的 `config.toml` 已存在（1.1.111–1.1.113 上缺了只报一句
+  `config file not found`），`install` / `start` / `run` 会在默认路径下按需补一份；
+  显式设了 `FUNREAD_WEB_{BACKEND,FRONTEND}_CONFIG` 的路径不代建。
+  默认路径问 CLI 自己（`server status` 会打 `config <路径>`），不按版本猜：funread 1.1.114 把配置目录
+  从 `${XDG_CONFIG_HOME:-~/.config}/farfarfun/funread-{api,web}/` 换到了 `~/.farfarfun/funread/{api,web}/`，
+  而 `rollback 1.1.113` 能把机器退回旧布局。
+  `upgrade` 与 `rollback` 都会先停服再换包、装完按原状态起回来——在跑着的进程底下换全局 npm 包，
+  node 还开着那棵树里的文件；存活判断走端口探测，因为 PID 文件的位置本身会随版本变
 - `fundeploy service funlesson-web install|start|run|stop|restart|status|uninstall`：funlesson-api（后端，私有
   PyPI）+ funlesson-web（前端，私有 npm）一起装/起/停，只提供合并命令
 - `fundeploy service funfluid-web install|start|run|stop|restart|status|uninstall`：funfluid-api（后端）

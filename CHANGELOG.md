@@ -17,6 +17,38 @@
 
 ### 修复
 
+- `funread-web`：`install` / `start` / `run` 会在默认配置目录下按需补一份
+  `config.toml`，不补的话新机器上 `start` 必然失败。funread 1.1.111 的两个 CLI
+  共享同一处缺陷：`server start` 把它自己解析出来的**默认** config 路径原样以
+  `--config` 传给 fork 出的子进程，而上游对「显式指定的 config 不存在」是硬错误
+  （默认路径不存在本来是容许的）。于是 `fundeploy service funread-web install`
+  成功之后紧跟的 `start` 退出码 1，日志里只有一行
+  `error: config file not found: ~/.config/farfarfun/funread-api/config.toml`，
+  看着像包装坏了；而同一份安装 `funread-api server run` 一切正常。上游既没有
+  `init` 也没有 `config` 子命令能生成这个文件，所以由部署侧补上——性质同
+  funflix-web 当初补的「首次部署两步」。生成的内容只有 `[server]` 下的 host /
+  port（真正生效的仍是 `start` 显式传的 `--host`/`--port`，这份文件主要是让上游
+  的存在性检查过关），**不写库地址**，库仍由 `FUNREAD_DATABASE_URL` 或 funsecret
+  决定。显式设置了 `FUNREAD_WEB_{BACKEND,FRONTEND}_CONFIG` 时不代建：用户点名了
+  那个文件，替他凭空造一份只会把「路径写错了」盖掉。
+
+- `funread-web`：上面那份 `config.toml` 写到哪个目录，改成问 CLI（`server status`
+  的输出里带 `config <路径>`，服务没在跑也会打），不再按 funread 的布局自己拼。
+  funread 1.1.114 把配置目录从 `${XDG_CONFIG_HOME:-~/.config}/farfarfun/funread-{api,web}/`
+  换到了 `~/.farfarfun/funread/{api,web}/`，而同一个 fundeploy 要同时伺候两种版本的
+  机器——光是 `rollback 1.1.113` 就能把一台机器退回旧布局。两边任选一个写死，都会让
+  这份配置建到 CLI 根本不看的位置，症状和它要修的那个缺陷一模一样（`start` 报
+  `config file not found`），而且更难查：日志里明明有一行「已生成配置」。CLI 问不出来
+  （没装、或上游改了输出格式）才退到新布局的硬编码值。
+
+- `funread-web`：`upgrade` 改为「先停服 → 装新版 → 打印版本对比 → 原先在跑就起回来」，
+  与 `rollback` 一致。此前它在跑着的进程底下直接换包：前端是全局 npm 包，node 还开着
+  那棵树里的文件，装一半的产物会被新请求读到；后端换 uv tool / pip 环境同理。
+  1.1.113 → 1.1.114 这一跳还多一个一次性的坑——旧进程的 PID 文件写在**旧**配置目录里，
+  升级后的 CLI 只看新目录，于是 `stop` 报「not running」而端口还被占着，接着 `start`
+  又撞 address in use。存活判断走端口探测而不是 PID 文件，正是因为 PID 文件的位置本身
+  会随版本变，端口不会。
+
 - `fundeploy service status`：`FUNREAD_WEB_SERVICE_HOME` 在「安装路径」那行仍被
   展开，但它的赋值已随 funread-web 改走正式包而删掉了，`set -u` 下该行会以
   `unbound variable` 中断整条命令：状态表已经打出来了，但「安装路径」及其后的

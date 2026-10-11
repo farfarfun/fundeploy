@@ -11,7 +11,9 @@
 #
 # 前后端各自已提供 server start|run|restart|stop|status，PID 与日志都写在自己实际
 # 解析到的 config 同目录下。所以本脚本只做「装两个正式包 + 按依赖顺序编排两个 CLI」，
-# 不 nohup、不写 PID 文件、不管日志 —— 那些都是上游 CLI 的责任。
+# 不 nohup、不写 PID 文件、不管日志 —— 那些都是上游 CLI 的责任。唯一的例外是那份
+# config.toml：1.1.111–1.1.113 的 server start 要求它存在，而没有任何命令会生成它，
+# 详见 _ensure_default_config。那个目录具体在哪也不写死，问 CLI，见 _cli_config_dir。
 #
 # 为什么 install/upgrade/rollback 不直接转调上游 CLI 的同名命令：
 #   - funread-api 的 upgrade 跑 `uv tool install --reinstall --upgrade funread-api`，
@@ -32,7 +34,7 @@
 # 用法：
 #   ./setup.sh                      # gum 菜单
 #   ./setup.sh install              # 装后端（uv tool / pip 自适应）+ 前端（pnpm / npm -g）
-#   ./setup.sh upgrade              # 同 install，额外打印升级前后的版本对比
+#   ./setup.sh upgrade              # 先停服，装新版，打印版本对比，原先在跑就起回来
 #   ./setup.sh rollback <版本>      # 前后端一起钉到指定版本（先停，装完恢复原运行状态）
 #   ./setup.sh start                # 先启动后端，再启动前端（自动把 --backend 指向后端）
 #   ./setup.sh run                  # 后端后台 + 前端前台（Ctrl+C 退出时连后端一起停）
@@ -52,6 +54,9 @@
 #   FUNREAD_WEB_FRONTEND_HOST/PORT 前端监听地址与端口（默认 127.0.0.1 / 8811）
 #   FUNREAD_WEB_BACKEND_CONFIG     透传给后端的 --config（默认空＝上游默认路径）
 #   FUNREAD_WEB_FRONTEND_CONFIG    透传给前端的 --config（默认空＝上游默认路径）
+#                                  走默认路径时，install/start/run 会在该目录下补一份
+#                                  缺失的 config.toml（上游 server start 要求它存在，
+#                                  见 _ensure_default_config）；显式指定的路径不代建
 #   FUNREAD_DATABASE_URL           后端库地址，原样继承自环境，本脚本不设默认值
 #   NONINTERACTIVE=1               无参数调用时直接报错而不进菜单
 #   FUNREAD_WEB_UNINSTALL_YES=1    非 TTY 下的卸载确认
@@ -83,22 +88,102 @@ die() {
   exit 1
 }
 
-# 两个 CLI 都把 PID 与日志放在实际解析到的 config 同目录下。这里只用于报错时指路，
-# 脚本自己不读写这些文件。
+# 两个 CLI 都把 config、PID、日志放在同一个目录下。这里用于报错时指路，以及
+# _ensure_default_config 要往哪儿写那份占位配置。
+#
+# 默认路径**不在这里写死**，而是问 CLI 自己。funread 1.1.114 把它从
+# `${XDG_CONFIG_HOME:-~/.config}/farfarfun/funread-{api,web}/` 换成了
+# `~/.farfarfun/funread/{api,web}/`，而同一个 fundeploy 要同时伺候两种版本的机器
+# —— 光是 `rollback 1.1.113` 就能把一台机器退回旧布局。写死任何一边，都会让
+# _ensure_default_config 把文件建到 CLI 根本不看的位置上，症状和它要修的那个 bug
+# 一模一样（start 报 config file not found），而且更难查：文件明明「已生成」。
+#
+# `server status` 不论服务是否在运行都会打印 `config <路径>`，且默认路径缺文件不算
+# 错误，所以这条路随时可问。问不出来（没装、换了输出格式）才退到新布局的硬编码值。
+_FUNREAD_BACKEND_STATE_DIR=""
+_FUNREAD_FRONTEND_STATE_DIR=""
+
+_cli_config_dir() {
+  local cli="$1" fallback="$2" line
+  if command -v "${cli}" >/dev/null 2>&1; then
+    line="$("${cli}" server status 2>/dev/null | sed -n 's/.*config \([^)]*\)).*/\1/p' | head -1)"
+    if [[ -n "${line}" ]]; then
+      dirname "${line}"
+      return 0
+    fi
+  fi
+  printf '%s' "${fallback}"
+}
+
 _backend_state_dir() {
   if [[ -n "${FUNREAD_WEB_BACKEND_CONFIG}" ]]; then
     dirname "${FUNREAD_WEB_BACKEND_CONFIG}"
-  else
-    printf '%s/farfarfun/funread-api' "${XDG_CONFIG_HOME:-${HOME}/.config}"
+    return 0
   fi
+  # 缓存：一条命令里可能问好几次，每次都要起一个 Python 进程。
+  [[ -n "${_FUNREAD_BACKEND_STATE_DIR}" ]] || _FUNREAD_BACKEND_STATE_DIR="$(
+    _cli_config_dir funread-api "${HOME}/.farfarfun/funread/api"
+  )"
+  printf '%s' "${_FUNREAD_BACKEND_STATE_DIR}"
 }
 
 _frontend_state_dir() {
   if [[ -n "${FUNREAD_WEB_FRONTEND_CONFIG}" ]]; then
     dirname "${FUNREAD_WEB_FRONTEND_CONFIG}"
-  else
-    printf '%s/farfarfun/funread-web' "${XDG_CONFIG_HOME:-${HOME}/.config}"
+    return 0
   fi
+  [[ -n "${_FUNREAD_FRONTEND_STATE_DIR}" ]] || _FUNREAD_FRONTEND_STATE_DIR="$(
+    _cli_config_dir funread-web "${HOME}/.farfarfun/funread/web"
+  )"
+  printf '%s' "${_FUNREAD_FRONTEND_STATE_DIR}"
+}
+
+# 1.1.111–1.1.113 的两个 CLI 共享同一个毛病：server start 把它自己解析出来的「默认」config
+# 路径当成用户显式指定的，原样以 --config 传给 fork 出的子进程，而上游对「显式指定
+# 的 config 不存在」是硬错误（默认路径不存在本来是容许的）。于是新机器上 start 必然
+# 失败，日志里只有一行 config file not found，看着像装坏了；同一份安装 server run
+# 却完全正常。缺的就是一个谁都没负责生成的文件，部署侧把它补上 —— 和 funflix-web
+# 当初补的「首次部署两步」同一性质。
+#
+# 只在走默认路径时补。用户显式设了 FUNREAD_WEB_*_CONFIG 却指向不存在的文件时，上游
+# 报错是对的（他点名了这个文件），替他凭空造一份只会把「路径写错了」这件事盖掉。
+_ensure_default_config() {
+  local label="$1" explicit="$2" dir="$3" host="$4" port="$5" cfg
+  [[ -z "${explicit}" ]] || return 0
+  cfg="${dir}/config.toml"
+  [[ -e "${cfg}" ]] && return 0
+  mkdir -p "${dir}" 2>/dev/null || {
+    echo "警告: 建不出 ${dir}，${label}的 server start 可能仍会报 config file not found" >&2
+    return 0
+  }
+  chmod 700 "${dir}" 2>/dev/null || true
+  # 这里必须是 `if ! cat <<EOF ... EOF then`：heredoc 的正文从 `<<EOF` 所在行的下一行
+  # 开始，写成 `cat <<EOF || { ... }` 会把紧跟的几行错误处理当成文件内容吞进去。
+  if ! cat >"${cfg}" <<EOF
+# 由 fundeploy 首次安装时生成（${label}）。funread 的 server start 要求这个文件存在，
+# 缺了只会报一行 config file not found —— 内容本身可以是空壳。
+# host/port 以 fundeploy 的 FUNREAD_WEB_* 变量为准：start 时会用显式 --host/--port
+# 盖掉这里的值，改监听地址请改环境变量，不是改这个文件。其他配置项可自行添加。
+# 库地址不写在这里，由 FUNREAD_DATABASE_URL 或 funsecret 决定。
+[server]
+host = "${host}"
+port = ${port}
+EOF
+  then
+    echo "警告: 写不了 ${cfg}，${label}的 server start 可能仍会报 config file not found" >&2
+    rm -f "${cfg}"
+    return 0
+  fi
+  echo "==> 已生成 ${label} 的配置: ${cfg}"
+}
+
+# install / start / run 三处都要补：install 负责让新机器装完就能起，start 与 run
+# 则是给「用旧版 fundeploy 装过、或事后把配置删了」的机器兜底。
+_ensure_default_configs() {
+  _ensure_default_config "后端 funread-api" "${FUNREAD_WEB_BACKEND_CONFIG}" \
+    "$(_backend_state_dir)" "${FUNREAD_WEB_BACKEND_HOST}" "${FUNREAD_WEB_BACKEND_PORT}"
+  _ensure_default_config "前端 funread-web" "${FUNREAD_WEB_FRONTEND_CONFIG}" \
+    "$(_frontend_state_dir)" "${FUNREAD_WEB_FRONTEND_HOST}" "${FUNREAD_WEB_FRONTEND_PORT}"
 }
 
 usage() {
@@ -109,7 +194,7 @@ usage() {
 
 命令:
   install            装 ${FUNREAD_WEB_BACKEND_PACKAGE}（uv tool / pip 自适应）+ ${FUNREAD_WEB_FRONTEND_PACKAGE}（pnpm / npm -g）
-  upgrade            同 install，额外打印升级前后的版本对比
+  upgrade            先停服，装新版，打印版本对比（原先在跑就起回来）
   rollback <版本>    前后端一起钉到指定版本（先停，装完恢复原运行状态）
   start              先启动后端 funread-api，再启动前端 funread-web
   run                后端后台 + 前端前台（Ctrl+C 退出时连后端一起停）
@@ -419,8 +504,27 @@ cmd_install() {
            "私有源 scope 映射缺失？执行一次:" \
            "  npm config set @farfarfun:registry ${FUNREAD_WEB_FRONTEND_REGISTRY}"
 
+  _ensure_default_configs
   _verify_backend_on_path
   echo "已安装。接下来: ./setup.sh start"
+}
+
+# upgrade 与 rollback 共用：换包之前先停服，装完按原来的状态起回来。
+#
+# 在跑着的进程底下换包是错的：前端是全局 npm 包，node 还开着那棵树里的文件，装一半的
+# 产物会被新请求读到；后端换 uv tool / pip 环境同理。另外 1.1.113 -> 1.1.114 这一跳还有
+# 个一次性的坑 —— 旧进程的 PID 文件写在**旧**配置目录里，升级后的 CLI 只看新目录，于是
+# stop 报「not running」而端口还被占着，接着 start 又撞 address in use。先停再装就绕开了。
+#
+# 存活判断走端口而不是 PID 文件，正是因为上面那条：PID 文件的位置本身会变，端口不会。
+_WAS_RUNNING=0
+_stop_if_running() {
+  _WAS_RUNNING=0
+  if [[ -n "$(_fundeploy_listener_pid_for_port "${FUNREAD_WEB_BACKEND_PORT}")" \
+     || -n "$(_fundeploy_listener_pid_for_port "${FUNREAD_WEB_FRONTEND_PORT}")" ]]; then
+    _WAS_RUNNING=1
+    cmd_stop
+  fi
 }
 
 cmd_upgrade() {
@@ -429,6 +533,7 @@ cmd_upgrade() {
   backend_before="$(_backend_version)"
   frontend_before="$(_npm_global_version "${npm_bin}" "${FUNREAD_WEB_FRONTEND_PACKAGE}")"
 
+  _stop_if_running
   cmd_install
 
   # 重新探一次包管理器：首装可能刚把包装到另一个全局 bin 目录下。
@@ -440,10 +545,20 @@ cmd_upgrade() {
   echo "== 版本变化 =="
   echo "后端 ${FUNREAD_WEB_BACKEND_PACKAGE}: ${backend_before:-未安装} -> ${backend_after:-未知}"
   echo "前端 ${FUNREAD_WEB_FRONTEND_PACKAGE}: ${frontend_before:-未安装} -> ${frontend_after:-未知}"
+
+  # 版本对比先打出来：start 万一失败，这几行仍然是用户要的信息。
+  if [[ "${_WAS_RUNNING}" == 1 ]]; then
+    echo ""
+    echo "==> 升级前服务在运行，重新启动"
+    cmd_start
+  else
+    echo ""
+    echo "升级完成（升级前服务未运行，未自动启动）。"
+  fi
 }
 
 cmd_rollback() {
-  local version="${1:-}" npm_bin was_running=0
+  local version="${1:-}" npm_bin
   [[ -n "${version}" ]] || die "rollback 需要版本号，例如: ./setup.sh rollback 1.1.109"
   version="${version#v}"
 
@@ -454,17 +569,13 @@ cmd_rollback() {
     || die "npm 源上没有 ${FUNREAD_WEB_FRONTEND_PACKAGE}@${version}，已中止（没有改动任何安装）。" \
            "注意 npm 上的版本号是跳着的：1.1.106–1.1.108 三次发版都因私有源链路丢包失败，从未发布成功。"
 
-  if [[ -n "$(_fundeploy_listener_pid_for_port "${FUNREAD_WEB_BACKEND_PORT}")" \
-     || -n "$(_fundeploy_listener_pid_for_port "${FUNREAD_WEB_FRONTEND_PORT}")" ]]; then
-    was_running=1
-    cmd_stop
-  fi
+  _stop_if_running
 
   FUNREAD_WEB_BACKEND_VERSION="${version}"
   FUNREAD_WEB_FRONTEND_VERSION="${version}"
   cmd_install
 
-  if [[ "${was_running}" == 1 ]]; then
+  if [[ "${_WAS_RUNNING}" == 1 ]]; then
     echo "==> 回退前服务在运行，重新启动"
     cmd_start
   else
@@ -533,6 +644,7 @@ _die_backend_never_listened() {
 cmd_start() {
   _require_cli funread-api "uv tool / pip 装了 ${FUNREAD_WEB_BACKEND_PACKAGE} 后应在 PATH 中"
   _require_cli funread-web "npm/pnpm -g 装了 ${FUNREAD_WEB_FRONTEND_PACKAGE} 后应在 PATH 中"
+  _ensure_default_configs
   _build_server_args
 
   # start 在目标已经运行时，上游 CLI 会返回非零退出码；这里先看端口是否已被监听，
@@ -570,6 +682,9 @@ cmd_run() {
     || die "后端端口 ${FUNREAD_WEB_BACKEND_PORT} 已被占用；run 不能接管已有进程"
   [[ -z "$(_fundeploy_listener_pid_for_port "${FUNREAD_WEB_FRONTEND_PORT}")" ]] \
     || die "前端端口 ${FUNREAD_WEB_FRONTEND_PORT} 已被占用；run 不能接管已有进程"
+  # run 里前端走 server run（不传 --config，缺文件也不报错），但后端仍是 server start，
+  # 照样需要那个文件。
+  _ensure_default_configs
   _build_server_args
 
   echo "==> 启动后端 funread-api，监听 ${FUNREAD_WEB_BACKEND_HOST}:${FUNREAD_WEB_BACKEND_PORT}"

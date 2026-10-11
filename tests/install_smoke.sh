@@ -301,6 +301,42 @@ funread_setup="${FUNDEPLOY_ROOT}/libexec/fundeploy/services/funread-web/setup.sh
 grep -q 'funread-api server start' "${funread_setup}" || exit 1
 grep -q 'funread-web server start' "${funread_setup}" || exit 1
 ! grep -qE '^[^#]*\.run/' "${funread_setup}" || exit 1
+# funread 1.1.111 的 server start 要求默认 config.toml 已存在（缺了只报一行
+# config file not found，而同一份安装 server run 完全正常），生成它的责任落在部署侧。
+# install / start / run 三处都得调，少一处就是「装完起不来」或「旧机器起不来」。
+# 这里只能按内容断言：真跑一次需要网络装包，而不装包的话 start 会先在 _require_cli
+# 上退出，根本走不到生成配置那一步。
+grep -q '^_ensure_default_configs()' "${funread_setup}" || exit 1
+[[ "$(grep -c '^  _ensure_default_configs$' "${funread_setup}")" == 3 ]] || exit 1
+# 那份 config.toml 写到哪个目录不写死，问 CLI 自己（两个 CLI 的 `server status` 输出里
+# 都带 `config <路径>`，服务没在跑也会打）。funread 1.1.114 把布局从
+# ${XDG_CONFIG_HOME:-~/.config}/farfarfun/funread-{api,web}/ 换到了
+# ~/.farfarfun/funread/{api,web}/，而 `rollback 1.1.113` 能把一台机器退回旧布局，所以
+# 两边任选一个写死都会让配置建到 CLI 不看的地方 —— 症状和它要修的那个缺陷一模一样。
+# 这条不用按内容断言：--help 的说明里就会打出解析到的目录，拿假 CLI 顶上去就能真跑。
+fake_cli="${TMP}/fake-funread-cli"
+mkdir -p "${fake_cli}"
+printf '#!/usr/bin/env bash\necho "funread-api not running (config /opt/probe/api/config.toml)"\n' \
+  >"${fake_cli}/funread-api"
+printf '#!/usr/bin/env bash\necho "funread-web not running (config /opt/probe/web/config.toml)"\n' \
+  >"${fake_cli}/funread-web"
+chmod +x "${fake_cli}/funread-api" "${fake_cli}/funread-web"
+out="$(PATH="${fake_cli}:${PATH}" NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" service funread-web --help)"
+grep -qF '/opt/probe/api/funread-api.{pid,log}' <<<"${out}" || exit 1
+grep -qF '/opt/probe/web/funread-web.{pid,log}' <<<"${out}" || exit 1
+# 问不出来（CLI 没装、跑挂了、或上游改了输出格式）必须退到新布局的默认值，不能退成空串：
+# 空串会让 _ensure_default_config 去写 /config.toml。两个假 CLI 分别覆盖「退出码非 0」
+# 与「有输出但格式不对」这两种问不出来的方式。
+printf '#!/usr/bin/env bash\nexit 1\n' >"${fake_cli}/funread-api"
+printf '#!/usr/bin/env bash\necho "unparseable"\n' >"${fake_cli}/funread-web"
+out="$(PATH="${fake_cli}:${PATH}" NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" service funread-web --help)"
+grep -qF "${HOME}/.farfarfun/funread/api/funread-api.{pid,log}" <<<"${out}" || exit 1
+grep -qF "${HOME}/.farfarfun/funread/web/funread-web.{pid,log}" <<<"${out}" || exit 1
+# upgrade 与 rollback 都得先停服再换包：在跑着的进程底下换全局 npm 包，node 还开着那棵树
+# 里的文件；而且旧进程的 PID 文件在旧配置目录里，换完包的 CLI 只看新目录，stop 会报
+# 「not running」而端口还被占着。存活判断必须走端口而不是 PID 文件 —— 路径本身会变。
+[[ "$(grep -c '^  _stop_if_running$' "${funread_setup}")" == 2 ]] || exit 1
+sed -n '/^_stop_if_running() {/,/^}/p' "${funread_setup}" | grep -q 'listener_pid_for_port' || exit 1
 NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" dev --help >/dev/null || exit 1
 out="$(NONINTERACTIVE=1 "${FUNDEPLOY_ROOT}/bin/fundeploy" tool list)"
 grep -q "brew" <<<"${out}" || exit 1
