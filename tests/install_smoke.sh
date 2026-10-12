@@ -358,6 +358,36 @@ grep -q 'funread-web server start' "${funread_setup}" || exit 1
 # 上退出，根本走不到生成配置那一步。
 grep -q '^_ensure_default_configs()' "${funread_setup}" || exit 1
 [[ "$(grep -c '^  _ensure_default_configs$' "${funread_setup}")" == 3 ]] || exit 1
+# 共享根配置 ~/.farfarfun/funread/config.toml：funread 1.1.116 起库地址与口令只能写在
+# 这里（环境变量那一层整个删掉了），所以部署侧要把这份模板摆出来。两条性质必须成立：
+#   1. 生成出来的整份是注释 —— 一个没注释掉的 [database] url 就是「替操作者决定连哪个库」；
+#   2. 已存在就一个字都不动 —— 这份文件里放的正是生产库地址和管理端口令，重装/升级时
+#      覆盖掉它，等于把线上指到别的库上去，而且没有备份。
+funread_shared_home="${TMP}/funread-shared-home"
+mkdir -p "${funread_shared_home}"
+(
+  export HOME="${funread_shared_home}"
+  # shellcheck disable=SC1090
+  source "${funread_setup}" help >/dev/null
+  _ensure_shared_config >/dev/null
+) || exit 1
+funread_shared="${funread_shared_home}/.farfarfun/funread/config.toml"
+[[ -f "${funread_shared}" ]] || exit 1
+# stat 的权限位参数在 BSD 与 GNU 上不通用，而 CI 的 macos runner 用的是 BSD stat
+# （`-c` 在那边直接报错）。必须先试 GNU 的 `-c`：GNU 的 `-f` 是「查文件系统」，会把
+# '%OLp' 当成文件名报错、却仍把真实文件的文件系统信息打到 stdout 上，反序会读到一
+# 坨垃圾而不是权限位。BSD 的 `-c` 则是干净的用法错误，只写 stderr。
+[[ "$(stat -c '%a' "${funread_shared}" 2>/dev/null || stat -f '%OLp' "${funread_shared}")" == 600 ]] || exit 1
+! grep -qE '^[[:space:]]*[^#[:space:]]' "${funread_shared}" || exit 1
+grep -q '\[database\]' "${funread_shared}" || exit 1
+printf '[database]\nurl = "postgresql+psycopg2://keep/me"\n' >"${funread_shared}"
+(
+  export HOME="${funread_shared_home}"
+  # shellcheck disable=SC1090
+  source "${funread_setup}" help >/dev/null
+  _ensure_shared_config >/dev/null
+) || exit 1
+grep -q 'postgresql+psycopg2://keep/me' "${funread_shared}" || exit 1
 # 那份 config.toml 写到哪个目录不写死，问 CLI 自己（两个 CLI 的 `server status` 输出里
 # 都带 `config <路径>`，服务没在跑也会打）。funread 1.1.114 把布局从
 # ${XDG_CONFIG_HOME:-~/.config}/farfarfun/funread-{api,web}/ 换到了

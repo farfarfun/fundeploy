@@ -61,9 +61,19 @@
   `init` 也没有 `config` 子命令能生成这个文件，所以由部署侧补上——性质同
   funflix-web 当初补的「首次部署两步」。生成的内容只有 `[server]` 下的 host /
   port（真正生效的仍是 `start` 显式传的 `--host`/`--port`，这份文件主要是让上游
-  的存在性检查过关），**不写库地址**，库仍由 `FUNREAD_DATABASE_URL` 或 funsecret
-  决定。显式设置了 `FUNREAD_WEB_{BACKEND,FRONTEND}_CONFIG` 时不代建：用户点名了
-  那个文件，替他凭空造一份只会把「路径写错了」盖掉。
+  的存在性检查过关），**不写库地址**——库地址属于两端共用的配置，写在上一层的
+  `~/.farfarfun/funread/config.toml`（见下一条）。显式设置了
+  `FUNREAD_WEB_{BACKEND,FRONTEND}_CONFIG` 时不代建：用户点名了那个文件，替他凭空
+  造一份只会把「路径写错了」盖掉。
+
+- `funread-web`：install/start/run 另外生成一份共享根配置
+  `~/.farfarfun/funread/config.toml`（`_ensure_shared_config`）。funread 1.1.116 起
+  库地址、管理端口令这些只认配置文件，`FUNREAD_DATABASE_URL` 等环境变量整个不读了，
+  所以必须有个地方摆给操作者填。生成的内容**整份是注释**：填一个 `[database] url`
+  进去就是决定这台机器连哪个库，脚本没有资格替操作者定；全注释的文件行为上等于
+  没有这个文件（仍按 funsecret > 本地 SQLite 解析）。已存在则一个字都不动——那份
+  文件里放的正是生产库地址和口令，升级时覆盖它等于静默把线上指到别的库上。
+  权限 `0600`，两份服务配置也一并从 `0644` 收到 `0600`。
 
 - `funread-web`：上面那份 `config.toml` 写到哪个目录，改成问 CLI（`server status`
   的输出里带 `config <路径>`，服务没在跑也会打），不再按 funread 的布局自己拼。

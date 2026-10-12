@@ -57,9 +57,12 @@
 #                                  走默认路径时，install/start/run 会在该目录下补一份
 #                                  缺失的 config.toml（上游 server start 要求它存在，
 #                                  见 _ensure_default_config）；显式指定的路径不代建
-#   FUNREAD_DATABASE_URL           后端库地址，原样继承自环境，本脚本不设默认值
 #   NONINTERACTIVE=1               无参数调用时直接报错而不进菜单
 #   FUNREAD_WEB_UNINSTALL_YES=1    非 TTY 下的卸载确认
+#
+# 这张表里全是**本脚本自己的入参**（装哪个版本、往哪塞 --config）。库地址、管理端口令
+# 那类服务运行期配置已经没有对应的环境变量了：funread 1.1.116 起只认
+# ~/.farfarfun/funread/config.toml，见 _ensure_shared_config。
 
 set -euo pipefail
 
@@ -163,8 +166,10 @@ _ensure_default_config() {
 # 由 fundeploy 首次安装时生成（${label}）。funread 的 server start 要求这个文件存在，
 # 缺了只会报一行 config file not found —— 内容本身可以是空壳。
 # host/port 以 fundeploy 的 FUNREAD_WEB_* 变量为准：start 时会用显式 --host/--port
-# 盖掉这里的值，改监听地址请改环境变量，不是改这个文件。其他配置项可自行添加。
-# 库地址不写在这里，由 FUNREAD_DATABASE_URL 或 funsecret 决定。
+# 盖掉这里的值，改监听地址请改环境变量，不是改这个文件。
+#
+# 这份只放本服务自己的设置。库地址、口令那些两端共用的，写在上一层的
+# $(_shared_config_path) 里（本文件优先级更高，这里写了就盖掉它）。
 [server]
 host = "${host}"
 port = ${port}
@@ -174,12 +179,60 @@ EOF
     rm -f "${cfg}"
     return 0
   fi
+  # 0600：这份文件可以放口令，而它所在的目录本来就只有本用户能进。
+  chmod 600 "${cfg}" 2>/dev/null || true
   echo "==> 已生成 ${label} 的配置: ${cfg}"
+}
+
+_shared_config_path() {
+  printf '%s' "${HOME}/.farfarfun/funread/config.toml"
+}
+
+# funread 1.1.116 起，两个 CLI 和核心库管线都读这一份共享根配置，环境变量那一层整个
+# 删掉了。所以库地址、管理端口令这些只需要写一处 —— 但也**只能**写在这里。
+#
+# 生成的内容整份是注释：填一个值进去就是改这台机器连哪个库，脚本没有资格替操作者
+# 决定。全注释的文件行为上等于没有这个文件（仍然按 funsecret > 本地 SQLite 解析），
+# 同时把「该往哪写」摆在了操作者面前。已存在就一个字都不动。
+_ensure_shared_config() {
+  local cfg
+  cfg="$(_shared_config_path)"
+  [[ -e "${cfg}" ]] && return 0
+  mkdir -p "$(dirname "${cfg}")" 2>/dev/null || return 0
+  chmod 700 "$(dirname "${cfg}")" 2>/dev/null || true
+  if ! cat >"${cfg}" <<'EOF'
+# funread 的共享根配置，由 fundeploy 首次安装时生成。
+# 前后端与核心库管线都读这一份；各服务目录下的 config.toml 优先级更高。
+# 解析顺序：命令行参数 > 服务自己的 config.toml > 本文件 > funsecret > 兜底。
+#
+# 下面整份是注释，等于「这台机器没有特殊配置」。要用的话去掉对应的 # 即可。
+
+# [database]
+# 不填就按 funsecret 的 funread/cache/source/db_url > 本地 SQLite 解析。
+# url = "postgresql+psycopg2://user:password@host/dbname"
+
+# [auth]
+# password        管理端（/admin）口令。不填＝管理端无鉴权全开。
+# session_secret  会话签名密钥。不填会在 api 的配置目录下自动生成一个。
+# reader_public   只读的阅读端 GET 是否免鉴权，默认 false。
+# register_open   注册入口开不开，默认 true（闸门是邀请码）。
+# password = "..."
+# reader_public = false
+# register_open = true
+EOF
+  then
+    echo "警告: 写不了 ${cfg}（库地址与口令要写在这里）" >&2
+    rm -f "${cfg}"
+    return 0
+  fi
+  chmod 600 "${cfg}" 2>/dev/null || true
+  echo "==> 已生成共享配置: ${cfg}（库地址与口令写在这里）"
 }
 
 # install / start / run 三处都要补：install 负责让新机器装完就能起，start 与 run
 # 则是给「用旧版 fundeploy 装过、或事后把配置删了」的机器兜底。
 _ensure_default_configs() {
+  _ensure_shared_config
   _ensure_default_config "后端 funread-api" "${FUNREAD_WEB_BACKEND_CONFIG}" \
     "$(_backend_state_dir)" "${FUNREAD_WEB_BACKEND_HOST}" "${FUNREAD_WEB_BACKEND_PORT}"
   _ensure_default_config "前端 funread-web" "${FUNREAD_WEB_FRONTEND_CONFIG}" \
@@ -217,9 +270,10 @@ usage() {
   - install/upgrade/rollback 由本脚本做，不要用上游 CLI 自带的同名命令 —— 理由见文件头注释。
   - 前端包在私有源上，装不上先确认机器上有 scope 映射：
       npm config set @farfarfun:registry ${FUNREAD_WEB_FRONTEND_REGISTRY}
-  - FUNREAD_DATABASE_URL 不设时，后端按 env > funsecret（funread/cache/source/db_url）
-    > 本地 SQLite 的顺序解析。机器上配了 funsecret 就会连到 funsecret 里那个库，
-    想用本地库请显式设这个变量。
+  - 库地址与管理端口令写在 $(_shared_config_path)（install 时会生成一份全注释的模板）。
+    1.1.116 起不再读 FUNREAD_DATABASE_URL 等环境变量；该文件里不填库地址时，后端按
+    funsecret（funread/cache/source/db_url）> 本地 SQLite 解析 —— 机器上配了 funsecret
+    就会连到那个库，想用别的请把 [database] url 写进上面那份文件。
   - 建管理员与发邀请码不在本脚本里，装完直接敲：
       funread-api accounts create-admin <用户名>
       funread-api accounts invite issue
@@ -662,7 +716,7 @@ _die_backend_never_listened() {
   die "后端启动命令已返回，但端口 ${FUNREAD_WEB_BACKEND_PORT} 迟迟未监听（多半是启动后崩溃）。" \
       "已中止（前端未启动）。日志见 $(_backend_state_dir)/funread-api.log，或跑" \
       "  funread-api server run --port ${FUNREAD_WEB_BACKEND_PORT}" \
-      "看前台报错 —— 连不上库是最常见的原因，检查 FUNREAD_DATABASE_URL。"
+      "看前台报错 —— 连不上库是最常见的原因，检查 $(_shared_config_path) 的 [database] url。"
 }
 
 cmd_start() {
