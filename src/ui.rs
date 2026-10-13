@@ -123,6 +123,31 @@ pub fn confirm_destructive(prompt: &str, env_yes: &str) -> Result<()> {
     Ok(())
 }
 
+/// 问一个值。`default` 非空时直接回车就取它。
+pub fn input(prompt: &str, default: &str) -> Result<String> {
+    if !interactive() {
+        bail!("{prompt}\n当前是无人值守环境，请把这个值直接写在命令行上。");
+    }
+    let mut q = inquire::Text::new(prompt);
+    if !default.is_empty() {
+        q = q.with_default(default);
+    }
+    Ok(q.prompt()?.trim().to_string())
+}
+
+/// 问一个口令，输入不回显。
+///
+/// 比起让操作者写在命令行上，这里少了一条泄漏路径：shell 历史。
+pub fn password(prompt: &str) -> Result<String> {
+    if !interactive() {
+        bail!("{prompt}\n当前是无人值守环境，请把这个值直接写在命令行上。");
+    }
+    Ok(inquire::Password::new(prompt)
+        .with_display_mode(inquire::PasswordDisplayMode::Masked)
+        .without_confirmation()
+        .prompt()?)
+}
+
 /// 从一组候选里选一个。返回 None 表示用户取消。
 pub fn select<'a>(prompt: &str, options: &'a [String]) -> Result<Option<&'a String>> {
     if options.is_empty() {

@@ -3,24 +3,35 @@
 //! 对外只有一个 [`Service`]：装、升、退、起、跑、停、重启、查、卸这九个动作，
 //! 命令行照着调就行。
 //!
-//! 往里分两族，分界线是**谁管进程**：
+//! 往里分三族，分界线是**谁管进程**和**包从哪来**：
+//!
+//! | | 进程归上游管 | 进程归 fundeploy 管 |
+//! |---|---|---|
+//! | **包来自 PyPI/npm** | [`upstream`] | [`venv`] |
+//! | **包来自 GitHub release** | — | [`daemon`] |
 //!
 //! - [`upstream`]：上游 CLI 自带 `server start/stop/status`，PID 文件、守护、
 //!   日志都是它自己的事，fundeploy 只负责装包、按顺序调它、核对端口。
 //! - [`daemon`]：上游只给一个前台二进制，进程管理这摊事全落在 fundeploy 头上——
 //!   下载附件、起后台进程、写 PID、停的时候 TERM 完再 KILL。
+//! - [`venv`]：同样由 fundeploy 管进程，但包是 pip 装进一个独占虚拟环境的。
+//!   认进程的方式也因此不同：venv 里的控制台脚本跑起来 `/proc/<pid>/exe` 是
+//!   python 解释器，只能认「属于这个 venv」而不是某个具体文件。
 //!
-//! 两族各自把生命周期实现一次，具体服务退化成一份声明。
+//! 三族各自把生命周期实现一次，具体服务退化成一份声明。
 //!
-//! 两族都装不下的服务直接实现 [`Service`]（见 [`paperclip`]），并用
+//! 三族都装不下的服务直接实现 [`Service`]（见 [`paperclip`]），并用
 //! [`Service::extras`] 把九个动作之外的东西挂出来。
 
+pub mod airflow;
+pub mod celery;
 pub mod config;
 pub mod daemon;
 pub mod paperclip;
 pub mod registry;
 pub mod spec;
 pub mod upstream;
+pub mod venv;
 
 use std::time::Duration;
 

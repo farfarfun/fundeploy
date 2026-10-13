@@ -3,6 +3,49 @@
 版本号以根目录 `VERSION` 为准；发布由推 `v<VERSION>` tag 触发（见
 `.github/workflows/release.yml`），因此「有 tag ＝ 已发布」。
 
+## [0.3.0] - 未发布
+
+整个项目从 Bash 重写为 Rust，原 Bash 保留在 `bak` 分支。重写还在进行中，这一节
+只记录**行为上的差异**——命令、环境变量、默认端口跟 Bash 版对不上的地方；内部
+怎么分层、代码少了多少行，用不着写在这里。
+
+### 破坏性变更
+
+- 默认端口不再撞车。Bash 时代 `8806` 被三个服务同时当默认值用（funfluid-web
+  前端、airflow 的 Web UI、celery 的 Flower），`8812`/`8813` 被 funmill 和
+  funlesson-web 共用——每个服务一个脚本，谁也看不见别人，于是「同机起两个服务，
+  第二个莫名其妙起不来」。现在所有服务的端口在同一张表里，撞了就是一条编译期
+  就会红的测试。挪的是后来者，原位留给挪动代价最大的那个：
+
+  | 服务 | 端口 | 原默认 | 现默认 | 覆盖用 |
+  |---|---|---|---|---|
+  | `airflow` | Web UI | 8806 | **8815** | `AIRFLOW_PORT` / `AIRFLOW__API__PORT` |
+  | `celery` | Flower | 8806 | **8816** | `FLOWER_PORT` |
+  | `funlesson-web` | 前端 | 8812 | **8814** | `FUNLESSON_WEB_FRONTEND_PORT` |
+
+- `celery`：三个依赖规格环境变量改名，语义也收窄了——`CELERY_PKG_SPEC` →
+  `CELERY_VERSION`（只填版本号 `5.4.0`，不再是整串 `celery==5.4.0`），
+  `CELERY_REDIS_PKG_SPEC` → `CELERY_REDIS_SPEC`，`CELERY_FLOWER_PKG_SPEC` →
+  `CELERY_FLOWER_SPEC`（后两个仍是完整 spec）。
+- `celery`：按组件分裂的 `start-worker` / `start-beat` / `start-flower` /
+  `run-worker` / `run-beat` / `run-flower` 换成三个通用动作——
+  `start-one <进程名>`、`run-one <进程名>`、`stop-one <进程名>`，进程名就是
+  `worker` / `beat` / `flower`。
+
+### 新增
+
+- 「包 pip 装进独占 venv、进程归 fundeploy 管」的服务（目前是 `airflow`、
+  `celery`）统一支持 `start-one` / `run-one` / `stop-one`，不再是 celery 专属。
+
+### 修复
+
+- `airflow`：端口配置从来没生效过。脚本设的是
+  `AIRFLOW__WEBSERVER__WEB_SERVER_PORT`，而 Airflow 3 整个没有 `[webserver]` 这个
+  配置段——API server 读的是 `[api]`。于是 Airflow 一直听在它自己的默认 8080 上，
+  fundeploy 打印、探测、启动前查占用用的却都是 8806：Bash 版只是给了一行错地址
+  （它起完进程就返回，不等端口），放到会等端口的 Rust 版里就是每次 `start` 必定
+  超时。现在设 `AIRFLOW__API__PORT` / `AIRFLOW__API__HOST`。
+
 ## [0.1.18]
 
 ### 新增

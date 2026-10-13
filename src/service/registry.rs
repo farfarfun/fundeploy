@@ -9,11 +9,14 @@
 use anyhow::Result;
 use std::path::PathBuf;
 
+use super::airflow::Airflow;
+use super::celery::Celery;
 use super::config;
 use super::daemon::{self, DaemonSpec, Github, Proc};
 use super::paperclip::Paperclip;
 use super::spec::{Arg, CliShape, Component, Pkg, ServiceSpec};
 use super::upstream::{self, Upstream};
+use super::venv;
 use super::Service;
 use crate::args;
 use crate::common::env::{home, opt as env_opt, port as env_port, str_or as env_str};
@@ -31,6 +34,8 @@ pub fn all() -> Vec<Box<dyn Service>> {
         daemon::boxed(new_api()),
         daemon::declared(code_server()),
         daemon::boxed(sub2api()),
+        venv::boxed(Airflow::from_env()),
+        venv::boxed(Celery::from_env()),
         Box::new(Paperclip::from_env()),
     ]
 }

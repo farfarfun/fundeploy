@@ -123,8 +123,17 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
+    run_with(args, &[])
+}
+
+/// 同 [`run`]，但带环境改动。
+pub fn run_with<I, S>(args: I, env: &[EnvEdit]) -> Result<()>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
     let argv = to_argv(args);
-    match spawn_status(argv.clone(), &[])? {
+    match spawn_status_in(argv.clone(), env, None)? {
         Some(0) => Ok(()),
         other => bail!(
             "命令失败（退出码 {}）:\n  {}",
@@ -141,14 +150,27 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
+    try_run_with(args, &[])
+}
+
+/// 同 [`try_run`]，但带环境改动。
+///
+/// 探测本身常常依赖环境：同一个 `airflow jobs check`，带不带 `AIRFLOW_HOME`
+/// 问的是两个库。
+pub fn try_run_with<I, S>(args: I, env: &[EnvEdit]) -> Result<Output>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
     let argv = to_argv(args);
     let (prog, rest) = argv
         .split_first()
         .ok_or_else(|| anyhow!("try_run() 收到空命令"))?;
 
-    let out = Command::new(prog)
-        .args(rest)
-        .stdin(Stdio::null())
+    let mut c = Command::new(prog);
+    c.args(rest).stdin(Stdio::null());
+    apply_env(&mut c, env);
+    let out = c
         .output()
         .with_context(|| format!("起不了进程: {}", render(&argv)))?;
 
@@ -165,8 +187,17 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
+    capture_with(args, &[])
+}
+
+/// 同 [`capture`]，但带环境改动。
+pub fn capture_with<I, S>(args: I, env: &[EnvEdit]) -> Result<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
     let argv = to_argv(args);
-    let out = try_run(argv.clone())?;
+    let out = try_run_with(argv.clone(), env)?;
     if !out.success() {
         let tail: String = out
             .stderr

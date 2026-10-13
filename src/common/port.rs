@@ -32,6 +32,24 @@ pub fn is_listening(host: &str, port: u16) -> bool {
     false
 }
 
+/// 这个监听地址在本机之外也能到吗。
+///
+/// 用来决定要不要就「这东西暴露在网上了」提醒一句。
+pub fn is_public(host: &str) -> bool {
+    !matches!(host, "127.0.0.1" | "localhost" | "::1")
+}
+
+/// 给人看的主机名。
+///
+/// `0.0.0.0` 是绑定时的写法，贴进浏览器地址栏打不开；入口地址要给回环。
+pub fn display_host(host: &str) -> &str {
+    match host {
+        "0.0.0.0" | "*" | "" => "127.0.0.1",
+        "::" | "[::]" => "::1",
+        h => h,
+    }
+}
+
 /// 轮询等端口起来。返回是否在 `timeout` 内等到了。
 ///
 /// 服务刚 spawn 出来时端口还没 bind，调用方不能立刻判定失败——这个间隔在装了
