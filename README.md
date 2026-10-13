@@ -26,7 +26,24 @@ curl -fsSL https://raw.githubusercontent.com/farfarfun/fundeploy/HEAD/install.sh
 | `FUNDEPLOY_VERSION` / `--version` | 装哪一版 | `latest` |
 | `FUNDEPLOY_BIN_DIR` / `--bin-dir` | 装到哪儿 | `~/.local/bin` |
 | `FUNDEPLOY_RELEASE_REPO` | 从哪个仓库的 release 取 | `farfarfun/fundeploy` |
+| `FUNDEPLOY_RELEASE_SOURCE` | 从 `github` 还是 `gitee` 取 | 先 GitHub，不通换 Gitee |
 | `FUNDEPLOY_GITHUB_HUB_PROXY_PREFIX` | GitHub 直连不通时的加速前缀 | 空 |
+
+### 国内网络
+
+GitHub 连不上时脚本会自动改用 Gitee 上的镜像，不用额外设置。嫌那一次探测（8 秒）
+慢就直接点名：
+
+```bash
+FUNDEPLOY_RELEASE_SOURCE=gitee \
+  curl -fsSL https://gitee.com/farfarfun/fundeploy/raw/master/install.sh | sh
+```
+
+连 `raw.githubusercontent.com` 都拿不到脚本本身时，就用上面这个 Gitee 的地址
+（Gitee 的 raw 路径要写分支名 `master`，没有 `HEAD` 这种写法）。
+
+镜像由 CI 从 GitHub 整仓同步过去，release 附件一并搬，两边的包字节一致、校验和
+是同一份。装完之后 `fundeploy upgrade` 认同一个变量，行为也一样。
 
 ### Homebrew
 
@@ -184,16 +201,22 @@ fundeploy skills sync               # 同步 Gitee 上的 farfarfun-skills 仓�
 
 ### 网络
 
-查版本、取安装包都要走 GitHub。两个和它相关的环境变量：
+查版本、取安装包都要走 GitHub。相关的环境变量：
 
 | 变量 | 作用 |
 | --- | --- |
+| `FUNDEPLOY_RELEASE_SOURCE` | `github` 或 `gitee`；只管 fundeploy 自己的升级 |
 | `FUNDEPLOY_GITHUB_HUB_PROXY_PREFIX` | 直连慢或不通时的加速前缀，必须 `https://` |
 | `GITHUB_TOKEN` / `GH_TOKEN` | 调 GitHub API 时带上 |
 
 匿名调 API 是每小时 60 次、按出口 IP 算，公司网和校园网很容易共用一个出口撞上限，
 症状是「查不到最新版本」。`gh auth login` 过的机器通常已经有 `GH_TOKEN` 了。
 token 只发往 `api.github.com`——配了加速前缀时不会跟着请求递给那个代理。
+
+`fundeploy upgrade` 默认先试 GitHub，连不上再换 Gitee 镜像，换的时候会出声。
+`FUNDEPLOY_RELEASE_SOURCE` 点了名就只用那一个，失败直接报错而不背着你换源。
+它只对 fundeploy 自己生效：装别的工具时取的是上游仓库的 release，那些我们没有
+镜像，一律直连 GitHub。加速前缀也只往 GitHub 的地址上套，不会拿去绕 Gitee。
 
 ## 开发
 

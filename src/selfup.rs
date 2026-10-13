@@ -5,9 +5,12 @@
 //! inode 的目录项，已经映射进内存的那一份不受影响——当前这次执行照常跑完，
 //! 新版本从下一次执行开始生效。
 //!
-//! 下载源固定是 GitHub Releases。网络不通时走 [`crate::common::download`] 里那套
-//! 镜像改写，而不是在这儿另开一个「换个仓库」的开关：镜像的事那边已经做了，
-//! 两套并存只会让「这次到底从哪儿下的」说不清。
+//! 下载源是 GitHub Releases，连不上则换 Gitee 上那份镜像（见
+//! [`crate::common::github::Source`]）。第三方加速前缀是另一回事，走
+//! [`crate::common::download`] 里那套改写。
+//!
+//! 两者并存而不至于让「这次到底从哪儿下的」说不清，靠的是：换了源一定出声，
+//! 而且 `FUNDEPLOY_RELEASE_SOURCE` 点了名就绝不背着人再换。
 
 use std::path::{Path, PathBuf};
 
@@ -51,10 +54,17 @@ pub fn run(version: Option<&str>, check: bool) -> Result<()> {
     // 先确认换得掉再去下载。顺序反过来的话，十几兆下完才说「这个目录不可写」。
     let exe = (!check).then(replaceable).transpose()?;
 
-    let rel = match version {
-        Some(v) => github::by_tag(&repo, &github::tag_of(v)?)?,
-        None => github::latest(&repo)?,
-    };
+    let tag = version.map(github::tag_of).transpose()?;
+    let got = github::fetch_release(&repo, tag.as_deref())?;
+    // 不在 GitHub 上就说一声，而且要说清是哪一种。被动回落是警告（网络有问题）；
+    // 主动点名只是陈述——但也不能不说：这变量多半写在某个 shell 配置里，设完就
+    // 忘，几个月后「怎么升不上新版」的答案就在这一行。
+    match (got.source, got.fell_back) {
+        (github::Source::GitHub, _) => {}
+        (s, true) => ui::warn(format!("GitHub 连不上，改用 {} 上那份镜像。", s.label())),
+        (s, false) => ui::info(format!("按 FUNDEPLOY_RELEASE_SOURCE 从 {} 取。", s.label())),
+    }
+    let (rel, source) = (got.release, got.source);
     let newest = rel.version();
 
     ui::kv("当前版本", Some(crate::VERSION));
@@ -82,7 +92,10 @@ pub fn run(version: Option<&str>, check: bool) -> Result<()> {
         );
     };
 
-    download::hint_mirror();
+    // 已经落到镜像上了就别再提加速前缀，那条提示是给直连 GitHub 的人看的。
+    if source == github::Source::GitHub {
+        download::hint_mirror();
+    }
     let scratch = fs::Scratch::new("selfup")?;
     let pkg = scratch.path().join(&want);
     download::to_file(

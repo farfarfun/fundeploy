@@ -3,6 +3,32 @@
 版本号以 `Cargo.toml` 里的 `version` 为准；发布由推同版本的 `v*` tag 触发（见
 `.github/workflows/release.yml`），因此「有 tag ＝ 已发布」。
 
+## [0.3.2] - 2026-10-14
+
+### 新增
+
+- **GitHub 连不上时改用 Gitee 镜像，装机和升级都支持。** 镜像一直在同步（CI 把
+  整个仓库连 release 附件一起搬过去），但装的时候用不上——地址是写死的 GitHub，
+  国内连不上就只能干看着。现在装机脚本和 `fundeploy upgrade` 都先试 GitHub、
+  不通再换 Gitee，换的时候会出声说一句，不会让人不知道这份是从哪儿下的。
+
+  `FUNDEPLOY_RELEASE_SOURCE=github|gitee` 可以点名。点了名就只用那一个，失败直接
+  报错——要确定性的人不该被背着换源。嫌默认那次探测慢的直接点 `gitee`。
+
+  脚本本身也能从 Gitee 取，这样连 `raw.githubusercontent.com` 都不通也装得上：
+
+  ```bash
+  curl -fsSL https://gitee.com/farfarfun/fundeploy/raw/master/install.sh | sh
+  ```
+
+  几处落地上的取舍：探测 GitHub 那一下把建连超时压到 8 秒并关掉重试，否则
+  「连不上就换一个」要先让人等三轮二十多秒；加速前缀只往 GitHub 的地址上套，
+  拿去绕 Gitee 只会把一个本来通的地址弄坏，而设了那个前缀的人恰恰就是会走到
+  Gitee 这条路上的人；校验和跟着包走同一个源，不会从 A 下包拿 B 的清单。
+
+  只管 fundeploy 自己。装别的工具取的是上游仓库的 release，那些没有镜像，照旧
+  直连 GitHub。
+
 ## [0.3.1] - 2026-10-13
 
 ### 修复

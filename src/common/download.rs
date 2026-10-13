@@ -17,6 +17,15 @@ use crate::ui;
 /// 单次请求的超时。GitHub 偶发会把连接挂住不返回，没有超时就表现为命令卡死。
 const TIMEOUT: Duration = Duration::from_secs(60);
 
+/// 建连超时。
+const CONNECT: Duration = Duration::from_secs(15);
+
+/// 探测时的建连超时。
+///
+/// 「连不上就换个源」的第一下只是探路，等满 15 秒没有意义——结果都是换条路
+/// 再来一次，那 15 秒纯粹是人盯着光标干等。
+const PROBE_CONNECT: Duration = Duration::from_secs(8);
+
 /// 改写策略。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Rewrite {
@@ -130,17 +139,32 @@ pub fn hint_mirror() {
     );
 }
 
-fn agent() -> ureq::Agent {
+fn agent_connecting(connect: Duration) -> ureq::Agent {
     ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(15))
+        .timeout_connect(connect)
         .timeout(TIMEOUT)
         .build()
 }
 
+fn agent() -> ureq::Agent {
+    agent_connecting(CONNECT)
+}
+
 /// 取一段文本（API 响应）。
 pub fn get_text(url: &str) -> Result<String> {
+    get_text_connecting(url, CONNECT)
+}
+
+/// 和 [`get_text`] 一样，但建连超时短一些。
+///
+/// 用在「这一个源连不上就换下一个」的探测上。
+pub fn get_text_probe(url: &str) -> Result<String> {
+    get_text_connecting(url, PROBE_CONNECT)
+}
+
+fn get_text_connecting(url: &str, connect: Duration) -> Result<String> {
     let url = Rewrite::from_env().apply(url);
-    let mut req = agent()
+    let mut req = agent_connecting(connect)
         .get(&url)
         .set("User-Agent", "fundeploy")
         .set("Accept", "application/vnd.github+json");
