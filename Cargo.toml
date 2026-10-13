@@ -1,0 +1,53 @@
+[package]
+name = "fundeploy"
+version = "0.3.0"
+edition = "2021"
+# rustup 之外的渠道（apt / brew 的 rustc）往往落后好几个版本，这里写下真实下限，
+# 让编译在版本不够时直接报清楚，而不是在某个 std API 上报一行看不懂的错。
+rust-version = "1.74"
+description = "开发环境、工具与服务管理"
+license = "MIT"
+repository = "https://github.com/farfarfun/fundeploy"
+
+[[bin]]
+name = "fundeploy"
+path = "src/main.rs"
+
+[lib]
+# bin 只做一层薄入口，逻辑全在 lib 里，tests/ 下的集成测试才能直接调内部类型。
+name = "fundeploy"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive", "wrap_help"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+# 阻塞式、默认 rustls。不用 reqwest 是为了不拖进 tokio：全程串行执行外部命令，
+# 没有并发需求。rustls 也让 musl 全静态构建不需要 openssl。
+ureq = { version = "2", features = ["json"] }
+sha2 = "0.10"
+hex = "0.4"
+flate2 = "1"
+tar = "0.4"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+# 自带模糊过滤的 Select，交互菜单直接用它，不依赖外部 TUI 工具。
+inquire = "0.7"
+owo-colors = "4"
+indicatif = "0.17"
+dirs = "5"
+which = "6"
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+# 部署工具的分发体积直接影响 install.sh 的下载时间，而它的热点全在等外部进程，
+# 本身没有计算密集路径，所以按体积优化而不是速度。
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

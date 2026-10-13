@@ -1,0 +1,5 @@
+[toolchain]
+# 固定 stable 并把两个 lint 组件一并声明：CI 与本机因此拿到同一套 clippy 规则，
+# 不会出现「本地干净、CI 报一堆」的情况。
+channel = "stable"
+components = ["rustfmt", "clippy"]
