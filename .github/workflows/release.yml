@@ -155,6 +155,10 @@ jobs:
         run: sh install.sh --version "${{ needs.check.outputs.version }}"
 
       - name: 装出来的是不是这一版
+        # upgrade --check 要问 GitHub API。匿名限流按出口 IP 算，而 runner 的
+        # 出口是共用的，不带 token 的话这一步会随别人的用量偶发红。
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
           got="$("$HOME/.local/bin/fundeploy" --version)"

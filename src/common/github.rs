@@ -1,6 +1,7 @@
 //! GitHub Releases 查询。
 //!
-//! 只用匿名 API。匿名限流是每小时 60 次，所以每个动作最多问一次，不做轮询。
+//! 不要求登录。设了 `GITHUB_TOKEN` / `GH_TOKEN` 就带上（见 `download::get_text`），
+//! 匿名限流是每小时 60 次，所以每个动作最多问一次，不做轮询。
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;

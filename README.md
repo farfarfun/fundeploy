@@ -162,6 +162,19 @@ fundeploy port-kill 8080 --list     # 只看不动手
 fundeploy skills sync               # 同步 Gitee 上的 farfarfun-skills 仓库
 ```
 
+### 网络
+
+查版本、取安装包都要走 GitHub。两个和它相关的环境变量：
+
+| 变量 | 作用 |
+| --- | --- |
+| `FUNDEPLOY_GITHUB_HUB_PROXY_PREFIX` | 直连慢或不通时的加速前缀，必须 `https://` |
+| `GITHUB_TOKEN` / `GH_TOKEN` | 调 GitHub API 时带上 |
+
+匿名调 API 是每小时 60 次、按出口 IP 算，公司网和校园网很容易共用一个出口撞上限，
+症状是「查不到最新版本」。`gh auth login` 过的机器通常已经有 `GH_TOKEN` 了。
+token 只发往 `api.github.com`——配了加速前缀时不会跟着请求递给那个代理。
+
 ## 开发
 
 ```bash

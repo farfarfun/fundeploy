@@ -140,15 +140,39 @@ fn agent() -> ureq::Agent {
 /// 取一段文本（API 响应）。
 pub fn get_text(url: &str) -> Result<String> {
     let url = Rewrite::from_env().apply(url);
-    let resp = agent()
+    let mut req = agent()
         .get(&url)
-        // GitHub 对匿名请求按 IP 限流；带上 UA 至少让对端能识别来源。
         .set("User-Agent", "fundeploy")
-        .set("Accept", "application/vnd.github+json")
-        .call()
-        .with_context(|| format!("请求失败: {url}"))?;
+        .set("Accept", "application/vnd.github+json");
+    if let Some(t) = github_token(&url) {
+        req = req.set("Authorization", &format!("Bearer {t}"));
+    }
+    let resp = req.call().with_context(|| format!("请求失败: {url}"))?;
     resp.into_string()
         .with_context(|| format!("读取响应失败: {url}"))
+}
+
+/// 这次请求该带的 GitHub token，没有就匿名发。
+///
+/// 匿名调 API 是每小时 60 次，且按出口 IP 算——公司网、校园网、CI runner 都是
+/// 一堆机器共用一个出口，装几个服务就撞上限，然后表现成「查不到最新版本」。
+/// 带上 token 是每小时 5000 次。
+///
+/// 读 `GITHUB_TOKEN` / `GH_TOKEN` 而不是自己起个名字：gh CLI 和 GitHub Actions
+/// 已经在设这两个，配过一次的机器不用再为我们配第二遍。
+///
+/// 只认 api.github.com，而且判的是**改写之后**的地址：镜像前缀会把 URL 变成
+/// `https://某代理/https://api.github.com/…`，照旧附 Authorization 等于把用户的
+/// 凭据递给那个第三方代理。
+fn github_token(url: &str) -> Option<String> {
+    if https_host(url).as_deref() != Some("api.github.com") {
+        return None;
+    }
+    ["GITHUB_TOKEN", "GH_TOKEN"]
+        .into_iter()
+        .filter_map(|n| std::env::var(n).ok())
+        .map(|v| v.trim().to_string())
+        .find(|v| !v.is_empty())
 }
 
 /// 下载到文件，带进度条。
@@ -387,5 +411,78 @@ mod tests {
         std::fs::write(&f, b"hello").unwrap();
         verify(&f, None, "x.bin").unwrap();
         verify(&f, Some("aa  别的文件"), "x.bin").unwrap();
+    }
+
+    /// 临时改几个环境变量，出作用域还原。
+    ///
+    /// 环境变量是进程级的而 cargo test 多线程跑，所以这里既要排队也要还原：
+    /// CI 和装过 gh 的机器上 GITHUB_TOKEN 本来就可能有值，不还原会殃及同进程里
+    /// 别的测试。
+    struct 临时环境 {
+        旧值: Vec<(&'static str, Option<String>)>,
+        _锁: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl 临时环境 {
+        fn 设(pairs: &[(&'static str, Option<&str>)]) -> Self {
+            static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+            // panic 会毒化这把锁，但它保护的只是「别同时跑」，没有要保持一致的
+            // 共享状态，直接接着用。
+            let _锁 = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let 旧值 = pairs
+                .iter()
+                .map(|(k, v)| {
+                    let prev = std::env::var(k).ok();
+                    match v {
+                        Some(v) => std::env::set_var(k, v),
+                        None => std::env::remove_var(k),
+                    }
+                    (*k, prev)
+                })
+                .collect();
+            Self { 旧值, _锁 }
+        }
+    }
+
+    impl Drop for 临时环境 {
+        fn drop(&mut self) {
+            for (k, v) in &self.旧值 {
+                match v {
+                    Some(v) => std::env::set_var(k, v),
+                    None => std::env::remove_var(k),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn 有_token_就带上没有就匿名() {
+        let _e = 临时环境::设(&[("GITHUB_TOKEN", Some("t1")), ("GH_TOKEN", None)]);
+        assert_eq!(
+            github_token("https://api.github.com/repos/o/r/releases/latest"),
+            Some("t1".into())
+        );
+
+        std::env::remove_var("GITHUB_TOKEN");
+        assert_eq!(github_token("https://api.github.com/x"), None);
+    }
+
+    #[test]
+    fn gh_token_作为备选() {
+        // 值为空白等于没设，要继续往下找——否则 `export GITHUB_TOKEN=` 这种
+        // 清空写法会把真正有值的 GH_TOKEN 挡住。
+        let _e = 临时环境::设(&[("GITHUB_TOKEN", Some("  ")), ("GH_TOKEN", Some("t2"))]);
+        assert_eq!(github_token("https://api.github.com/x"), Some("t2".into()));
+    }
+
+    #[test]
+    fn token_不会跟着请求跑到镜像代理上去() {
+        let _e = 临时环境::设(&[("GITHUB_TOKEN", Some("secret")), ("GH_TOKEN", None)]);
+        let 改写后 = Rewrite::HubProxy("https://ghproxy.test/".into())
+            .apply("https://api.github.com/repos/o/r/releases/latest");
+        assert_eq!(github_token(&改写后), None, "凭据不能递给第三方代理");
+        // 其它主机同理。
+        assert_eq!(github_token("https://example.com/api.github.com/x"), None);
+        assert_eq!(github_token("https://api.github.com.evil.test/x"), None);
     }
 }

@@ -430,6 +430,13 @@ Bash 保留在 `bak` 分支，`master` 上的 `scripts/` 与 `tests/` 已整体�
   只会让下一次 `cargo build` 把它覆盖回去。brew / apt 装的那份也拒绝，并指出
   该用哪个包管理器升。
 
+- **调 GitHub API 时认 `GITHUB_TOKEN` / `GH_TOKEN`。** 匿名限流是每小时 60 次、
+  按出口 IP 算，一个办公室共用一个出口的话，装几个服务就撞上限——而症状是
+  「查不到最新版本」，看不出跟限流有关。带上 token 是 5000 次。用这两个现成的
+  变量名而不是自己起一个：`gh auth login` 过的机器和 GitHub Actions 已经在设
+  它们。token 只发往 `api.github.com`，且判的是镜像改写**之后**的地址——配了
+  `FUNDEPLOY_GITHUB_HUB_PROXY_PREFIX` 时，URL 会变成 `https://某代理/https://api.github.com/…`，
+  照旧附上 Authorization 等于把凭据递给那个第三方代理。
 - **CI 从 shellcheck + 冒烟脚本换成 Rust 那一套**：`cargo fmt --check`、
   `cargo clippy -D warnings`、Linux 和 macOS 上各跑一遍 `cargo test`，外加四个
   发布 target 的 release 构建。构建放进 CI 而不是只在 tag 上跑：musl 静态链接有
