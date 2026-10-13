@@ -40,9 +40,6 @@ brew install fundeploy
 兼着 apt 源。`trust` 那行也不能省：Homebrew 6.0 起第三方 tap 默认不可信，不信任的话
 装会被拒。两步都只做一次。
 
-旧的 `farfarfun/tap` 冻在 0.3.1 不再更新，装过的 `brew untap farfarfun/tap` 之后照上面
-重来一次。
-
 ### APT
 
 ```bash
@@ -54,8 +51,7 @@ sudo apt update && sudo apt install fundeploy
 ```
 
 这是 farfarfun 所有项目共用的源，加一次以后别的包也直接 `apt install`，见
-[farfarfun/packages](https://github.com/farfarfun/packages)。旧的
-`farfarfun.github.io/fundeploy` 单项目源还在，但不再更新，建议换过来。
+[farfarfun/packages](https://github.com/farfarfun/packages)。
 
 ### 直接下二进制
 

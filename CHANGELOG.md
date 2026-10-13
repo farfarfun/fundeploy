@@ -23,29 +23,24 @@
 
 ### 变更
 
-- **APT 换成组织级的单一源。** 原来每个项目各发一个 apt 源，装 n 个包要加 n 次源。
-  现在 farfarfun 所有项目共用
-  [farfarfun/packages](https://github.com/farfarfun/packages)，加一次以后新包直接
-  `apt install`：
+- **分发全部收到 [farfarfun/packages](https://github.com/farfarfun/packages)。**
+  原来每个项目各发一个 apt 源，装 n 个包要加 n 次源。现在 farfarfun 所有项目共用
+  一个仓库，它同时是 apt 源和 Homebrew tap，两边的索引由同一张 `packages.toml`
+  生成：
 
   ```bash
+  # APT
   curl -fsSL https://farfarfun.github.io/packages/farfarfun.gpg \
     | sudo tee /usr/share/keyrings/farfarfun.gpg >/dev/null
   echo "deb [signed-by=/usr/share/keyrings/farfarfun.gpg] https://farfarfun.github.io/packages/deb stable main" \
     | sudo tee /etc/apt/sources.list.d/farfarfun.list
-  ```
 
-  旧的 `farfarfun.github.io/fundeploy` 源不再更新，但会留一段时间，不会突然 404。
-
-- **Homebrew tap 也搬到同一个仓库，要重新 tap 一次。** `farfarfun/packages` 现在
-  既是 apt 源也是 brew tap，apt 和 formula 由同一张 `packages.toml` 生成：
-
-  ```bash
-  brew untap farfarfun/tap
+  # Homebrew
   brew tap farfarfun/packages https://github.com/farfarfun/packages
   brew trust farfarfun/packages
-  brew install fundeploy
   ```
+
+  加过之后新包直接 `apt install` / `brew install`，裸名字即可。
 
   `tap` 那行得带 URL：`brew tap a/b` 只认 `github.com/a/homebrew-b` 这个约定，而这
   个仓库同时是 apt 源，叫 `homebrew-packages` 的话 apt 地址里会凭空多出几个字。
@@ -53,13 +48,7 @@
   `trust` 那行是 Homebrew 6.0 起的新要求：第三方 tap 默认不可信，不信任的话
   `brew install fundeploy` 直接被拒（`Refusing to load formula ... from untrusted
   tap`）。写全名 `brew install farfarfun/packages/fundeploy` 能装是因为它顺带只信任
-  了那一个 formula，所以这个坑很容易被误读成「裸名字不好使」。两步都只做一次，之后
-  装卸升级和普通 tap 没区别。
-
-  自动迁移在这儿做不到：`tap_migrations.json` 解析目标 tap 时用的还是上面那条
-  `homebrew-*` 约定，会去找不存在的 `farfarfun/homebrew-packages`。所以旧
-  `farfarfun/tap` 的 formula 留在原地冻住（删了的话老用户 `brew update` 之后会
-  直接「找不到这个包」），挂 `deprecate!` 提示换源。
+  了那一个 formula，所以这个坑很容易被误读成「裸名字不好使」。
 
 - 本仓库的 `packaging/` 相应只剩 `build-deb.sh`。
 
