@@ -57,6 +57,9 @@ brew install fundeploy
 兼着 apt 源。`trust` 那行也不能省：Homebrew 6.0 起第三方 tap 默认不可信，不信任的话
 装会被拒。两步都只做一次。
 
+GitHub 连不上就把 tap 的 URL 换成 `https://gitee.com/farfarfun/packages`，后面两行
+照旧。下包那一步不用管：formula 里每个 `url` 都带了 Gitee `mirror`，brew 自己会回落。
+
 ### APT
 
 ```bash
@@ -69,6 +72,9 @@ sudo apt update && sudo apt install fundeploy
 
 这是 farfarfun 所有项目共用的源，加一次以后别的包也直接 `apt install`，见
 [farfarfun/packages](https://github.com/farfarfun/packages)。
+
+apt 这条路没有 Gitee 备份：deb 树是 Actions 部署到 GitHub Pages 的，不在 git 里，
+镜像仓库带不走它。`farfarfun.github.io` 连不上就用上面的装机脚本。
 
 ### 直接下二进制
 

@@ -29,6 +29,19 @@
   只管 fundeploy 自己。装别的工具取的是上游仓库的 release，那些没有镜像，照旧
   直连 GitHub。
 
+- **`brew install` 同样有了 Gitee 退路。** formula 里每条 `url` 后面跟一条 Gitee
+  `mirror`（brew 原生支持，下包那一步它自己回落，不用配任何东西）；`brew tap` 做的
+  是 git clone，没法在 formula 里回落，所以把 tap 仓库也镜像了一份：
+
+  ```bash
+  brew tap farfarfun/packages https://gitee.com/farfarfun/packages
+  brew trust farfarfun/packages
+  brew install fundeploy
+  ```
+
+  apt 没有对应的路。deb 树是 Actions 部署到 GitHub Pages 的，不在 git 里，镜像
+  仓库带不走它——`farfarfun.github.io` 连不上就用装机脚本。
+
 ## [0.3.1] - 2026-10-13
 
 ### 修复
