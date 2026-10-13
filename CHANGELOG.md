@@ -3,7 +3,7 @@
 版本号以 `Cargo.toml` 里的 `version` 为准；发布由推同版本的 `v*` tag 触发（见
 `.github/workflows/release.yml`），因此「有 tag ＝ 已发布」。
 
-## [0.3.1] - 未发布
+## [0.3.1] - 2026-10-13
 
 ### 修复
 
