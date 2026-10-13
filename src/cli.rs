@@ -134,12 +134,11 @@ fn no_args() -> Result<()> {
 fn list_services() {
     ui::heading("服务");
     for s in service::registry::all() {
-        let spec = s.spec();
-        let ports: Vec<String> = spec.components.iter().map(|c| c.port.to_string()).collect();
+        let ports: Vec<String> = s.ports().iter().map(u16::to_string).collect();
         println!(
             "  {:<14} {}（端口 {}）",
-            spec.name,
-            spec.summary,
+            s.name(),
+            s.summary(),
             ports.join("、")
         );
     }
@@ -168,7 +167,7 @@ fn pick_service() -> Result<Box<dyn Service>> {
     let all = service::registry::all();
     let labels: Vec<String> = all
         .iter()
-        .map(|s| format!("{:<14} {}", s.spec().name, s.spec().summary))
+        .map(|s| format!("{:<14} {}", s.name(), s.summary()))
         .collect();
 
     let picked = ui::select("选一个服务", &labels)?.ok_or_else(|| anyhow::anyhow!("已取消。"))?;

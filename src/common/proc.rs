@@ -117,6 +117,66 @@ pub fn stop_by_pid_file(path: &Path, timeout: Duration, process_group: bool) -> 
     Ok(true)
 }
 
+/// 后台起一个进程，返回它的 PID。
+///
+/// 做了三件 `nohup cmd &` 会做的事：输出重定向到日志、脱离终端、自成进程组。
+///
+/// 自成进程组（`setsid`）不只是为了躲 SIGHUP。[`stop_pid`] 只在 pid 本身是组
+/// leader 时才敢整组停，而服务基本都会派生子进程；不 setsid 的话子进程继承的是
+/// fundeploy 自己的组，整组停这条路就彻底走不通，只能留下孤儿。
+///
+/// 日志按 0600 建。服务往日志里打密码是常事（code-server 启动时就会把自动生成的
+/// 登录密码写进去），默认 umask 下的 0644 等于把它给了同机所有用户。
+pub fn spawn_detached(
+    argv: &[String],
+    cwd: &Path,
+    env: &[crate::common::cmd::EnvEdit],
+    log: &Path,
+) -> Result<i32> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    use std::os::unix::process::CommandExt;
+
+    let (program, args) = argv.split_first().context("启动命令是空的")?;
+
+    if let Some(dir) = log.parent() {
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("建日志目录失败: {}", dir.display()))?;
+    }
+    let out = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(log)
+        .with_context(|| format!("打开日志失败: {}", log.display()))?;
+    // mode() 只在新建时生效。上一轮以 0644 建出来的日志得收紧一次，不然
+    // 「以后都是 0600」对那台已经跑过的机器是空话。
+    let _ = std::fs::set_permissions(log, std::fs::Permissions::from_mode(0o600));
+    let err = out
+        .try_clone()
+        .with_context(|| format!("打开日志失败: {}", log.display()))?;
+
+    let mut c = std::process::Command::new(program);
+    c.args(args)
+        .current_dir(cwd)
+        .stdin(std::process::Stdio::null())
+        .stdout(out)
+        .stderr(err);
+    crate::common::cmd::apply_env(&mut c, env);
+    unsafe {
+        c.pre_exec(|| {
+            if libc::setsid() < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+
+    let child = c
+        .spawn()
+        .with_context(|| format!("起不了 {program}（工作目录 {}）", cwd.display()))?;
+    Ok(child.id() as i32)
+}
+
 /// 在作用域内把 SIGINT/SIGTERM 从「默认杀掉自己」改成「记下来」。
 ///
 /// 给前台子进程用：Ctrl+C 会投给整个前台进程组，父子都收到。父进程若按默认行为

@@ -63,6 +63,33 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
+    let edits: Vec<EnvEdit> = envs
+        .iter()
+        .map(|(k, v)| (k.clone(), Some(v.clone())))
+        .collect();
+    spawn_status_in(args, &edits, None)
+}
+
+/// 对子进程环境的一处改动。`None` 表示把这个变量从继承来的环境里**删掉**。
+///
+/// 删掉是个真需求：Go 那边用 godotenv 读 `.env` 的服务默认不覆盖已存在的环境
+/// 变量，操作者 shell 里 export 过一个同名的 `PORT`，`.env` 里那行就彻底不生效，
+/// 服务起在另一个端口上而且谁也没报错。
+pub type EnvEdit = (String, Option<String>);
+
+/// 跑一个命令，可以指定工作目录和环境改动。
+///
+/// 工作目录不是可有可无的：有些上游会从当前目录读东西（new-api 启动时
+/// `godotenv.Load(".env")`），在哪儿跑决定了它加载哪份配置。
+pub fn spawn_status_in<I, S>(
+    args: I,
+    env: &[EnvEdit],
+    cwd: Option<&std::path::Path>,
+) -> Result<Option<i32>>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
     let argv = to_argv(args);
     let (prog, rest) = argv
         .split_first()
@@ -70,13 +97,24 @@ where
 
     let mut c = Command::new(prog);
     c.args(rest);
-    for (k, v) in envs {
-        c.env(k, v);
+    apply_env(&mut c, env);
+    if let Some(dir) = cwd {
+        c.current_dir(dir);
     }
     let status = c
         .status()
         .with_context(|| format!("起不了进程: {}", render(&argv)))?;
     Ok(status.code())
+}
+
+/// 把环境改动套到一条待执行的命令上。
+pub fn apply_env(c: &mut Command, env: &[EnvEdit]) {
+    for (k, v) in env {
+        match v {
+            Some(v) => c.env(k, v),
+            None => c.env_remove(k),
+        };
+    }
 }
 
 /// 跑一个命令，stdout/stderr 直通终端。退出码非 0 即报错。

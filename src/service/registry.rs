@@ -1,7 +1,7 @@
 //! 服务声明。
 //!
-//! 一个服务通常就是一份 [`ServiceSpec`]，生命周期全部由 [`Service`] 的默认实现
-//! 提供。只有真有个性的服务（见 [`funread_web`]）才需要自己的类型去覆盖钩子。
+//! 一个服务通常就是一份声明，生命周期全部由所属族的默认实现提供。只有真有个性
+//! 的服务（见 [`funread_web`]）才需要自己的类型去覆盖钩子。
 //!
 //! 所有端口、地址、包名、版本都可以用环境变量盖掉，变量名的规律是
 //! `<服务名大写>_<组件名大写>_<字段>`，例如 `FUNREAD_WEB_BACKEND_PORT`。
@@ -10,18 +10,24 @@ use anyhow::Result;
 use std::path::PathBuf;
 
 use super::config;
+use super::daemon::{self, DaemonSpec, Github, Proc};
 use super::spec::{Arg, CliShape, Component, Pkg, ServiceSpec};
-use super::{Declared, Service};
+use super::upstream::{self, Upstream};
+use super::Service;
 use crate::args;
+use crate::common::platform::{self, Platform};
 use crate::ui;
 
 pub fn all() -> Vec<Box<dyn Service>> {
     vec![
-        Box::new(Declared(funfluid_web())),
-        Box::new(Declared(funlesson_web())),
-        Box::new(Declared(fungame_web())),
-        Box::new(Declared(funflix_web())),
-        Box::new(funread_web()),
+        upstream::declared(funfluid_web()),
+        upstream::declared(funlesson_web()),
+        upstream::declared(fungame_web()),
+        upstream::declared(funflix_web()),
+        upstream::boxed(funread_web()),
+        daemon::boxed(new_api()),
+        daemon::declared(code_server()),
+        daemon::boxed(sub2api()),
     ]
 }
 
@@ -444,7 +450,7 @@ impl FunreadWeb {
     }
 }
 
-impl Service for FunreadWeb {
+impl Upstream for FunreadWeb {
     fn spec(&self) -> &ServiceSpec {
         &self.spec
     }
@@ -459,6 +465,275 @@ impl Service for FunreadWeb {
     fn post_install(&self) -> Result<()> {
         // 装完就把根配置放好，让人能在启动前先去填库地址。
         self.ensure_shared_config()
+    }
+}
+
+// ---------------------------------------------------------------- new-api
+
+/// new-api 自己要守着，而且端口最终由它读的 `.env` 说了算。
+pub struct NewApi {
+    spec: DaemonSpec,
+}
+
+fn new_api() -> NewApi {
+    let home = PathBuf::from(env_str(
+        "NEW_API_SERVICE_HOME",
+        &home().join("opt/new-api").to_string_lossy(),
+    ));
+    let data = home.join("data");
+    let port = env_port("NEW_API_PORT", 8801);
+    let host = env_str("NEW_API_HOST", "127.0.0.1");
+
+    // 上游给三种附件，macOS 不分架构。
+    let asset = |tag: &str, p: Platform| {
+        let ver = tag.trim_start_matches(['v', 'V']);
+        match (p.os, p.arch) {
+            (platform::Os::MacOs, _) => format!("new-api-macos-v{ver}"),
+            (platform::Os::Linux, platform::Arch::Aarch64) => format!("new-api-arm64-v{ver}"),
+            (platform::Os::Linux, platform::Arch::X86_64) => format!("new-api-v{ver}"),
+        }
+    };
+
+    // 必须在数据目录里跑：上游启动时执行 godotenv.Load(".env")，走的是相对路径。
+    let mut proc = Proc::new("main", "new-api", "new-api", &host, port, data.clone());
+
+    // godotenv 不覆盖已存在的环境变量。有 .env 就把 PORT 让给它，同时从继承环境里
+    // 删掉 PORT——操作者 shell 里 export 过一个，.env 那行就白写了，而且没人报错。
+    let force = env_opt("NEW_API_FORCE_SCRIPT_PORT").as_deref() == Some("1");
+    proc = if data.join(".env").is_file() && !force {
+        proc.unset("PORT")
+    } else {
+        proc.env("PORT", port.to_string())
+    };
+
+    let spec = DaemonSpec::new(
+        "new-api",
+        "new-api 中转网关",
+        home,
+        Github {
+            repo: env_str("NEW_API_GITHUB_REPO", "QuantumNous/new-api"),
+            asset: Box::new(asset),
+            // 附件是裸二进制，没有归档可剥。
+            strip: 0,
+            binary_name: "new-api".into(),
+            scan: 40,
+        },
+        vec![proc],
+    )
+    .entry(format!("http://{host}:{port}"))
+    .note("SQL_DSN 等配置写在 data/.env 里，它的 PORT 优先于 NEW_API_PORT。");
+
+    NewApi { spec }
+}
+
+impl daemon::Daemon for NewApi {
+    fn spec(&self) -> &DaemonSpec {
+        &self.spec
+    }
+
+    /// `.env` 里的 PORT 才是真正生效的那个（见上面 godotenv 的说明）。
+    /// 不按它探测的话，start 会在一个没人监听的端口上空等三十秒然后报失败。
+    fn effective_port(&self, p: &Proc) -> u16 {
+        env_file_value(&self.spec.data_dir().join(".env"), "PORT")
+            .and_then(|v| v.parse().ok())
+            .filter(|&x| x > 0)
+            .unwrap_or(p.port)
+    }
+}
+
+/// 从 `KEY=VALUE` 风格的文件里取一个值。取最后一条，和 shell 里重复赋值的语义一致。
+fn env_file_value(path: &PathBuf, key: &str) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    text.lines()
+        .rev()
+        .filter_map(|line| {
+            let line = line.trim();
+            let line = line.strip_prefix("export ").unwrap_or(line);
+            let (k, v) = line.split_once('=')?;
+            (k.trim() == key).then(|| v.to_string())
+        })
+        .map(|v| {
+            // 去掉行尾注释和包裹的引号。
+            let v = v.split('#').next().unwrap_or("").trim();
+            v.trim_matches(['"', '\'']).to_string()
+        })
+        .find(|v| !v.is_empty())
+}
+
+// ---------------------------------------------------------------- code-server
+
+fn code_server() -> DaemonSpec {
+    let workspace = home();
+    let home = PathBuf::from(env_str(
+        "CODE_SERVER_SERVICE_HOME",
+        &workspace.join("opt/code-server").to_string_lossy(),
+    ));
+    let host = env_str("CODE_SERVER_HOST", "127.0.0.1");
+    let port = env_port("CODE_SERVER_PORT", 8080);
+
+    let asset = |tag: &str, p: Platform| {
+        let ver = tag.trim_start_matches(['v', 'V']);
+        format!(
+            "code-server-{ver}-{}-{}.tar.gz",
+            p.os.macos_style(),
+            p.arch.go()
+        )
+    };
+
+    // 工作区就是家目录：code-server 打开的是 cwd，装在 opt 下不代表要在那儿写代码。
+    let mut proc = Proc::new(
+        "main",
+        "code-server",
+        "bin/code-server",
+        &host,
+        port,
+        workspace,
+    )
+    .args(vec!["--bind-addr".into(), format!("{host}:{port}")]);
+    // 走环境变量而不是命令行：/proc/<pid>/cmdline 是全机可读的。
+    if let Some(pw) = env_opt("PASSWORD") {
+        proc = proc.env("PASSWORD", pw);
+    }
+
+    DaemonSpec::new(
+        "code-server",
+        "浏览器里的 VS Code",
+        home,
+        Github {
+            repo: env_str("CODE_SERVER_GITHUB_REPO", "coder/code-server"),
+            asset: Box::new(asset),
+            // 归档里是 code-server-<版本>-<平台>/ 一层壳，剥掉它安装路径才不随版本变。
+            strip: 1,
+            binary_name: "code-server".into(),
+            scan: 20,
+        },
+        vec![proc],
+    )
+    .entry(format!("http://{host}:{port}"))
+    .note("没设 PASSWORD 的话，登录密码在首次启动的日志里（log/main.log）。")
+}
+
+// ---------------------------------------------------------------- sub2api
+
+/// sub2api 要在启动前把环境变量文件和示例配置放好。
+pub struct Sub2Api {
+    spec: DaemonSpec,
+}
+
+fn sub2api() -> Sub2Api {
+    let home = PathBuf::from(env_str(
+        "SUB2API_SERVICE_HOME",
+        &home().join("opt/sub2api").to_string_lossy(),
+    ));
+    let data = home.join("data");
+    let env_file = data.join("sub2api.env");
+
+    // 优先级：显式环境变量 > 环境变量文件 > 默认值。
+    // 默认绑 127.0.0.1 而不是 0.0.0.0 是刻意的：这里存着上游渠道的 key 和用户
+    // token，默认对外开等于把它们挂到公网上。
+    let host = env_opt("SUB2API_HOST")
+        .or_else(|| env_file_value(&env_file, "SERVER_HOST"))
+        .unwrap_or_else(|| "127.0.0.1".into());
+    let port = env_opt("SUB2API_PORT")
+        .or_else(|| env_file_value(&env_file, "SERVER_PORT"))
+        .and_then(|v| v.parse().ok())
+        .filter(|&x: &u16| x > 0)
+        .unwrap_or(8802);
+
+    let asset = |tag: &str, p: Platform| {
+        let ver = tag.trim_start_matches(['v', 'V']);
+        format!("sub2api_{ver}_{}_{}.tar.gz", p.os.go(), p.arch.go())
+    };
+
+    // 归档里是 sub2api + deploy/ 平铺在根上，没有壳要剥；在 app/ 下跑，
+    // 上游才找得到同级的 deploy/。
+    let proc = Proc::new("main", "sub2api", "sub2api", &host, port, home.join("app"))
+        .env("DATA_DIR", data.to_string_lossy().into_owned())
+        .env("SERVER_HOST", &host)
+        .env("SERVER_PORT", port.to_string())
+        .env("RUN_MODE", env_str("SUB2API_RUN_MODE", "simple"))
+        .env("SIMPLE_MODE_CONFIRM", "true")
+        .env("GIN_MODE", "release");
+
+    let spec = DaemonSpec::new(
+        "sub2api",
+        "sub2api 订阅转 API",
+        home,
+        Github {
+            repo: env_str("SUB2API_GITHUB_REPO", "Wei-Shaw/sub2api"),
+            asset: Box::new(asset),
+            strip: 0,
+            binary_name: "sub2api".into(),
+            scan: 30,
+        },
+        vec![proc],
+    )
+    .entry(format!("http://{host}:{port}"))
+    .note("库地址、JWT 密钥、管理员口令写在 data/sub2api.env 里。");
+
+    Sub2Api { spec }
+}
+
+impl Sub2Api {
+    fn env_file(&self) -> PathBuf {
+        self.spec.data_dir().join("sub2api.env")
+    }
+
+    /// 放一份注释掉的环境变量模板。
+    ///
+    /// 整份注释掉等于「这台机器没有特殊配置」。这里面该填什么库、什么口令不是
+    /// 安装脚本能替人决定的，写个默认值进去只会让人在连错库之后才发现。
+    fn seed_env_file(&self) -> Result<()> {
+        let path = self.env_file();
+        let body = "# sub2api 的运行环境变量，由 fundeploy 生成。整份是注释，去掉 # 即生效。\n\
+                    # 这个文件会被 sub2api 读走，权限是 0600——里面放的是口令和密钥。\n\
+                    # 监听地址由 fundeploy 的 SUB2API_HOST / SUB2API_PORT 决定，\n\
+                    # 没设时才回落到这里的 SERVER_HOST / SERVER_PORT。\n\
+                    #\n\
+                    # SERVER_HOST=127.0.0.1\n\
+                    # SERVER_PORT=8802\n\
+                    # DATABASE_HOST=127.0.0.1\n\
+                    # DATABASE_PORT=5432\n\
+                    # DATABASE_USER=postgres\n\
+                    # DATABASE_PASSWORD=\n\
+                    # DATABASE_NAME=sub2api\n\
+                    # REDIS_HOST=127.0.0.1\n\
+                    # REDIS_PORT=6379\n\
+                    # REDIS_PASSWORD=\n\
+                    # JWT_SECRET=换成一串随机值\n\
+                    # TOTP_ENCRYPTION_KEY=换成一串随机值\n\
+                    # ADMIN_EMAIL=admin@sub2api.local\n\
+                    # ADMIN_PASSWORD=换掉我\n";
+        match config::write_if_absent(&path, body) {
+            Ok(true) => ui::step(format!("已生成 {}（库地址和口令写这里）", path.display())),
+            Ok(false) => {}
+            Err(e) => ui::warn(format!("{e}（库地址和口令要写在这里）")),
+        }
+        Ok(())
+    }
+}
+
+impl daemon::Daemon for Sub2Api {
+    fn spec(&self) -> &DaemonSpec {
+        &self.spec
+    }
+
+    fn ensure_config(&self) -> Result<()> {
+        self.seed_env_file()
+    }
+
+    fn post_install(&self) -> Result<()> {
+        self.seed_env_file()?;
+        // 上游把一份完整的示例配置打在 deploy/ 里，放到 data/ 下人才找得到；
+        // app/ 每次升级会被整个换掉，留在那儿等于没留。
+        let from = self.spec.app_dir().join("deploy/config.example.yaml");
+        let to = self.spec.data_dir().join("config.example.yaml");
+        if from.is_file() && !to.exists() {
+            if let Err(e) = std::fs::copy(&from, &to) {
+                ui::warn(format!("复制示例配置失败: {e}"));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -622,47 +897,163 @@ mod tests {
         std::env::remove_var("__FD_TEST_STR");
     }
 
+    /// 上游自带守护那一族的全部声明。`all()` 里只剩 `dyn Service`，
+    /// 拿不到 spec，组件级的自检只能在这里对着原始声明做。
+    fn upstream_specs() -> Vec<ServiceSpec> {
+        vec![
+            funfluid_web(),
+            funlesson_web(),
+            fungame_web(),
+            funflix_web(),
+            funread_web().spec,
+        ]
+    }
+
     #[test]
-    fn 每个服务都至少声明了_start_和_stop() {
-        for s in all() {
-            for c in &s.spec().components {
-                assert!(!c.cli.start.is_empty(), "{}/{} 没有 start", s.name(), c.key);
-                assert!(!c.cli.stop.is_empty(), "{}/{} 没有 stop", s.name(), c.key);
+    fn 每个上游服务的声明都自检通过() {
+        // 声明写错（key 重复、端口撞车、引用了不存在的组件）属于编程错误，
+        // 不该等到操作者跑 start 时才炸。
+        for spec in upstream_specs() {
+            spec.validate()
+                .unwrap_or_else(|e| panic!("{} 的声明有问题: {e}", spec.name));
+        }
+    }
+
+    #[test]
+    fn 每个上游服务都至少声明了_start_和_stop() {
+        for spec in upstream_specs() {
+            for c in &spec.components {
+                assert!(
+                    !c.cli.start.is_empty(),
+                    "{}/{} 没有 start",
+                    spec.name,
+                    c.key
+                );
+                assert!(!c.cli.stop.is_empty(), "{}/{} 没有 stop", spec.name, c.key);
             }
         }
     }
 
     #[test]
-    fn 每个服务的最后一个组件都能前台跑() {
+    fn 每个上游服务的最后一个组件都能前台跑() {
         // run 把最后一个组件放前台，它必须有 run 形态，否则 run 命令直接不可用。
-        for s in all() {
-            let last = s.spec().components.last().unwrap();
+        for spec in upstream_specs() {
+            let last = spec.components.last().unwrap();
             assert!(
                 !last.cli.run.is_empty(),
                 "{} 的 {} 没有 run",
-                s.name(),
+                spec.name,
                 last.key
             );
         }
     }
 
     #[test]
-    fn 所有服务的端口在全局范围内也不撞车() {
-        // 同机常常同时跑好几个服务，端口撞了会表现成「另一个服务莫名其妙起不来」。
-        let mut seen: Vec<(u16, String)> = Vec::new();
-        for s in all() {
-            for c in &s.spec().components {
-                if let Some((_, who)) = seen.iter().find(|(p, _)| *p == c.port) {
-                    panic!(
-                        "端口 {} 被 {} 和 {}/{} 同时占用",
-                        c.port,
-                        who,
-                        s.name(),
-                        c.key
-                    );
-                }
-                seen.push((c.port, format!("{}/{}", s.name(), c.key)));
-            }
+    fn new_api_按平台拼附件名() {
+        // 三种附件名互不相同，而且 macOS 不分架构——拼错了就是 404。
+        let s = new_api().spec;
+        let cases = [
+            (
+                platform::Os::Linux,
+                platform::Arch::X86_64,
+                "new-api-v0.12.6",
+            ),
+            (
+                platform::Os::Linux,
+                platform::Arch::Aarch64,
+                "new-api-arm64-v0.12.6",
+            ),
+            (
+                platform::Os::MacOs,
+                platform::Arch::Aarch64,
+                "new-api-macos-v0.12.6",
+            ),
+        ];
+        for (os, arch, want) in cases {
+            assert_eq!((s.source.asset)("v0.12.6", Platform { os, arch }), want);
         }
+    }
+
+    #[test]
+    fn code_server_和_sub2api_的附件名各按各家的写法() {
+        let p = Platform {
+            os: platform::Os::MacOs,
+            arch: platform::Arch::Aarch64,
+        };
+        // code-server 用 macos-arm64，sub2api 用 darwin_arm64。
+        assert_eq!(
+            (code_server().source.asset)("v4.112.0", p),
+            "code-server-4.112.0-macos-arm64.tar.gz"
+        );
+        assert_eq!(
+            (sub2api().spec.source.asset)("v0.1.144", p),
+            "sub2api_0.1.144_darwin_arm64.tar.gz"
+        );
+    }
+
+    #[test]
+    fn new_api_有_env_时把端口让给它() {
+        // godotenv 不覆盖已存在的环境变量，所以这时必须把 PORT 从环境里删掉，
+        // 否则操作者 shell 里 export 过的那个会静默压住 .env 里的配置。
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("data")).unwrap();
+        std::fs::write(dir.path().join("data/.env"), "PORT=9999\n").unwrap();
+        std::env::set_var("NEW_API_SERVICE_HOME", dir.path());
+
+        let s = new_api();
+        assert_eq!(s.spec.procs[0].env, [("PORT".to_string(), None)]);
+        assert_eq!(
+            daemon::Daemon::effective_port(&s, &s.spec.procs[0]),
+            9999,
+            ".env 里的 PORT 才是真正生效的那个"
+        );
+
+        std::env::remove_var("NEW_API_SERVICE_HOME");
+    }
+
+    #[test]
+    fn new_api_没有_env_时自己注入端口() {
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("NEW_API_SERVICE_HOME", dir.path());
+
+        let s = new_api();
+        assert_eq!(
+            s.spec.procs[0].env,
+            [("PORT".to_string(), Some("8801".to_string()))]
+        );
+        assert_eq!(daemon::Daemon::effective_port(&s, &s.spec.procs[0]), 8801);
+
+        std::env::remove_var("NEW_API_SERVICE_HOME");
+    }
+
+    #[test]
+    fn 从_env_文件里取值() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join(".env");
+        std::fs::write(
+            &f,
+            "# PORT=1\nexport SERVER_HOST = \"0.0.0.0\"\nPORT=3000 # 注释\nPORT=4000\n",
+        )
+        .unwrap();
+        // 重复赋值取最后一条，和 shell 的语义一致。
+        assert_eq!(env_file_value(&f, "PORT").as_deref(), Some("4000"));
+        // export 前缀、引号、行尾注释都要剥掉。
+        assert_eq!(
+            env_file_value(&f, "SERVER_HOST").as_deref(),
+            Some("0.0.0.0")
+        );
+        assert_eq!(env_file_value(&f, "没有这个"), None);
+        assert_eq!(env_file_value(&dir.path().join("没有"), "PORT"), None);
+    }
+
+    #[test]
+    fn sub2api_默认只绑本机() {
+        // 它存着上游渠道的 key 和用户 token，默认对外开等于把这些挂到公网上。
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("SUB2API_SERVICE_HOME", dir.path());
+        let s = sub2api().spec;
+        assert_eq!(s.procs[0].host, "127.0.0.1");
+        assert_eq!(s.procs[0].port, 8802);
+        std::env::remove_var("SUB2API_SERVICE_HOME");
     }
 }
