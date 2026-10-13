@@ -25,6 +25,7 @@ pub fn all() -> Vec<Box<dyn Service>> {
         upstream::declared(fungame_web()),
         upstream::declared(funflix_web()),
         upstream::boxed(funread_web()),
+        upstream::boxed(funmill()),
         daemon::boxed(new_api()),
         daemon::declared(code_server()),
         daemon::boxed(sub2api()),
@@ -155,7 +156,9 @@ fn funlesson_web() -> ServiceSpec {
             "funlesson-web",
         ),
         &env_str("FUNLESSON_WEB_FRONTEND_HOST", "127.0.0.1"),
-        env_port("FUNLESSON_WEB_FRONTEND_PORT", 8812),
+        // 8812 让给 funmill——那边是上游写死的，这边只是本项目自己定的默认值。
+        // 8813 也被 funmill 的编排后端占着，所以跳到 8814。
+        env_port("FUNLESSON_WEB_FRONTEND_PORT", 8814),
     )
     .version(env_opt("FUNLESSON_WEB_FRONTEND_VERSION"))
     .cli_shape(server_subcommand_shape(args![
@@ -468,6 +471,98 @@ impl Upstream for FunreadWeb {
     }
 }
 
+// ---------------------------------------------------------------- funmill
+
+/// funmill 有两处个性：API 和编排后端由同一个 pip 包提供（后端二进制还得让上游
+/// 自己再下一次），以及它强制 X-API-Key 鉴权且不给默认值。
+pub struct Funmill {
+    spec: ServiceSpec,
+    /// 要编排的第三方后端；None 表示后端归别处管。
+    backend: Option<String>,
+}
+
+fn funmill() -> Funmill {
+    let pkg = env_str("FUNMILL_PACKAGE", "funmill-api");
+    let version = env_opt("FUNMILL_VERSION");
+    // none 表示这台机器的编排后端归别处管（已经在用 windmill，或者外部托管）。
+    let backend = env_str("FUNMILL_BACKEND", "dagu");
+    let backend = (backend != "none").then_some(backend);
+
+    let mut components = Vec::new();
+    if let Some(b) = &backend {
+        components.push(
+            Component::new(
+                "backend",
+                &format!("编排后端 {b}"),
+                Pkg::pip(&pkg, "funmill"),
+                "127.0.0.1",
+                env_port("FUNMILL_BACKEND_PORT", 8813),
+            )
+            .version(version.clone())
+            .cli_shape(
+                CliShape::new()
+                    .start(args!["start", b.clone()])
+                    .stop(args!["stop", b.clone()])
+                    .status(args!["status", b.clone()]),
+            ),
+        );
+    }
+
+    let mut api = Component::new(
+        "api",
+        "Funmill API",
+        Pkg::pip(&pkg, "funmill"),
+        "127.0.0.1",
+        env_port("FUNMILL_API_PORT", 8812),
+    )
+    .version(version)
+    .cli_shape(
+        CliShape::new()
+            .start(args!["start"])
+            .run(args!["run"])
+            .stop(args!["stop"])
+            .status(args!["status"]),
+    );
+    if let Some(b) = &backend {
+        api = api.env("FUNMILL_BACKEND", b);
+    }
+    components.push(api);
+
+    let spec = ServiceSpec::new("funmill", "funmill 任务执行 API", components)
+        .entry_at("api", "/docs")
+        // 端口是上游写死的，CLI 不收 --host/--port；这里的端口只拿来探测死活。
+        .note("端口由上游固定，改不了；FUNMILL_*_PORT 只影响 fundeploy 的探测。")
+        .note("PID 和日志归 funmill 自己管，在 ~/.farfarfun/funmill/services/<名字>/ 下。");
+
+    Funmill { spec, backend }
+}
+
+impl Upstream for Funmill {
+    fn spec(&self) -> &ServiceSpec {
+        &self.spec
+    }
+
+    /// 上游强制 X-API-Key 鉴权，而且没有默认值。缺了照样能起来，但之后每个请求
+    /// 都是 401——与其让人对着一个「启动成功」的服务查半天，不如在这儿就拦住。
+    fn ensure_config(&self) -> Result<()> {
+        if env_opt("FUNMILL_API_KEY").is_none() {
+            anyhow::bail!(
+                "funmill 强制 X-API-Key 鉴权，启动前先 export FUNMILL_API_KEY=...（上游没有默认值）"
+            );
+        }
+        Ok(())
+    }
+
+    /// 编排后端是个二进制，pip 包里没有，得让上游自己去下。
+    fn post_install(&self) -> Result<()> {
+        let Some(b) = &self.backend else {
+            return Ok(());
+        };
+        ui::step(format!("安装编排后端 {b}"));
+        crate::common::cmd::run(["funmill", "install", b])
+    }
+}
+
 // ---------------------------------------------------------------- new-api
 
 /// new-api 自己要守着，而且端口最终由它读的 `.env` 说了算。
@@ -769,6 +864,18 @@ fn server_shape_with(start: Vec<Arg>, stop: Vec<Arg>, status: Vec<Arg>) -> CliSh
 mod tests {
     use super::*;
 
+    /// 这个模块的测试要排队跑。
+    ///
+    /// 声明是从环境变量算出来的，而环境变量是进程级的：cargo test 默认多线程，
+    /// 一个测试 `set_var` 的那一瞬间，另一个测试读到的就是它。表现是偶发失败，
+    /// 重跑又好了——最难查的那种。
+    fn 排队() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        // 某个测试 panic 会毒化这把锁，但锁保护的只是「别同时跑」，
+        // 没有需要保持一致的共享状态，所以直接接着用。
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     fn argv(spec: &ServiceSpec, key: &str, pick: fn(&CliShape) -> &Vec<Arg>) -> Vec<String> {
         let c = spec.component(key).unwrap();
         let mut v = c.render(pick(&c.cli), &spec.components).unwrap();
@@ -778,6 +885,7 @@ mod tests {
 
     #[test]
     fn funfluid_后端停的是_all() {
+        let _排队 = 排队();
         // 不带 all 的话，funfluid-api 自己那个 watch 循环不会停，半分钟后会把
         // 服务重新拉起来——表现为「停了又活」，而 stop 报的是成功。
         let spec = funfluid_web();
@@ -789,6 +897,7 @@ mod tests {
 
     #[test]
     fn funfluid_后端带_service_位置参数而不是地址参数() {
+        let _排队 = 排队();
         let spec = funfluid_web();
         let start = argv(&spec, "backend", |c| &c.start);
         assert_eq!(start, ["funfluid-api", "start", "gunicorn", "-d"]);
@@ -797,6 +906,7 @@ mod tests {
 
     #[test]
     fn funfluid_前端带守护参数() {
+        let _排队 = 排队();
         let spec = funfluid_web();
         assert_eq!(
             argv(&spec, "frontend", |c| &c.start),
@@ -818,6 +928,7 @@ mod tests {
 
     #[test]
     fn funlesson_前端连得上后端() {
+        let _排队 = 排队();
         let spec = funlesson_web();
         assert_eq!(
             argv(&spec, "frontend", |c| &c.start),
@@ -828,7 +939,7 @@ mod tests {
                 "--host",
                 "127.0.0.1",
                 "--port",
-                "8812",
+                "8814",
                 "--backend",
                 "http://127.0.0.1:18812"
             ]
@@ -837,6 +948,7 @@ mod tests {
 
     #[test]
     fn fungame_的两个前端都指向同一个后端() {
+        let _排队 = 排队();
         let spec = fungame_web();
         for key in ["admin", "client"] {
             let a = argv(&spec, key, |c| &c.start);
@@ -847,6 +959,7 @@ mod tests {
 
     #[test]
     fn fungame_是三个组件且用户端是入口() {
+        let _排队 = 排队();
         let spec = fungame_web();
         assert_eq!(spec.components.len(), 3);
         assert_eq!(spec.entry_url().as_deref(), Some("http://127.0.0.1:8808"));
@@ -854,6 +967,7 @@ mod tests {
 
     #[test]
     fn funread_的_stop_不带_host() {
+        let _排队 = 排队();
         // 上游的 stop/status 只认 --config 和 --port，多给 --host 会直接报参数错误。
         let spec = funread_web().spec;
         let stop = argv(&spec, "backend", |c| &c.stop);
@@ -863,6 +977,7 @@ mod tests {
 
     #[test]
     fn funread_的入口带_web_路径() {
+        let _排队 = 排队();
         let spec = funread_web().spec;
         assert_eq!(
             spec.entry_url().as_deref(),
@@ -872,6 +987,7 @@ mod tests {
 
     #[test]
     fn 端口能用环境变量盖掉() {
+        let _排队 = 排队();
         std::env::set_var("FUNLESSON_WEB_FRONTEND_PORT", "19999");
         let spec = funlesson_web();
         assert_eq!(spec.component("frontend").unwrap().port, 19999);
@@ -880,6 +996,7 @@ mod tests {
 
     #[test]
     fn 非法端口退回默认值而不是崩掉() {
+        let _排队 = 排队();
         std::env::set_var("__FD_TEST_PORT", "八千");
         assert_eq!(env_port("__FD_TEST_PORT", 1234), 1234);
         std::env::set_var("__FD_TEST_PORT", "0");
@@ -891,6 +1008,7 @@ mod tests {
 
     #[test]
     fn 空环境变量当作没设置() {
+        let _排队 = 排队();
         std::env::set_var("__FD_TEST_STR", "   ");
         assert_eq!(env_str("__FD_TEST_STR", "默认"), "默认");
         assert_eq!(env_opt("__FD_TEST_STR"), None);
@@ -906,11 +1024,84 @@ mod tests {
             fungame_web(),
             funflix_web(),
             funread_web().spec,
+            funmill().spec,
         ]
     }
 
     #[test]
+    fn funmill_的两个组件来自同一个包() {
+        let _排队 = 排队();
+        // 两个进程、一个包。装/卸要按包去重，否则同一个包装两遍，
+        // 卸载时第二遍还会多报一句「卸载失败」。
+        let spec = funmill().spec;
+        assert_eq!(spec.components.len(), 2);
+        let names: Vec<&str> = spec.components.iter().map(|c| c.pkg.name()).collect();
+        assert_eq!(names, ["funmill-api", "funmill-api"]);
+    }
+
+    #[test]
+    fn funmill_先起后端再起_api() {
+        let _排队 = 排队();
+        // 声明顺序就是启动顺序：API 连的是后端，后端没起来 API 起来也没用。
+        let spec = funmill().spec;
+        assert_eq!(spec.components[0].key, "backend");
+        assert_eq!(spec.components[1].key, "api");
+        assert_eq!(
+            argv(&spec, "backend", |c| &c.start),
+            ["funmill", "start", "dagu"]
+        );
+        assert_eq!(argv(&spec, "api", |c| &c.start), ["funmill", "start"]);
+    }
+
+    #[test]
+    fn funmill_的参数里不出现_host_和_port() {
+        let _排队 = 排队();
+        // 上游 CLI 不收这两个，传了直接报参数错误；声明里的端口只拿来探测死活。
+        let spec = funmill().spec;
+        for key in ["backend", "api"] {
+            for pick in [
+                (|c: &CliShape| &c.start) as fn(&CliShape) -> &Vec<Arg>,
+                |c| &c.stop,
+                |c| &c.status,
+            ] {
+                let a = argv(&spec, key, pick);
+                assert!(
+                    !a.iter().any(|x| x == "--host" || x == "--port"),
+                    "{key} 的参数里混进了地址参数: {a:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn funmill_后端设成_none_就只剩_api() {
+        let _排队 = 排队();
+        std::env::set_var("FUNMILL_BACKEND", "none");
+        let f = funmill();
+        assert!(f.backend.is_none());
+        assert_eq!(f.spec.components.len(), 1);
+        assert_eq!(f.spec.components[0].key, "api");
+        // 后端归别处管时，就别再往 API 的环境里塞 FUNMILL_BACKEND 了。
+        assert!(f.spec.components[0].env.is_empty());
+        std::env::remove_var("FUNMILL_BACKEND");
+    }
+
+    #[test]
+    fn funmill_没有_api_key_时不让启动() {
+        let _排队 = 排队();
+        // 缺了照样能起来，但之后每个请求都是 401——那比起不来更难查。
+        std::env::remove_var("FUNMILL_API_KEY");
+        let err = Upstream::ensure_config(&funmill()).unwrap_err().to_string();
+        assert!(err.contains("FUNMILL_API_KEY"), "实际: {err}");
+
+        std::env::set_var("FUNMILL_API_KEY", "k");
+        assert!(Upstream::ensure_config(&funmill()).is_ok());
+        std::env::remove_var("FUNMILL_API_KEY");
+    }
+
+    #[test]
     fn 每个上游服务的声明都自检通过() {
+        let _排队 = 排队();
         // 声明写错（key 重复、端口撞车、引用了不存在的组件）属于编程错误，
         // 不该等到操作者跑 start 时才炸。
         for spec in upstream_specs() {
@@ -921,6 +1112,7 @@ mod tests {
 
     #[test]
     fn 每个上游服务都至少声明了_start_和_stop() {
+        let _排队 = 排队();
         for spec in upstream_specs() {
             for c in &spec.components {
                 assert!(
@@ -936,6 +1128,7 @@ mod tests {
 
     #[test]
     fn 每个上游服务的最后一个组件都能前台跑() {
+        let _排队 = 排队();
         // run 把最后一个组件放前台，它必须有 run 形态，否则 run 命令直接不可用。
         for spec in upstream_specs() {
             let last = spec.components.last().unwrap();
@@ -950,6 +1143,7 @@ mod tests {
 
     #[test]
     fn new_api_按平台拼附件名() {
+        let _排队 = 排队();
         // 三种附件名互不相同，而且 macOS 不分架构——拼错了就是 404。
         let s = new_api().spec;
         let cases = [
@@ -976,6 +1170,7 @@ mod tests {
 
     #[test]
     fn code_server_和_sub2api_的附件名各按各家的写法() {
+        let _排队 = 排队();
         let p = Platform {
             os: platform::Os::MacOs,
             arch: platform::Arch::Aarch64,
@@ -993,6 +1188,7 @@ mod tests {
 
     #[test]
     fn new_api_有_env_时把端口让给它() {
+        let _排队 = 排队();
         // godotenv 不覆盖已存在的环境变量，所以这时必须把 PORT 从环境里删掉，
         // 否则操作者 shell 里 export 过的那个会静默压住 .env 里的配置。
         let dir = tempfile::tempdir().unwrap();
@@ -1013,6 +1209,7 @@ mod tests {
 
     #[test]
     fn new_api_没有_env_时自己注入端口() {
+        let _排队 = 排队();
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("NEW_API_SERVICE_HOME", dir.path());
 
@@ -1028,6 +1225,7 @@ mod tests {
 
     #[test]
     fn 从_env_文件里取值() {
+        let _排队 = 排队();
         let dir = tempfile::tempdir().unwrap();
         let f = dir.path().join(".env");
         std::fs::write(
@@ -1048,6 +1246,7 @@ mod tests {
 
     #[test]
     fn sub2api_默认只绑本机() {
+        let _排队 = 排队();
         // 它存着上游渠道的 key 和用户 token，默认对外开等于把这些挂到公网上。
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("SUB2API_SERVICE_HOME", dir.path());

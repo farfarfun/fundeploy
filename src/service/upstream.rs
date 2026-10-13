@@ -89,9 +89,8 @@ fn cli_available(c: &Component) -> bool {
 // ---------------------------------------------------------------- 共用动作
 
 fn require_cli_available(spec: &ServiceSpec) -> Result<()> {
-    let missing: Vec<String> = spec
-        .components
-        .iter()
+    let missing: Vec<String> = by_package(spec)
+        .into_iter()
         .filter(|c| !cli_available(c))
         .map(|c| format!("{}（来自 {}）", c.pkg.cli(), c.pkg.name()))
         .collect();
@@ -186,8 +185,29 @@ fn never_listened(spec: &ServiceSpec, c: &Component) -> String {
     msg
 }
 
+/// 按包名去重后的组件，顺序不变。
+///
+/// 一个包提供多个要分别起停的进程是常事（funmill 的 API 和编排后端都来自
+/// funmill-api）。进程是两个，包只有一个：装、卸、报版本都只该对包做一次，
+/// 否则同一个包会被装两遍，卸载时第二遍还会报一句「卸载失败」。
+fn by_package(spec: &ServiceSpec) -> Vec<&Component> {
+    let mut seen: Vec<&str> = Vec::new();
+    let mut out = Vec::new();
+    for c in &spec.components {
+        if seen.contains(&c.pkg.name()) {
+            continue;
+        }
+        seen.push(c.pkg.name());
+        out.push(c);
+    }
+    out
+}
+
 fn versions(spec: &ServiceSpec) -> Vec<Option<String>> {
-    spec.components.iter().map(installed_version).collect()
+    by_package(spec)
+        .into_iter()
+        .map(installed_version)
+        .collect()
 }
 
 /// 组件在版本清单里的抬头。
@@ -201,6 +221,25 @@ fn display_name(c: &Component) -> String {
         c.label.clone()
     } else {
         format!("{} {pkg}", c.label)
+    }
+}
+
+/// 版本清单里的抬头。
+///
+/// 一个包带多个组件时，拿其中任意一个组件的 label 当抬头是错的：
+/// 「编排后端 dagu funmill-api: 1.0.21」里的 dagu 跟这个版本号毫无关系。
+/// 这种情况只打包名。
+fn package_label(spec: &ServiceSpec, c: &Component) -> String {
+    let shared = spec
+        .components
+        .iter()
+        .filter(|o| o.pkg.name() == c.pkg.name())
+        .count()
+        > 1;
+    if shared {
+        c.pkg.name().to_string()
+    } else {
+        display_name(c)
     }
 }
 
@@ -250,12 +289,13 @@ pub trait Upstream {
             pip::require_any_installer()?;
         }
 
-        for c in &spec.components {
+        for c in by_package(spec) {
             let want = version.or(c.version.as_deref());
             let inst = installer(c)?;
+            let what = package_label(spec, c);
             ui::step(match want {
-                Some(v) => format!("安装 {} {} {v}", c.label, c.pkg.name()),
-                None => format!("安装 {} {}（最新版）", c.label, c.pkg.name()),
+                Some(v) => format!("安装 {what} {v}"),
+                None => format!("安装 {what}（最新版）"),
             });
             inst.install(want)
                 .with_context(|| format!("{} {} 安装失败", c.label, c.pkg.name()))?;
@@ -268,8 +308,8 @@ pub trait Upstream {
 
         ui::blank();
         ui::heading("已安装版本");
-        for c in &spec.components {
-            ui::kv(display_name(c), installed_version(c).as_deref());
+        for c in by_package(spec) {
+            ui::kv(package_label(spec, c), installed_version(c).as_deref());
         }
         Ok(())
     }
@@ -304,11 +344,10 @@ pub trait Upstream {
         let after = versions(spec);
         ui::blank();
         ui::heading("版本变化");
-        for (i, c) in spec.components.iter().enumerate() {
+        for (i, c) in by_package(spec).into_iter().enumerate() {
             ui::info(format!(
-                "{} {}: {} -> {}",
-                c.label,
-                c.pkg.name(),
+                "{}: {} -> {}",
+                package_label(spec, c),
                 before[i].as_deref().unwrap_or("未安装"),
                 after[i].as_deref().unwrap_or("未知"),
             ));
@@ -338,7 +377,7 @@ pub trait Upstream {
 
         // 先确认源上真有这个版本再动手。装是逐个组件装的，第二个组件装不上而第一个
         // 已经降级，会停在组件之间版本不一致的中间态上——那比没降级更难收拾。
-        for c in &spec.components {
+        for c in by_package(spec) {
             if let Pkg::Npm { name, .. } = &c.pkg {
                 let npm = Npm::for_package(name, None)?;
                 if npm.latest_version(&format!("{name}@{version}")).is_none() {
@@ -520,10 +559,10 @@ pub trait Upstream {
         let spec = self.spec();
 
         ui::heading("已安装版本");
-        for c in &spec.components {
+        for c in by_package(spec) {
             let inst = installer(c);
             let version = inst.as_ref().ok().and_then(|i| i.version());
-            let name = display_name(c);
+            let name = package_label(spec, c);
             match (&version, &inst) {
                 (Some(v), Ok(i)) => ui::info(format!("{name}: {v}（{}）", i.source())),
                 (None, Ok(_)) => ui::info(format!("{name}: 未安装")),
@@ -558,7 +597,7 @@ pub trait Upstream {
 
     fn uninstall(&self) -> Result<()> {
         let spec = self.spec();
-        let list: Vec<&str> = spec.components.iter().map(|c| c.pkg.name()).collect();
+        let list: Vec<&str> = by_package(spec).iter().map(|c| c.pkg.name()).collect();
 
         ui::confirm_destructive(
             &format!("将停止并卸载 {}，确认？", list.join("、")),
@@ -569,7 +608,7 @@ pub trait Upstream {
         self.stop()?;
         ui::blank();
 
-        for c in spec.components.iter().rev() {
+        for c in by_package(spec).into_iter().rev() {
             ui::step(format!("卸载 {}", c.pkg.name()));
             match installer(c) {
                 Ok(i) if i.uninstall() => {}
@@ -671,6 +710,58 @@ mod tests {
             2,
         );
         assert_eq!(display_name(&scoped), "前端 demo-web @demo/demo-web");
+    }
+
+    #[test]
+    fn 共用一个包时版本抬头只打包名() {
+        // 「编排后端 dagu funmill-api: 1.0.21」里的 dagu 跟这个版本号没关系，
+        // 拿任何一个组件的 label 当抬头都在误导人。
+        let p = || Pkg::pip("shared-pkg", "sh");
+        let shared = ServiceSpec::new(
+            "s",
+            "",
+            vec![
+                Component::new("a", "编排后端 dagu", p(), "127.0.0.1", 1),
+                Component::new("b", "API", p(), "127.0.0.1", 2),
+            ],
+        );
+        assert_eq!(package_label(&shared, &shared.components[0]), "shared-pkg");
+
+        // 独占一个包的还是照常带 label。
+        let solo = ServiceSpec::new(
+            "s",
+            "",
+            vec![Component::new(
+                "a",
+                "前端 demo-web",
+                Pkg::npm("@demo/demo-web", "demo-web"),
+                "127.0.0.1",
+                1,
+            )],
+        );
+        assert_eq!(
+            package_label(&solo, &solo.components[0]),
+            "前端 demo-web @demo/demo-web"
+        );
+    }
+
+    #[test]
+    fn 同一个包提供的多个组件在包操作时只算一次() {
+        // 进程是两个，包只有一个。不去重的话同一个包会被装两遍，
+        // 卸载时第二遍还会多报一句「卸载失败」。
+        let p = || Pkg::pip("one-pkg", "one");
+        let spec = ServiceSpec::new(
+            "s",
+            "",
+            vec![
+                Component::new("a", "A", p(), "127.0.0.1", 1),
+                Component::new("b", "B", p(), "127.0.0.1", 2),
+                Component::new("c", "C", Pkg::npm("other", "other"), "127.0.0.1", 3),
+            ],
+        );
+        let keys: Vec<&str> = by_package(&spec).iter().map(|c| c.key.as_str()).collect();
+        // 保留先声明的那个，顺序不变。
+        assert_eq!(keys, ["a", "c"]);
     }
 
     fn two_component_spec() -> ServiceSpec {
