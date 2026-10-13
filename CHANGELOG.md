@@ -48,6 +48,17 @@
   `COCKPIT_TOOLS_UNINSTALL_YES` → `FUNDEPLOY_COCKPIT_TOOLS_UNINSTALL_YES`，
   `OPEN_PENCIL_UNINSTALL_YES` → `FUNDEPLOY_OPEN_PENCIL_UNINSTALL_YES`。带前缀是
   为了跟上游自己的环境变量分开——`BREW_*` 那一串名字的归属是 Homebrew，不是这里。
+- `skills`（原 `skills-sync`）的环境变量统一加 `FUNDEPLOY_` 前缀：
+  `SKILLS_SYNC_DIR` → `FUNDEPLOY_SKILLS_DIR`，`SKILLS_SYNC_ORG` →
+  `FUNDEPLOY_SKILLS_ORG`，`SKILLS_SYNC_API_URL` → `FUNDEPLOY_SKILLS_API`。
+  目标目录的默认值也跟着组织名走了（`~/workspace/github/<组织名>`，原先无论
+  指到哪个组织都写死 `farfarfun-skills`）——换组织时两边的仓库不再堆在同一个
+  目录里按名字互相覆盖。
+- `skills` 的动作重排：原先的 `list`/`status` 是同一件事，`update`/`upgrade`、
+  `delete`/`remove`/`uninstall` 各是三个别名；现在是
+  `list` / `sync` / `install <名字>` / `update <名字>` / `rm <名字>|--all`。
+  `sync` 是新的主力动作——一条命令把缺的装上、已有的更到最新，原先得先
+  `install` 再 `update` 跑两遍。
 
 ### 新增
 
@@ -192,8 +203,48 @@
   - **三条通道并行探，整条命令 12 秒封顶。** Bash 版串行跑，三条都卡住就是
     三倍等待；`git ls-remote` 还没有连接超时可配，碰上丢包型防火墙能耗两分钟。
 
+- **`fundeploy skills`：技能仓库同步。** 把 Gitee 组织里名字带 `--` 的仓库同步
+  到本地一个目录，每个仓库一个子目录；同步完把除 `.git` 之外的点目录递归删掉
+  （`.github`、`.cursor`、`.claude` 装的是那个仓库自己开发时的配置，跟过来会被
+  读技能的工具当成当前环境的配置来用）。
+
+  ```
+  fundeploy skills list              # 远端有哪些，本机各是什么状态
+  fundeploy skills sync              # 缺的装上，有的更到最新
+  fundeploy skills install <名字>
+  fundeploy skills update <名字>
+  fundeploy skills rm <名字> | --all
+  ```
+
+  跟 Bash 版（`scripts/tools/skills-sync/`）的差别：
+
+  - **装上去还删得掉。** 见下面「修复」。
+  - **一个仓库失败不带停剩下的。** Bash 版 `_run_many` 碰上出错就整条命令退出，
+    而这条命令的价值恰恰在于一次把几十个拉齐——中途断掉等于每次都得从头再来。
+    现在逐个记账，末尾汇总「装了几个、更新几个、跳过几个」，有失败才非零退出。
+  - **翻页有上限。** Bash 版 `while true` 一直翻到空页为止；Gitee 对越界页码
+    偶尔返回最后一页而不是空数组，撞上就是死循环。现在 50 页封顶。
+  - **符号链接不会被当成已安装的仓库。** Bash 版用 `-d` 判目录，而 `-d` 会跟随
+    符号链接：目标目录里有一条同名链接指向别处，`reset --hard` / 递归删除动的
+    就是链接那头的东西。现在用 `lstat`，链接一律算「目录冲突」，三个写操作全部
+    停手。清点目录时同理，只删链接本身，不跟进去。
+  - **`update` 之后仓库不再越长越大。** Bash 版 `clone --depth 1` 之后
+    `git fetch` 不带深度，第一次更新就把整部历史拉了回来。现在 fetch 也带
+    `--depth 1`。
+  - 远端已经没有、本地还留着的仓库会在 `list` 里标成「仅本地」。Bash 版只列
+    远端有的，上游改名或删库之后，本地那份就从视野里消失了，但目录还在。
+
 ### 修复
 
+- `skills`（原 `skills-sync`）：装上去的仓库再也删不掉。同步的最后一步会把仓库
+  里除 `.git` 之外的点目录删掉，而这些目录多半是被 git 跟踪着的
+  （`.github/workflows` 几乎人手一份），于是从同步完成的那一刻起
+  `git status --porcelain` 就一直挂着一片 deleted。`_is_dirty` 照它判，仓库永远
+  是「有本地修改」，`_delete_one` 于是永远拒绝：`[跳过] 有本地修改，拒绝删除`。
+  自带的 selftest 之所以过，是因为它在删除前先 `git reset --hard` 把那些目录又
+  还了回来。现在「有改动」的判据是「除我们自己删的点目录之外还有别的变化」；
+  认不出来的 porcelain 行（带引号转义的路径之类）一律算改动——判错的方向是拒绝
+  删除，比误删安全。
 - `doctor github`（原 `github-net`）：换通道从来没换干净过。`git config
   <键> <值>` 对多值键是**替换**而不是追加，而 `url.<base>.insteadOf` 正是多值
   键——Bash 版连写两条，第二条把第一条顶掉了。后果是 `fix_https` 实际没有改写

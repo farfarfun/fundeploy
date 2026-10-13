@@ -6,6 +6,7 @@ use clap::{CommandFactory, Parser, Subcommand};
 use crate::doctor;
 use crate::port_kill;
 use crate::service::{self, Service};
+use crate::skills;
 use crate::source;
 use crate::tool::{self, Tool};
 use crate::ui;
@@ -66,8 +67,43 @@ enum Command {
         #[command(subcommand)]
         what: DoctorWhat,
     },
+    /// 技能仓库同步（Gitee 上的 farfarfun-skills）
+    Skills {
+        #[command(subcommand)]
+        action: Option<SkillsAction>,
+    },
     /// 列出能管的东西
     List,
+}
+
+#[derive(Subcommand, Clone)]
+enum SkillsAction {
+    /// 查远端，列出每个仓库在本机的状态
+    #[command(visible_alias = "ls")]
+    List,
+    /// 把缺的装上、已有的更新到最新
+    Sync,
+    /// 装一个
+    Install {
+        /// 仓库名
+        name: String,
+    },
+    /// 更新一个
+    Update {
+        /// 仓库名
+        name: String,
+    },
+    /// 删掉本地的仓库（有本地改动的会被拒绝）
+    Rm {
+        /// 仓库名；不给就要配 --all
+        name: Option<String>,
+        /// 删掉本地全部已装的
+        #[arg(long, conflicts_with = "name")]
+        all: bool,
+        /// 不问直接删
+        #[arg(short, long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -328,7 +364,18 @@ pub fn cli_main() -> Result<()> {
                 _ => doctor::github::diagnose(),
             },
         },
+        Some(Command::Skills { action }) => skills_cmd(action),
         None => no_args(),
+    }
+}
+
+fn skills_cmd(action: Option<SkillsAction>) -> Result<()> {
+    match action {
+        Some(SkillsAction::List) | None => skills::list(),
+        Some(SkillsAction::Sync) => skills::sync(),
+        Some(SkillsAction::Install { name }) => skills::install(&name),
+        Some(SkillsAction::Update { name }) => skills::update(&name),
+        Some(SkillsAction::Rm { name, all, yes }) => skills::remove(name.as_deref(), all, yes),
     }
 }
 
@@ -413,6 +460,7 @@ fn no_args() -> Result<()> {
         "source     换源（pip、npm、brew、cargo、go）".to_string(),
         "port-kill  腾端口（查出谁占着，停掉它）".to_string(),
         "doctor     诊断（GitHub 连不上）".to_string(),
+        "skills     技能仓库（同步 Gitee 上的那批）".to_string(),
     ];
     let picked = ui::select("要管什么", &domains)?.ok_or_else(|| anyhow::anyhow!("已取消。"))?;
     match picked.split_whitespace().next().unwrap_or("") {
@@ -434,6 +482,7 @@ fn no_args() -> Result<()> {
             port_kill::kill(&port_kill::parse_ports(&line)?, false)
         }
         "doctor" => doctor::github::diagnose(),
+        "skills" => skills::list(),
         _ => {
             let t = pick_one(tool::registry::all(), "选一个工具", |t| {
                 (t.name().to_string(), t.summary().to_string())
