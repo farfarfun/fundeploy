@@ -14,7 +14,8 @@ name = "fundeploy"
 path = "src/main.rs"
 
 [lib]
-# bin 只做一层薄入口，逻辑全在 lib 里，tests/ 下的集成测试才能直接调内部类型。
+# bin 只做一层薄入口，逻辑全在 lib 里：单元测试能直接调内部类型，不必为了测试
+# 把东西挪到 pub 接口上。
 name = "fundeploy"
 path = "src/lib.rs"
 

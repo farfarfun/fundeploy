@@ -7,6 +7,7 @@ use crate::ai;
 use crate::dev;
 use crate::doctor;
 use crate::port_kill;
+use crate::selfup;
 use crate::service::{self, Service};
 use crate::skills;
 use crate::source;
@@ -87,6 +88,15 @@ enum Command {
     Skills {
         #[command(subcommand)]
         action: Option<SkillsAction>,
+    },
+    /// 升级 fundeploy 自己
+    Upgrade {
+        /// 装指定版本。比当前旧也照做，这是回退的用法。
+        #[arg(long, value_name = "版本")]
+        version: Option<String>,
+        /// 只看有没有新版本，不动手
+        #[arg(long)]
+        check: bool,
     },
     /// 列出能管的东西
     List,
@@ -454,6 +464,7 @@ pub fn cli_main() -> Result<()> {
         Some(Command::Dev { name, action }) => dev_cmd(name, action),
         Some(Command::Ai { name, action }) => ai_cmd(name, action),
         Some(Command::Skills { action }) => skills_cmd(action),
+        Some(Command::Upgrade { version, check }) => selfup::run(version.as_deref(), check),
         None => no_args(),
     }
 }

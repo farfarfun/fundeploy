@@ -26,6 +26,7 @@ pub mod common;
 pub mod dev;
 pub mod doctor;
 pub mod port_kill;
+pub mod selfup;
 pub mod service;
 pub mod skills;
 pub mod source;

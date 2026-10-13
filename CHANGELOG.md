@@ -1,13 +1,15 @@
 # Changelog
 
-版本号以根目录 `VERSION` 为准；发布由推 `v<VERSION>` tag 触发（见
+版本号以 `Cargo.toml` 里的 `version` 为准；发布由推同版本的 `v*` tag 触发（见
 `.github/workflows/release.yml`），因此「有 tag ＝ 已发布」。
 
 ## [0.3.0] - 未发布
 
-整个项目从 Bash 重写为 Rust，原 Bash 保留在 `bak` 分支。重写还在进行中，这一节
-只记录**行为上的差异**——命令、环境变量、默认端口跟 Bash 版对不上的地方；内部
-怎么分层、代码少了多少行，用不着写在这里。
+整个项目从 Bash 重写为 Rust，发布物从一棵脚本树变成单个静态二进制。原来的
+Bash 保留在 `bak` 分支，`master` 上的 `scripts/` 与 `tests/` 已整体删除。
+
+这一节只记录**行为上的差异**——命令、环境变量、默认端口跟 Bash 版对不上的
+地方；内部怎么分层、代码少了多少行，用不着写在这里。
 
 ### 破坏性变更
 
@@ -112,6 +114,53 @@
   哪儿，改了名就算不出来，卸载会静默漏掉东西。原来那个
   `FUNDEPLOY_ASSUME_YES` 则是全域共用一个开关，设一次等于对所有工具的删除都
   点了头。
+
+- **装机方式变了：下一个二进制，不再 clone 仓库。** fundeploy 现在是单个静态
+  二进制，装机要做的只剩「把本机对应的那一个放到 PATH 上」：
+
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/farfarfun/fundeploy/HEAD/install.sh | sh
+  ```
+
+  随之变化的：
+
+  | 原先 | 现在 |
+  |---|---|
+  | `./install.sh install\|update\|uninstall` | `sh install.sh`（只有装这一件事） |
+  | 装到 `~/.local/fundeploy/{bin,src}` | 装到 `~/.local/bin/fundeploy` 一个文件 |
+  | `--source github\|gitee` | 没有了，见下 |
+  | 自动往 `~/.bashrc` 写 PATH | 只打印该加的那一行 |
+  | `fundeploy upgrade`（重跑装机脚本） | `fundeploy upgrade`（见「新增」） |
+  | 卸载要跑脚本 | 删掉那个文件就行 |
+
+  `--source gitee` 去掉是因为它已经是个空承诺：Gitee 上的镜像仓库一个 release
+  都没有，这条路取不到任何东西。国内网络改走通用的镜像前缀
+  `FUNDEPLOY_GITHUB_HUB_PROXY_PREFIX`——那套机制本来就在，`fundeploy doctor
+  github` 也认它，比「换个仓库」覆盖面更大。
+
+  不再写 shell 配置，是因为偷偷往 `~/.bashrc` 里塞东西意味着卸载时得把它找回来
+  删掉，而卸载这件事现在只是 `rm`，没有地方做这个清理。
+
+- 装机脚本的环境变量跟着换了一批：
+
+  | 原名 | 现在 |
+  |---|---|
+  | `FUNDEPLOY_ROOT` / `FUNDEPLOY_WRAPPER_ROOT` / `FUNDEPLOY_SRC_DIR` | `FUNDEPLOY_BIN_DIR`（默认 `~/.local/bin`） |
+  | `FUNDEPLOY_GITHUB_REPO` / `FUNDEPLOY_GITEE_REPO` | `FUNDEPLOY_RELEASE_REPO` |
+  | `FUNDEPLOY_GIT_CLONE_REF` | `FUNDEPLOY_VERSION`（或 `--version`） |
+  | `FUNDEPLOY_SKIP_GIT_PULL` | 没有了（不再有本地仓库） |
+  | `FUNDEPLOY_SKIP_PROFILE_HINT` | 没有了（本来就不写配置了） |
+  | `FUNDEPLOY_UNINSTALL_YES` | 没有了（卸载就是 `rm`） |
+
+- `.deb` 从 `Architecture: all` 改成每个架构一个包
+  （`fundeploy_<版本>_amd64.deb` / `_arm64.deb`），`Depends` 去掉只留
+  `Recommends: ca-certificates, git, curl`——二进制是静态链接的，装上就能跑，
+  那几个只有个别子命令要用。
+- Homebrew formula 从「下源码」改成装预编好的二进制。从源码编要先有 Rust 工具链，
+  而 fundeploy 本身就是用来装工具链的，这个顺序反了。
+- 根目录的 `VERSION` 文件没了，版本号只剩 `Cargo.toml` 一个来源——二进制自报的
+  版本来自 `CARGO_PKG_VERSION`，两处分开写迟早会对不上，而对不上的表现是
+  `upgrade` 每次都认为有新版可升。
 
 ### 新增
 
@@ -358,6 +407,38 @@
     装的——否则「卸了但命令还在」会被当成卸载失败。
   - `cursor` 的两个命令名（`agent` 和 `cursor-agent`，上游改过名）都认，
     查状态和卸载都是。
+
+- **`fundeploy upgrade`：自升级收进二进制自己。**
+
+  ```
+  fundeploy upgrade                   # 升到最新版
+  fundeploy upgrade --check           # 只看有没有新版本，不动手
+  fundeploy upgrade --version 0.2.0   # 装指定版本，比当前旧也照做（这是回退的用法）
+  ```
+
+  不带 `--version` 时只升不降：远端不比本地新就直说「已经是最新的」然后退出，
+  而不是把同一个版本再下一遍。要回退必须显式点名版本号。
+
+  几处刻意的顺序：**先查能不能写，再联网**——十几兆下完才发现装在
+  `/usr/local/bin` 下没权限，这个代价没必要付；**换上去之前先跑一次
+  `--version`**——下坏了或者下成别的架构的话，换过去就是把人唯一能用来补救的
+  工具也弄坏了，所以新的那份跑不起来就原样不动，并说清楚什么都没动过；
+  **临时文件落在目标目录里**，最后那一步是同目录 rename（跨文件系统 rename 会
+  失败，而 `~/.cache` 和 `/usr/local/bin` 经常不在一个盘上）。
+
+  认得出自己是 `target/debug/fundeploy` 这种构建产物，这时直接拒绝——换掉它
+  只会让下一次 `cargo build` 把它覆盖回去。brew / apt 装的那份也拒绝，并指出
+  该用哪个包管理器升。
+
+- **CI 从 shellcheck + 冒烟脚本换成 Rust 那一套**：`cargo fmt --check`、
+  `cargo clippy -D warnings`、Linux 和 macOS 上各跑一遍 `cargo test`，外加四个
+  发布 target 的 release 构建。构建放进 CI 而不是只在 tag 上跑：musl 静态链接有
+  它自己的失败方式（`ring` 要 C 编译器、交叉链接器找不到），只在打 tag 时才发现
+  就意味着每修一次都要重打一个 tag。arm64 用原生 arm runner 构建，不交叉编译。
+- 发布流程多一步 `verify-install`：Release 发出去之后，在 ubuntu x86_64 /
+  ubuntu arm64 / macOS 上照 `install.sh` 真装一遍，核对版本号，再跑 `list` 和
+  `upgrade --check`。装机脚本只有在有一个真实 release 时才跑得通，它坏了的代价
+  又比别处都大——那是别人碰到这个项目的第一条命令。
 
 ### 修复
 

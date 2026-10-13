@@ -1,58 +1,32 @@
 # fundeploy
 
-一组面向本机开发与服务管理的 Bash 脚本。
+一条命令管本机的开发环境、常驻服务、工具和镜像源。
 
-覆盖这些场景：
-- 开发环境：`pip` 镜像、`uv`、Python 虚拟环境、Go、Rust、Node.js、pnpm
-- 常驻服务：Airflow、Celery、Paperclip、code-server、new-api、sub2api、funmill（任务执行 API）、funflix-web（影视库前后端一体化）、funread-web（阅读源前后端一体化）、funlesson-web（课程备课材料前后端一体化）、funfluid-web（管理端与后台服务前后端一体化）、fungame-web（游戏管理端与客户端前后端一体化）
-- 桌面/AI 工具：`fundeploy ai`（Claude Code、Codex、Cursor）与 OpenPencil（CLI + MCP + Tauri 桌面包）
-- 常用工具：gum、GitHub 下载加速、GitHub 网络诊断、按端口杀进程
-
-脚本尽量自包含，可在仓库内直接执行，也可 `curl | bash`。推荐先安装到本地 `~/.local/fundeploy`，之后只需记住 `fundeploy`。
-
-## 统一入口
-
-- `fundeploy`：唯一命令入口；无参数时打开可搜索的分层菜单。
-  ```bash
-  fundeploy service status
-  fundeploy service code-server official install
-  fundeploy service code-server official start
-  fundeploy service sub2api official install
-  fundeploy service sub2api official restart
-  fundeploy service sub2api manual install
-  fundeploy service funflix-web install
-  fundeploy service funflix-web start
-  fundeploy service funread-web install
-  fundeploy service funread-web start
-  fundeploy service funlesson-web install
-  fundeploy service funlesson-web start
-  fundeploy dev uv install
-  fundeploy tool github-net doctor
-  fundeploy ai codex update
-  fundeploy upgrade                         # 沿用安装来源
-  fundeploy upgrade --source github
-  fundeploy upgrade --source gitee
-  ```
-- 领域固定为 `service`、`dev`、`tool`、`ai`，后面依次是模块和动作。
-
-Homebrew 可通过官方安装器显式安装：
+单个静态二进制，不依赖 Python、Node 或任何运行时，装上就能跑。支持 macOS 与 Linux 的
+x86_64 / arm64。
 
 ```bash
-fundeploy tool brew install
+curl -fsSL https://raw.githubusercontent.com/farfarfun/fundeploy/HEAD/install.sh | sh
 ```
 
 ## 安装
 
-### APT
-
-发布仓库启用后，首次添加签名密钥和软件源：
+### 装机脚本
 
 ```bash
-curl -fsSL https://farfarfun.github.io/fundeploy/fundeploy.gpg | sudo tee /usr/share/keyrings/fundeploy.gpg >/dev/null
-echo "deb [signed-by=/usr/share/keyrings/fundeploy.gpg] https://farfarfun.github.io/fundeploy stable main" | sudo tee /etc/apt/sources.list.d/fundeploy.list
-sudo apt update
-sudo apt install fundeploy
+curl -fsSL https://raw.githubusercontent.com/farfarfun/fundeploy/HEAD/install.sh | sh
 ```
+
+默认装到 `~/.local/bin/fundeploy`。脚本不会去动你的 shell 配置，该加的 PATH 那行它会打出来。
+
+可选参数与环境变量：
+
+| 变量 | 作用 | 默认 |
+| --- | --- | --- |
+| `FUNDEPLOY_VERSION` / `--version` | 装哪一版 | `latest` |
+| `FUNDEPLOY_BIN_DIR` / `--bin-dir` | 装到哪儿 | `~/.local/bin` |
+| `FUNDEPLOY_RELEASE_REPO` | 从哪个仓库的 release 取 | `farfarfun/fundeploy` |
+| `FUNDEPLOY_GITHUB_HUB_PROXY_PREFIX` | GitHub 直连不通时的加速前缀 | 空 |
 
 ### Homebrew
 
@@ -60,169 +34,170 @@ sudo apt install fundeploy
 brew install farfarfun/tap/fundeploy
 ```
 
-### 官方安装脚本
-
-从本地脚本执行时，`github` 与 `gitee` 二选一：
+### APT
 
 ```bash
-chmod +x install.sh
-./install.sh install --source github
-./install.sh install --source gitee
-./install.sh update --source github
-./install.sh update --source gitee
-./install.sh uninstall
+curl -fsSL https://farfarfun.github.io/fundeploy/fundeploy.gpg | sudo tee /usr/share/keyrings/fundeploy.gpg >/dev/null
+echo "deb [signed-by=/usr/share/keyrings/fundeploy.gpg] https://farfarfun.github.io/fundeploy stable main" | sudo tee /etc/apt/sources.list.d/fundeploy.list
+sudo apt update && sudo apt install fundeploy
 ```
 
-远程安装：
+### 直接下二进制
+
+[Releases](https://github.com/farfarfun/fundeploy/releases) 里每个平台一个 `fundeploy-<target>.tar.gz`，
+解开把 `fundeploy` 丢进 PATH 即可。同目录下的 `SHA256SUMS` 可以校验。
+
+## 升级与卸载
 
 ```bash
-curl -LsSf https://raw.githubusercontent.com/farfarfun/fundeploy/HEAD/install.sh | bash -s -- install --source github
-curl -LsSf https://gitee.com/farfarfun/fundeploy/raw/master/install.sh | bash -s -- install --source gitee
+fundeploy upgrade            # 升到最新版
+fundeploy upgrade --check    # 只看有没有新版本
+fundeploy upgrade --version 0.2.0   # 装指定版本，比当前旧也照做（这是回退的用法）
 ```
 
-更新时可沿用已保存的安装来源，也可显式切换：
+换下来的新二进制会先跑一次 `--version` 确认能起来，再原子替换掉自己；跑不起来就原样不动。
+
+卸载就是删掉那个文件。用 Homebrew / APT 装的交给对应包管理器：`brew uninstall fundeploy`、
+`sudo apt remove fundeploy`。
+
+## 能管什么
 
 ```bash
-fundeploy upgrade
-fundeploy upgrade --source github
-fundeploy upgrade --source gitee
+fundeploy list    # 列出所有能管的东西
 ```
 
-也可直接执行远程更新脚本：
+### 服务 `fundeploy service`
 
 ```bash
-curl -LsSf https://raw.githubusercontent.com/farfarfun/fundeploy/HEAD/install.sh | bash -s -- update --source github
-curl -LsSf https://gitee.com/farfarfun/fundeploy/raw/master/install.sh | bash -s -- update --source gitee
+fundeploy service                    # 列出所有服务和当前状态
+fundeploy service funread-web install
+fundeploy service funread-web start
+fundeploy service funread-web status
 ```
 
-安装来源会保存到 `~/.local/fundeploy/etc/fundeploy/source`。显式选择来源后，fundeploy 自身的安装和更新只访问对应站点。
+每个服务都是这套动作：`install`、`upgrade`、`rollback <版本>`、`start`、`run`（前台）、
+`stop`、`restart`、`status`、`uninstall`。
 
-如未自动生效，手动加入 PATH：
+| 服务 | 说明 |
+| --- | --- |
+| `funfluid-web` | funfluid 前后端（18806 / 8806） |
+| `funlesson-web` | funlesson 前后端（18812 / 8814） |
+| `fungame-web` | fungame 后端 + 管理端 + 用户端（8809 / 8807 / 8808） |
+| `funflix-web` | funflix 前后端（18810 / 8810） |
+| `funread-web` | funread 前后端（18811 / 8811） |
+| `funmill` | funmill 任务执行 API（8813 / 8812） |
+| `new-api` | new-api 中转网关（8801） |
+| `code-server` | 浏览器里的 VS Code（8080） |
+| `sub2api` | sub2api 订阅转 API（8802） |
+| `airflow` | Apache Airflow standalone（8815） |
+| `celery` | Celery worker / beat / flower（8816） |
+| `paperclip` | Paperclip 本机服务（8804） |
+
+服务默认只监听回环地址。要对外暴露就显式设对应的 `*_HOST` / `*_ADDRESS` 环境变量。
+
+多进程的服务（前后端一体的那几个）只提供合并命令：一条 `start` 把该起的都起来，
+一条 `stop` 全停掉。换包前会先停服、装完按原状态起回来——在跑着的进程底下换全局包，
+Node 还开着那棵树里的文件。
+
+`paperclip` 额外转发官方 CLI 的动作：`install-canary`、`check`、`backup`、`channels`、
+`doctor`、`health`、`onboard`、`logs`、`plugin`、`service-install`。
+
+### 开发工具链 `fundeploy dev`
 
 ```bash
-export PATH="$HOME/.local/fundeploy/bin:$PATH"
+fundeploy dev                 # 列出全部的当前状态
+fundeploy dev uv install
+fundeploy dev go upgrade
+fundeploy dev python status   # Python 多版本虚拟环境
 ```
 
-常用安装变量：
-- `FUNDEPLOY_ROOT`：安装根目录
-- `FUNDEPLOY_SKIP_GIT_PULL=1`：跳过安装前 `git pull`
-- `FUNDEPLOY_SKIP_PROFILE_HINT=1`：不写 shell 配置，适合 CI
-- `FUNDEPLOY_UNINSTALL_YES=1`：非交互卸载确认
+覆盖 `go`、`nodejs`、`pnpm`、`rust`、`uv`，动作是 `status`、`install`、`upgrade`、
+`uninstall`。`status` 会把「官方包装在哪儿」和「PATH 上实际用的是哪个」分开列——
+这两者不一致是最常见的「我明明装了」。
 
-通过 APT 或 Homebrew 安装时，升级和卸载由对应包管理器负责：
+`fundeploy dev python` 管的是 `~/opt` 下按版本号分开的 Python 虚拟环境。
+
+### 换源 `fundeploy source`
 
 ```bash
-sudo apt update && sudo apt install --only-upgrade fundeploy
-sudo apt remove fundeploy
-brew upgrade fundeploy
-brew uninstall fundeploy
+fundeploy source              # 看全部工具当前配的是哪个源
+fundeploy source pip test     # 测所有源的延迟
+fundeploy source pip use      # 不给名字就自动选最快的
+fundeploy source pip use tuna
+fundeploy source pip reset    # 恢复官方源
+fundeploy source pip add 自己的源 https://...
 ```
 
-发行包入口应设置 `FUNDEPLOY_PACKAGE_MANAGER=apt` 或 `brew`；此时 `fundeploy upgrade` 和 `fundeploy uninstall` 只显示对应命令，不会修改包管理器维护的目录。
+覆盖 `pip`（pip / uv / poetry / pdm 共用这份配置）、`npm`（pnpm / yarn / bun 共用）、
+`brew`（配方 API、bottle 二进制、brew 仓库三处一起换）、`cargo`、`go`。
 
-## 领域
+### 工具 `fundeploy tool`
 
-### 开发环境
+`brew`（Homebrew 本身）、`cockpit-tools`（AI IDE 账号管理桌面应用）、
+`open-pencil`（CLI + MCP 服务器，额外有 `install-desktop`、`mcp-config`）。
 
-- `fundeploy dev pip`：pip 镜像配置
-- `fundeploy dev python`：Python/uv 环境
-- `fundeploy dev uv|go|rust|nodejs|pnpm`：语言与包管理器
+### AI 命令行 `fundeploy ai`
 
-### 服务
+```bash
+fundeploy ai                  # 三样的当前状态
+fundeploy ai claude install
+fundeploy ai all upgrade
+```
 
-- `fundeploy service status`：服务总览
-- `fundeploy service airflow|celery|paperclip|code-server|new-api|sub2api|funmill|open-pencil|funflix-web|funread-web|funlesson-web|funfluid-web|fungame-web`
-- `fundeploy service paperclip install|install-canary|check|upgrade|rollback|backup|doctor|health|channels|onboard|service-install|plugin|start|run|stop|restart|status|logs|uninstall`：
-  全部直驱 Paperclip 官方 CLI（`npx paperclipai@latest install --yes` 的 managed install，即
-  `INSTALLING.md` 记载的正式路径），不引入官方 `install.sh` —— `paperclip.ing` 上那份是过期快照
-  （给 CLI 传了它不接受的 `--no-prompt`、`MIN_NODE_MAJOR=20`、用 bash 4 语法在 macOS 自带 bash 3.2 上崩），
-  master 上那份正确的没有发布 `.sha256`，且它的 Node 引导见到 `~/.nvm` 就直接硬退出
-- `check` 只查版本不改动任何东西；`upgrade [canary|prod]` 是「停服 → 官方 `update` →
-  `doctor --repair` → 重启 → 健康检查」；canary 机器上 `upgrade prod` 是降级，需交互确认或
-  `PAPERCLIP_UPGRADE_YES=1`；`rollback` 回退到 install store 里保留的上一份 payload
-- `upgrade` 不做数据库备份（官方 `update` 自己那次也用 `--no-backup` 关掉了）：它换的是
-  payload，不动数据目录，退回去有 `rollback`，而一次备份在实测机器上是 370M、耗时数十秒。
-  需要备份时显式执行 `backup`（官方 `db:backup`）。embedded PostgreSQL 是服务的子进程，
-  那种模式下 `backup` 要求服务在跑，停着时会在调用上游之前就报错并提示先 `start`；
-  用外部数据库（`database.connectionString`）的实例与服务生命周期无关，停着也能备
-- `start|stop|restart|status|logs` 优先转发到 Paperclip 官方 `service` 命令（Linux systemd user /
-  macOS LaunchAgent）；检测不到服务管理器的机器（容器、WSL1、无登录会话）上官方命令只会打印一句
-  「不支持」就以 0 退出、什么都不启动，此时自动改由 fundeploy 用 nohup + PID 文件托管后台进程并等
-  `/api/health` 通过，代价是不开机自启（`PAPERCLIP_FALLBACK=off` 可关掉这条兜底通道；想要开机自启
-  就在有登录会话的 shell 里执行 `service-install --enable-linger`）
-- 受限网络：官方 managed install 把 registry 钉死在 `registry.npmjs.org`（刻意的防投毒设计，有上游
-  测试守着），换镜像无效，只能走 `PAPERCLIP_HTTPS_PROXY`；依赖树实测约 1.4G
-- `fundeploy service funflix-web install|upgrade|rollback <版本>|start|run|stop|restart|status|migrate|user-create|uninstall`：
-  funflix-api（后端，PyPI，依赖核心库 funflix）+ funflix-web（前端，私有 npm）一起装/起/停，只提供合并命令。
-  新机器装完先 `migrate`（建表）再 `user-create <用户名>`（建登录账号）——1.0.30 起是整站门禁，没账号登不进去
-- `fundeploy service funread-web install|upgrade|rollback <版本>|start|run|stop|restart|status|uninstall`：
-  funread-api（后端，PyPI，依赖核心库 funread）+ @farfarfun/funread-web（前端，私有 npm）一起装/起/停，只提供合并命令。
-  浏览器只访问前端端口（阅读端 `/web`，管理端 `/admin`），前端把 `/api` 与 `/healthz` 反代到后端，直连后端会撞 CORS。
-  新机器装完先 `funread-api accounts create-admin <用户名>` 建管理员——注册由邀请码控制，没码注册不进去。
-  两个 CLI 的 `server start` 都要求自己的 `config.toml` 已存在（1.1.111–1.1.113 上缺了只报一句
-  `config file not found`），`install` / `start` / `run` 会在默认路径下按需补一份；
-  显式设了 `FUNREAD_WEB_{BACKEND,FRONTEND}_CONFIG` 的路径不代建。
-  默认路径问 CLI 自己（`server status` 会打 `config <路径>`），不按版本猜：funread 1.1.114 把配置目录
-  从 `${XDG_CONFIG_HOME:-~/.config}/farfarfun/funread-{api,web}/` 换到了 `~/.farfarfun/funread/{api,web}/`，
-  而 `rollback 1.1.113` 能把机器退回旧布局。
-  `upgrade` 与 `rollback` 都会先停服再换包、装完按原状态起回来——在跑着的进程底下换全局 npm 包，
-  node 还开着那棵树里的文件；存活判断走端口探测，因为 PID 文件的位置本身会随版本变。
-  换包中途失败（私有 npm 源偶发 `ETIMEDOUT`）会明确提示服务当前是停着的并给出恢复办法，
-  不会只丢一句包管理器的报错就退出
-- `fundeploy service funlesson-web install|start|run|stop|restart|status|uninstall`：funlesson-api（后端，私有
-  PyPI）+ funlesson-web（前端，私有 npm）一起装/起/停，只提供合并命令
-- `fundeploy service funfluid-web install|start|run|stop|restart|status|uninstall`：funfluid-api（后端）
-  + funfluid-web（前端）一起装/起/停，只提供合并命令
-- `fundeploy service fungame-web install|start|run|stop|restart|status|uninstall`：fungame 后端
-  + 管理端 + 客户端三个进程一起装/起/停
+覆盖 `claude`、`codex`、`cursor`。官方安装器优先，装不上再退到包管理器那条路。
 
-所有服务默认只监听回环地址（`127.0.0.1`）。需要对外暴露时显式设置对应的
-`*_HOST` / `*_ADDRESS` 环境变量（如 `SUB2API_HOST=0.0.0.0`、`FLOWER_ADDRESS=0.0.0.0`），
-脚本会在启动时提示确认防火墙与访问控制。
+### 诊断 `fundeploy doctor`
 
-### 工具
+```bash
+fundeploy doctor github         # 网页打得开、git clone 却卡住的那类问题
+fundeploy doctor github --fix   # 按诊断结果自动挑一条通道改过去
+fundeploy doctor github --undo  # 撤掉写进 git / ssh 配置里的东西
+```
 
-- `fundeploy tool list`：列出工具
-- `fundeploy tool brew|gum|download|github-net|skills-sync|port-kill|cockpit-tools`
+### 其它
 
-### AI CLI
+```bash
+fundeploy port-kill 8080 8081       # 查出谁占着端口，停掉它
+fundeploy port-kill 8080 --list     # 只看不动手
+fundeploy skills sync               # 同步 Gitee 上的 farfarfun-skills 仓库
+```
 
-- `fundeploy ai claude|codex [official|brew|npm|pnpm] <install|update|uninstall|status>`
-- `fundeploy ai cursor [official] <install|update|uninstall|status>`
-- 官方方式始终排在最前且为默认；Cursor 上游目前只提供官方安装器。
+## 开发
 
-## 目录结构
+```bash
+cargo build
+cargo test
+cargo fmt --all --check
+cargo clippy --all-targets -- -D warnings
+```
+
+目录结构：
 
 ```text
-scripts/
-  dev/        开发工具统一入口
-  tools/      非常驻工具与环境脚本
-  services/   常驻服务脚本与 service 聚合入口
-  lib/        公共 Bash 库
-tests/        冒烟测试
-install.sh    安装唯一的 fundeploy 包装命令
-VERSION       当前发布版本
+src/
+  common/    外部命令、下载、解包、平台探测等公共件
+  service/   服务域：spec 声明 + 三族通用生命周期
+  dev/       开发工具链
+  tool/      非常驻工具
+  source/    换源
+  ai/        AI 命令行
+  doctor/    诊断
+  cli.rs     命令行解析与分发
+packaging/   .deb / APT 仓库 / Homebrew formula 的生成脚本
+install.sh   装机脚本
 ```
 
-## 说明
+核心约定是**差异是数据，不是逻辑**：生命周期只写一遍，每个具体的服务/工具退化成一份
+声明。加一个 PyPI + npm 的前后端服务通常只需要往 `src/service/registry.rs` 里加十几行。
+装不进这套形状的（Paperclip 要直驱上游 CLI）才单独实现 trait。
 
-- 环境：macOS / Linux，Bash 3.2+，通常需要 `curl`
-- 模块依赖与环境变量：以各自 `setup.sh` 文件头注释为准
-- 冒烟测试：
-```bash
-bash tests/run-all.sh
-```
-- 没执行权限：`chmod +x install.sh` 或对应 `setup.sh`
-- PATH 未生效：手动 `export PATH="$HOME/.local/fundeploy/bin:$PATH"`
-- GitHub 下载慢或失败：使用 `fundeploy tool github-net`、`fundeploy tool download`
+发布：改 `Cargo.toml` 里的 `version`，提交，推同版本的 tag（`v0.3.0`）。CI 会核对 tag
+与版本号、构建四个平台、生成校验和与安装包、发 Release，再用装机脚本真装一遍验证。
 
 ## 详细文档
 
-- [install.sh](install.sh)
-- [scripts/dev/README.md](scripts/dev/README.md)
-- [scripts/tools/pip-sources/README.md](scripts/tools/pip-sources/README.md)
-- [scripts/tools/python-env/README.md](scripts/tools/python-env/README.md)
-- [packaging/README.md](packaging/README.md)
+- [packaging/README.md](packaging/README.md) —— 打包与发布
+- [CHANGELOG.md](CHANGELOG.md)
 
 ---
 

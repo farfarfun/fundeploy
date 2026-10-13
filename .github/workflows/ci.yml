@@ -1,8 +1,5 @@
 name: ci
 
-# 此前仓库只有 release.yml（仅 tag 触发）与 sync.yml，push/PR 上没有任何检查：
-# 每次进 master 的提交都未经验证，smoke test 第一次运行是在已经开始发布
-# Release / .deb / APT repo / Homebrew formula 的那个 job 里。
 on:
   push:
     branches: ["**"]
@@ -16,7 +13,114 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
+  lint:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 装工具链
+        run: rustup toolchain install stable --profile minimal --component rustfmt,clippy --no-self-update
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-lint-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-lint-
+
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets -- -D warnings
+
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS 必须覆盖：平台差异（brew cask 只在 macOS 上有、.zprofile 而不是
+        # .profile、dmg 而不是 AppImage）是这个项目里真实存在的分支。
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 装工具链
+        run: rustup toolchain install stable --profile minimal --no-self-update
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-test-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-test-${{ runner.os }}-
+
+      - run: cargo test
+
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-latest }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm }
+          - { target: x86_64-apple-darwin, os: macos-latest }
+          - { target: aarch64-apple-darwin, os: macos-latest }
+    steps:
+      - uses: actions/checkout@v4
+
+      # 发布构建放进 CI，而不是只在 tag 上跑。musl 静态链接这条路有它自己的
+      # 失败方式（ring 要 C 编译器、交叉链接器找不到），只在打 tag 时才发现
+      # 就意味着每修一次都要重打一个 tag。
+      - name: 装 musl 工具链
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -y && sudo apt-get install -y musl-tools
+
+      - name: 装工具链
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup target add ${{ matrix.target }}
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-build-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-build-${{ matrix.target }}-
+
+      - run: cargo build --release --target ${{ matrix.target }}
+
+      # 跑一下。能编出来不等于能起来——静态链接出岔子时的典型表现就是
+      # 「文件在那儿，一执行就报 Exec format error」。
+      - name: 跑一下本机那份
+        if: matrix.target == 'x86_64-unknown-linux-musl' || matrix.target == 'aarch64-unknown-linux-musl' || matrix.target == 'aarch64-apple-darwin'
+        run: ./target/${{ matrix.target }}/release/fundeploy --version
+
+      - name: 确认是静态链接的
+        if: runner.os == 'Linux'
+        run: |
+          set -eu
+          bin=./target/${{ matrix.target }}/release/fundeploy
+          if ldd "$bin" 2>&1 | grep -qv 'not a dynamic executable\|statically linked'; then
+            echo "还带着动态依赖："
+            ldd "$bin"
+            exit 1
+          fi
+
   shellcheck:
     name: shellcheck
     runs-on: ubuntu-latest
@@ -24,89 +128,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: shellcheck 版本
-        run: shellcheck --version
-
-      # 12k 行 Bash 且以系统包形式分发，语义 lint 是性价比最高的一道防线。
-      # 仓库里多处已有 `# shellcheck source=...` 指令，说明有人手工跑过，
-      # 但从未接进流程。
-      - name: 对全部 .sh 运行 shellcheck
+      # 剩下的 shell 只有装机脚本和打包脚本，但装机脚本是别人碰到这个项目的
+      # 第一条命令，它坏了的代价比别处都大。
+      - name: 检查剩下的 shell 脚本
         run: |
           set -uo pipefail
           mapfile -t files < <(git ls-files '*.sh')
           echo "检查 ${#files[@]} 个文件"
-          shellcheck --severity=error --format=gcc "${files[@]}"
-
-      # 非 error 级别先只报告不阻断，便于逐步收敛存量问题。
-      - name: shellcheck（warning/info，仅报告）
-        continue-on-error: true
-        run: |
-          set -uo pipefail
-          mapfile -t files < <(git ls-files '*.sh')
-          shellcheck --severity=warning --format=gcc "${files[@]}" || true
-
-  test:
-    name: test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        # macOS 必须覆盖：代码声称支持 macOS 与 Bash 3.2，而 GitHub 的 macOS
-        # runner 正是以 3.2 作为 /bin/bash，这层兼容面此前从未被跑到。
-        os: [ubuntu-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: 安装打包依赖（Linux）
-        if: runner.os == 'Linux'
-        run: sudo apt-get update -y && sudo apt-get install -y apt-utils dpkg-dev gnupg
-
-      - name: 运行测试套件
-        env:
-          # 在 Linux 上禁止 package_smoke 因缺工具而静默跳过。
-          FUNDEPLOY_REQUIRE_PACKAGE_TESTS: ${{ runner.os == 'Linux' && '1' || '' }}
-        run: bash tests/run-all.sh
-
-  entrypoints:
-    name: 入口冒烟
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-
-      # 各入口的 --help / 未知子命令路径必须可用且退出码稳定。
-      - name: 各入口 help 与退出码
-        run: |
-          set -uo pipefail
-          rc=0
-          for s in scripts/fundeploy.sh scripts/services/fundeploy-services.sh \
-                   scripts/tools/fundeploy-tools.sh scripts/dev/setup.sh scripts/ai-cli/setup.sh; do
-            if ! NONINTERACTIVE=1 bash "$s" help >/dev/null 2>&1; then
-              echo "FAIL: $s help 返回非 0"; rc=1
-            fi
-            if NONINTERACTIVE=1 bash "$s" __definitely_not_a_command__ >/dev/null 2>&1; then
-              echo "FAIL: $s 对未知子命令返回 0"; rc=1
-            fi
-          done
-          exit "$rc"
-
-      # NONINTERACTIVE=1 下任何入口都不得阻塞等待输入。
-      - name: 非交互模式不得阻塞
-        run: |
-          set -uo pipefail
-          rc=0
-          for s in scripts/fundeploy.sh scripts/dev/setup.sh scripts/tools/fundeploy-tools.sh \
-                   scripts/services/fundeploy-services.sh scripts/ai-cli/setup.sh; do
-            if timeout 20 env NONINTERACTIVE=1 bash "$s" </dev/null >/dev/null 2>&1; then
-              code=0
-            else
-              code=$?
-            fi
-            if [[ "$code" == "124" ]]; then
-              echo "FAIL: $s 在 NONINTERACTIVE=1 下阻塞（超时）"; rc=1
-            fi
-          done
-          exit "$rc"
+          shellcheck --severity=warning --format=gcc "${files[@]}"

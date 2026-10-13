@@ -1,556 +1,158 @@
-#!/usr/bin/env bash
-# 一键安装 / 更新 / 卸载 fundeploy 到 ~/.local/fundeploy（可通过 FUNDEPLOY_ROOT 覆盖）。
-# 用法见下方 usage；无参数且为交互式终端时，会先选择「安装」「更新」或「卸载」，不直接写盘。
-# 管道非 TTY 时必须显式传入子命令，例如: curl … | bash -s -- install
-set -euo pipefail
+#!/bin/sh
+# fundeploy 装机脚本。
+#
+# fundeploy 是一个静态二进制，不依赖 Python、Node 或者任何运行时，所以装机要做
+# 的只有一件事：把本机对应的那一个放到 PATH 上。
+#
+#   curl -fsSL https://raw.githubusercontent.com/farfarfun/fundeploy/HEAD/install.sh | sh
+#
+# 装完以后升级、回退都交给它自己：`fundeploy upgrade`。卸载就是删掉那个文件。
+#
+# 用 sh 而不是 bash：这是装机前的第一条命令，不能假设机器上有什么。
+set -eu
 
-FUNDEPLOY_ROOT="${FUNDEPLOY_ROOT:-${HOME}/.local/fundeploy}"
-FUNDEPLOY_WRAPPER_ROOT="${FUNDEPLOY_WRAPPER_ROOT:-${FUNDEPLOY_ROOT}}"
-FUNDEPLOY_GITHUB_REPO="${FUNDEPLOY_GITHUB_REPO:-https://github.com/farfarfun/fundeploy.git}"
-FUNDEPLOY_GITEE_REPO="${FUNDEPLOY_GITEE_REPO:-https://gitee.com/farfarfun/fundeploy.git}"
-FUNDEPLOY_SRC_DIR="${FUNDEPLOY_SRC_DIR:-${FUNDEPLOY_ROOT}/src/fundeploy}"
-FUNDEPLOY_SOURCE_FILE="${FUNDEPLOY_ROOT}/etc/fundeploy/source"
-_FUNDEPLOY_SOURCE_REQUESTED=""
-_FUNDEPLOY_SOURCE="auto"
+REPO="${FUNDEPLOY_RELEASE_REPO:-farfarfun/fundeploy}"
+BIN_DIR="${FUNDEPLOY_BIN_DIR:-${HOME}/.local/bin}"
+VERSION="${FUNDEPLOY_VERSION:-latest}"
+# 直连 GitHub 不通时拿它兜底：整条 URL 会原样拼在这个前缀后面（ghproxy 那一类）。
+# 名字和 fundeploy 自己用的那个变量一致，这样装完之后不必再设一遍。
+PROXY="${FUNDEPLOY_GITHUB_HUB_PROXY_PREFIX:-}"
 
-die() { echo "错误: $*" >&2; exit 1; }
-
-_parse_source_args() {
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --source)
-        [[ $# -ge 2 ]] || die "--source 缺少取值（github|gitee）"
-        _FUNDEPLOY_SOURCE_REQUESTED="$2"
-        shift 2
-        ;;
-      --source=*) _FUNDEPLOY_SOURCE_REQUESTED="${1#*=}"; shift ;;
-      *) die "未知参数: $1（支持 --source github|gitee）" ;;
-    esac
-  done
-  case "${_FUNDEPLOY_SOURCE_REQUESTED}" in
-    "" | github | gitee) ;;
-    *) die "未知 --source: ${_FUNDEPLOY_SOURCE_REQUESTED}（支持 github|gitee）" ;;
-  esac
-}
-
-# 首次安装时公共库尚不存在，因此安装根目录必须在本文件内守卫。
-_guard_fundeploy_root() {
-  local create="${1:-0}" root hp depth
-  [[ "${FUNDEPLOY_ROOT}" == /* ]] || die "FUNDEPLOY_ROOT 必须是绝对路径: ${FUNDEPLOY_ROOT}"
-  [[ "${create}" == "1" ]] && mkdir -p "${FUNDEPLOY_ROOT}"
-  [[ -d "${FUNDEPLOY_ROOT}" ]] || die "安装目录不存在: ${FUNDEPLOY_ROOT}"
-
-  root="$(cd "${FUNDEPLOY_ROOT}" && pwd -P)"
-  hp="$(cd "${HOME}" && pwd -P)"
-  case "${root}" in
-    / | "${hp}" | /bin | /boot | /dev | /etc | /home | /lib* | /opt | /proc | /root | /run | /sbin | /srv | /sys | /tmp | /usr | /var | /private | /private/etc | /private/tmp | /private/var | /Users | /Applications | /System | /Library)
-      die "拒绝使用系统目录或 \$HOME 作为 FUNDEPLOY_ROOT: ${root}" ;;
-  esac
-
-  depth="${root//[!\/]/}"
-  (( ${#depth} >= 2 )) || die "FUNDEPLOY_ROOT 路径层级过浅: ${root}"
+die() {
+  printf '错误: %s\n' "$*" >&2
+  exit 1
 }
 
 usage() {
   cat <<'EOF'
-用法: install.sh [install|update] [--source github|gitee]
-      install.sh uninstall
-
-  install / update   同步 libexec 与 bin；若 scripts 所在目录为 git 仓库则先 git pull --ff-only（可跳过）
-  uninstall / remove 删除 FUNDEPLOY_ROOT，并从 shell 配置中移除本安装器写入的 PATH 片段
-
-无参数:
-  交互式终端下会先询问「安装」「更新」或「卸载」（有 gum 则用 gum）。
-  非交互（管道、无 TTY）或无参数且 NONINTERACTIVE=1 时必须写明子命令，例如:
-    curl -LsSf https://raw.githubusercontent.com/farfarfun/fundeploy/HEAD/install.sh | bash -s -- install
-
-远端安装:
-  GitHub:
-    curl -LsSf https://raw.githubusercontent.com/farfarfun/fundeploy/HEAD/install.sh | bash -s -- install --source github
-  Gitee:
-    curl -LsSf https://gitee.com/farfarfun/fundeploy/raw/master/install.sh | bash -s -- install --source gitee
-  更新:
-    fundeploy upgrade
+用法: install.sh [--version 版本] [--bin-dir 目录]
 
 环境变量:
-  FUNDEPLOY_ROOT              安装根目录（默认 ~/.local/fundeploy）
-  FUNDEPLOY_WRAPPER_ROOT      包装命令中的运行根目录（默认同 FUNDEPLOY_ROOT，发行包构建专用）
-  FUNDEPLOY_PACKAGE_MANAGER   写入包装命令的包管理器标记：apt 或 brew（发行包构建专用）
-  FUNDEPLOY_SKIP_GIT_PULL     设为 1 时不执行 git pull（仍同步文件）
-  FUNDEPLOY_SKIP_PROFILE_HINT 设为 1 时不写入 PATH、不打印 PATH 说明（适合 CI）
-  FUNDEPLOY_AUTO_EXEC_ZSH_AFTER_INSTALL  默认 1：安装结束且为交互 TTY、且检测到由 zsh 启动本脚本时，执行 exec zsh -l 以加载 ~/.zshrc（无法改父进程环境时的折中）。设为 0 则只提示手动 source。
-  FUNDEPLOY_UNINSTALL_YES     设为 1 时非 TTY 也可执行 uninstall（确认删除）
-  FUNDEPLOY_GITHUB_REPO / FUNDEPLOY_GITEE_REPO / FUNDEPLOY_SRC_DIR  见 README
-  FUNDEPLOY_GIT_CLONE_REF   管道安装时 git clone 的分支或 tag（可选）。raw 用 …/master/… 而仓库默认分支是 main 时，可设为 master 与脚本版本一致；不设则克隆远程默认分支。
+  FUNDEPLOY_VERSION                   装哪一版，默认 latest
+  FUNDEPLOY_BIN_DIR                   装到哪儿，默认 ~/.local/bin
+  FUNDEPLOY_RELEASE_REPO              从哪个仓库的 release 取，默认 farfarfun/fundeploy
+  FUNDEPLOY_GITHUB_HUB_PROXY_PREFIX   GitHub 直连不通时的加速前缀
 EOF
 }
 
-# 若从仓库根执行（install.sh 为普通文件且旁侧有 scripts/），返回该 scripts 绝对路径；否则返回非 0。
-_resolve_scripts_from_install_sh() {
-  local _src="${BASH_SOURCE[0]-}" _dir
-  if [[ -n "$_src" && "$_src" != "-" && -f "$_src" ]]; then
-    _dir="$(cd "$(dirname "$_src")" && pwd)" || return 1
-    if [[ -d "${_dir}/scripts" ]]; then
-      echo "${_dir}/scripts"
-      return 0
-    fi
-  fi
-  return 1
-}
-
-# 浅克隆；若设置了 FUNDEPLOY_GIT_CLONE_REF 则固定该分支/tag（与 raw 脚本 URL 中的 ref 对齐）。
-_fundeploy_git_clone_shallow() {
-  local url="$1" dest="$2"
-  if [[ -n "${FUNDEPLOY_GIT_CLONE_REF:-}" ]]; then
-    git clone --depth 1 --branch "${FUNDEPLOY_GIT_CLONE_REF}" "${url}" "${dest}"
-  else
-    git clone --depth 1 "${url}" "${dest}"
-  fi
-}
-
-_repo_source() {
-  local url
-  url="$(git -C "$1" config --get remote.origin.url 2>/dev/null)" || return 1
-  case "${url}" in
-    *github.com/* | git@github.com:*) echo github ;;
-    *gitee.com/* | git@gitee.com:*) echo gitee ;;
-    *) return 1 ;;
-  esac
-}
-
-_resolve_install_source() {
-  local saved=""
-  if [[ -n "${_FUNDEPLOY_SOURCE_REQUESTED}" ]]; then
-    _FUNDEPLOY_SOURCE="${_FUNDEPLOY_SOURCE_REQUESTED}"
-  elif [[ -f "${FUNDEPLOY_SOURCE_FILE}" ]]; then
-    saved="$(tr -d '[:space:]' <"${FUNDEPLOY_SOURCE_FILE}")"
-    case "${saved}" in
-      github | gitee) _FUNDEPLOY_SOURCE="${saved}" ;;
-    esac
-  elif [[ -d "${FUNDEPLOY_SRC_DIR}/.git" ]]; then
-    _FUNDEPLOY_SOURCE="$(_repo_source "${FUNDEPLOY_SRC_DIR}" || echo auto)"
-  fi
-}
-
-_set_managed_clone_source() {
-  local repo="$1" source="$2" url actual=""
-  actual="$(_repo_source "${repo}" || true)"
-  [[ "${actual}" == "${source}" ]] && return 0
-  case "${source}" in
-    github) url="${FUNDEPLOY_GITHUB_REPO}" ;;
-    gitee) url="${FUNDEPLOY_GITEE_REPO}" ;;
-    *) return 0 ;;
-  esac
-  echo "正在将更新源切换为 ${source}: ${url}" >&2
-  if git -C "${repo}" remote get-url origin >/dev/null 2>&1; then
-    git -C "${repo}" remote set-url origin "${url}"
-  else
-    git -C "${repo}" remote add origin "${url}"
-  fi
-}
-
-_persist_install_source() {
-  [[ -z "${FUNDEPLOY_PACKAGE_MANAGER:-}" ]] || return 0
-  case "${_FUNDEPLOY_SOURCE}" in
-    github | gitee)
-      mkdir -p "$(dirname "${FUNDEPLOY_SOURCE_FILE}")"
-      printf '%s\n' "${_FUNDEPLOY_SOURCE}" >"${FUNDEPLOY_SOURCE_FILE}"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --version)
+      [ $# -ge 2 ] || die "--version 后面要给版本号"
+      VERSION="$2"
+      shift 2
       ;;
+    --version=*)
+      VERSION="${1#*=}"
+      shift
+      ;;
+    --bin-dir)
+      [ $# -ge 2 ] || die "--bin-dir 后面要给目录"
+      BIN_DIR="$2"
+      shift 2
+      ;;
+    --bin-dir=*)
+      BIN_DIR="${1#*=}"
+      shift
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *) die "不认识的参数: $1（用 --help 看用法）" ;;
   esac
-}
+done
 
-# 将仓库克隆到 FUNDEPLOY_SRC_DIR（若尚不存在）。
-_ensure_clone_for_scripts() {
-  command -v git >/dev/null 2>&1 || die "通过管道安装需要 git。请安装 git 或在克隆后的仓库根目录执行 ./install.sh"
-  mkdir -p "${FUNDEPLOY_ROOT}" "${FUNDEPLOY_ROOT}/src"
-  local repo="${FUNDEPLOY_SRC_DIR}"
-  if [[ -d "${repo}/.git" ]]; then
-    [[ "${_FUNDEPLOY_SOURCE}" == "auto" ]] && _FUNDEPLOY_SOURCE="$(_repo_source "${repo}" || echo auto)"
-    _set_managed_clone_source "${repo}" "${_FUNDEPLOY_SOURCE}"
-  elif [[ -e "${repo}" ]]; then
-    die "路径已存在但不是 git 仓库，请删除或移走后重试: ${repo}"
-  else
-    case "${_FUNDEPLOY_SOURCE}" in
-      github)
-        echo "正在从 GitHub 克隆 farfarfun/fundeploy …" >&2
-        _fundeploy_git_clone_shallow "${FUNDEPLOY_GITHUB_REPO}" "${repo}" || die "GitHub 克隆失败，请检查网络与代理"
-        ;;
-      gitee)
-        echo "正在从 Gitee 克隆 farfarfun/fundeploy …" >&2
-        _fundeploy_git_clone_shallow "${FUNDEPLOY_GITEE_REPO}" "${repo}" || die "Gitee 克隆失败，请检查网络与代理"
-        ;;
-      *)
-        echo "正在从 GitHub 克隆 farfarfun/fundeploy …" >&2
-        if _fundeploy_git_clone_shallow "${FUNDEPLOY_GITHUB_REPO}" "${repo}"; then
-          _FUNDEPLOY_SOURCE="github"
-        else
-          echo "GitHub 不可用，正在从 Gitee 克隆 farfarfun/fundeploy …" >&2
-          _fundeploy_git_clone_shallow "${FUNDEPLOY_GITEE_REPO}" "${repo}" || die "GitHub 与 Gitee 克隆均失败，请检查网络与代理"
-          _FUNDEPLOY_SOURCE="gitee"
-        fi
-        ;;
-    esac
-  fi
-  [[ -d "${repo}/scripts" ]] || die "克隆完成但未找到 scripts 目录: ${repo}"
-}
+# 本机对应的 target 三元组。写全而不是拼出来，是为了让这份名单一眼能和
+# release 里的附件对上。
+case "$(uname -s)/$(uname -m)" in
+  Linux/x86_64 | Linux/amd64) TARGET=x86_64-unknown-linux-musl ;;
+  Linux/aarch64 | Linux/arm64) TARGET=aarch64-unknown-linux-musl ;;
+  Darwin/x86_64) TARGET=x86_64-apple-darwin ;;
+  Darwin/arm64 | Darwin/aarch64) TARGET=aarch64-apple-darwin ;;
+  *) die "没有给 $(uname -s) $(uname -m) 发布过二进制" ;;
+esac
+ASSET="fundeploy-${TARGET}.tar.gz"
 
-# scripts 的父目录若为 git 仓库，则拉取最新（可跳过）。
-_sync_git_upstream_for_scripts() {
-  local scripts_dir="$1"
-  local root current before after source=""
-  root="$(cd "$(dirname "$scripts_dir")" && pwd)"
-  [[ -d "${root}/.git" ]] || return 0
-  source="$(_repo_source "${root}" || true)"
-  if [[ "${_FUNDEPLOY_SOURCE}" == "auto" ]]; then
-    _FUNDEPLOY_SOURCE="${source:-auto}"
-  elif [[ -n "${source}" && "${source}" != "${_FUNDEPLOY_SOURCE}" ]]; then
-    die "当前源码仓库 origin 与 --source ${_FUNDEPLOY_SOURCE} 不一致: ${root}"
-  fi
-  [[ "${FUNDEPLOY_SKIP_GIT_PULL:-}" == "1" ]] && return 0
-  command -v git >/dev/null 2>&1 || die "发现 git 仓库但未安装 git，无法更新: ${root}"
-  echo "正在拉取最新脚本: ${root}" >&2
-  before="$(git -C "${root}" rev-parse HEAD)"
-  git -C "${root}" pull --ff-only || die "git pull 失败: ${root}"
-  after="$(git -C "${root}" rev-parse HEAD)"
-  current="${BASH_SOURCE[0]:-}"
-  if [[ -f "${root}/install.sh" ]] && \
-    [[ "${before}" != "${after}" || ! -f "${current}" || ! "${current}" -ef "${root}/install.sh" ]]; then
-    echo "安装器已更新，正在使用新版本继续…" >&2
-    case "${_FUNDEPLOY_SOURCE}" in
-      github | gitee)
-        exec env FUNDEPLOY_SKIP_GIT_PULL=1 bash "${root}/install.sh" "${_CMD}" --source "${_FUNDEPLOY_SOURCE}"
-        ;;
-      *) exec env FUNDEPLOY_SKIP_GIT_PULL=1 bash "${root}/install.sh" "${_CMD}" ;;
-    esac
-  fi
-}
-
-# 规范路径，便于去重与写入 rc
-_fundeploy_canonical_bin_dir() {
-  (cd "${FUNDEPLOY_ROOT}/bin" && pwd -P)
-}
-
-_fundeploy_rc_has_managed_block() {
-  local f="$1"
-  [[ -f "$f" ]] && grep -Fq -e '--- fundeploy PATH' "$f"
-}
-
-_fundeploy_rc_path_mentions_bin() {
-  local f="$1" bin="$2"
-  [[ -f "$f" ]] && grep -qF "${bin}" "$f"
-}
-
-_fundeploy_append_fundeploy_path_block() {
-  local rc="$1"
-  local bin="$2"
-  local line marker_top marker_bot
-  line="export PATH=\"${bin}:\${PATH}\""
-  marker_top='# --- fundeploy PATH (github.com/farfarfun/fundeploy install.sh) ---'
-  marker_bot='# --- end fundeploy PATH ---'
-
-  if _fundeploy_rc_has_managed_block "$rc"; then
-    echo "PATH 已配置（存在 fundeploy 标记块）: ${rc}" >&2
-    return 0
-  fi
-  if _fundeploy_rc_path_mentions_bin "$rc" "$bin"; then
-    echo "跳过写入 ${rc}：文件中已出现 ${bin}（请确认 PATH 已包含 fundeploy bin）" >&2
-    return 0
-  fi
-
-  {
-    echo ""
-    echo "${marker_top}"
-    echo "${line}"
-    echo "${marker_bot}"
-  } >>"$rc"
-  echo "已追加 PATH 到: ${rc}" >&2
-}
-
-_fundeploy_collect_profile_targets() {
-  local -a out=()
-  local p t
-
-  add_unique() {
-    p="$1"
-    [[ -z "$p" ]] && return
-    for t in "${out[@]:-}"; do
-      [[ "$t" == "$p" ]] && return
-    done
-    out+=("$p")
-  }
-
-  if [[ -f "${HOME}/.zshrc" ]] || [[ "${SHELL:-}" == *zsh* ]]; then
-    add_unique "${HOME}/.zshrc"
-  fi
-  if [[ -f "${HOME}/.bashrc" ]] || [[ "${SHELL:-}" == *bash* ]]; then
-    add_unique "${HOME}/.bashrc"
-  fi
-  if [[ "${SHELL:-}" == *bash* ]] && [[ ! -f "${HOME}/.bashrc" ]] && [[ -f "${HOME}/.bash_profile" ]]; then
-    add_unique "${HOME}/.bash_profile"
-  fi
-  if [[ ${#out[@]} -eq 0 ]]; then
-    add_unique "${HOME}/.zshrc"
-  fi
-
-  for t in "${out[@]}"; do
-    printf '%s\n' "$t"
-  done
-}
-
-# 当前进程的父进程命令名是否像 zsh（用于安装后是否 exec zsh -l）
-_fundeploy_parent_shell_looks_like_zsh() {
-  local c
-  c="$(ps -p "$PPID" -o comm= 2>/dev/null || true)"
-  c="${c##-}"
-  c="${c##*/}"
-  [[ "$c" == *zsh* ]]
-}
-
-# 安装后立即生效：当前 install 进程 PATH + 可选 exec 登录 zsh 以加载 ~/.zshrc
-_fundeploy_post_install_refresh_shell() {
-  [[ "${FUNDEPLOY_SKIP_PROFILE_HINT:-}" == "1" ]] && return 0
-  local bin
-  bin="$(_fundeploy_canonical_bin_dir)" || return 0
-  case ":${PATH}:" in
-    *":${bin}:"*) ;;
-    *) export PATH="${bin}:${PATH}" ;;
-  esac
-
-  if
-    [[ "${FUNDEPLOY_AUTO_EXEC_ZSH_AFTER_INSTALL:-1}" == "1" ]] &&
-      [[ -t 1 ]] &&
-      _fundeploy_parent_shell_looks_like_zsh &&
-      [[ -f "${HOME}/.zshrc" ]] &&
-      command -v zsh >/dev/null 2>&1
-  then
-    echo "检测到由 zsh 启动安装：将 exec zsh -l 以加载 ~/.zshrc（fundeploy 立即可用；exit 回到上一层 shell）。" >&2
-    exec zsh -l
-  fi
-
-  echo "已将 ${bin} 加入当前 shell 的 PATH（本进程内可直接使用 fundeploy-*）。"
-  echo "新开终端或手动执行: source ~/.zshrc（zsh）或 source ~/.bashrc（bash）"
-}
-
-_fundeploy_install_path_to_profiles() {
-  local bin
-  bin="$(_fundeploy_canonical_bin_dir)" || die "无法解析 ${FUNDEPLOY_ROOT}/bin 为绝对路径"
-  local rc
-  while IFS= read -r rc; do
-    [[ -n "$rc" ]] || continue
-    touch "$rc" 2>/dev/null || {
-      echo "无法写入 ${rc}，跳过。" >&2
-      continue
-    }
-    _fundeploy_append_fundeploy_path_block "$rc" "$bin"
-  done < <(_fundeploy_collect_profile_targets)
-}
-
-_remove_managed_path_block_from_file() {
-  local f="$1"
-  [[ -f "$f" ]] || return 0
-  grep -Fq -e '--- fundeploy PATH' "$f" || return 0
-  local start end tmp
-  # `|| true`：标记缺失时 grep 返回 1，在 set -e + pipefail 下会直接终止整个
-  # install.sh —— 于是用户手工编辑过 rc 文件后，uninstall 什么都没删就退出 1，
-  # 下面那行本该兜底的守卫永远走不到。
-  start="$(grep -nF '# --- fundeploy PATH (github.com/farfarfun/fundeploy install.sh) ---' "$f" | head -1 | cut -d: -f1 || true)"
-  end="$(grep -nF '# --- end fundeploy PATH ---' "$f" | head -1 | cut -d: -f1 || true)"
-  if [[ -z "$start" || -z "$end" || "$end" -lt "$start" ]]; then
-    echo "警告: ${f} 中的 fundeploy PATH 标记不完整，跳过自动清理（请手动检查）。" >&2
-    return 0
-  fi
-  tmp="$(mktemp)"
-  awk -v s="$start" -v e="$end" 'NR < s || NR > e' "$f" >"$tmp" && mv "$tmp" "$f"
-  echo "已从 ${f} 移除 fundeploy PATH 片段" >&2
-}
-
-# 输出所选子命令；用户选择「退出」或取消时输出 quit。
-# 注意：本函数总是在 `$( )` 命令替换里被调用，因此 **不能用 exit 表达退出** ——
-# exit 只会终止那层子 shell，调用方拿到空串后落进 `case *)` 报「未知命令: 」并以 1 退出。
-_pick_cmd_interactive() {
-  if command -v gum >/dev/null 2>&1; then
-    local p
-    p="$(gum choose --header "fundeploy" "安装" "更新" "卸载" "退出")" || { echo "quit"; return 0; }
-    case "$p" in
-      安装) echo "install" ;;
-      更新) echo "update" ;;
-      卸载) echo "uninstall" ;;
-      *) echo "quit" ;;
-    esac
-  else
-    echo "请选择:" >&2
-    echo "  1) 安装   2) 更新   3) 卸载   4) 退出" >&2
-    read -r -p "输入 1-4: " sel || { echo "quit"; return 0; }
-    case "$sel" in
-      1) echo "install" ;;
-      2) echo "update" ;;
-      3) echo "uninstall" ;;
-      *) echo "quit" ;;
-    esac
-  fi
-}
-
-_emit_wrapper() {
-  local name="$1"
-  shift
-  local rel="$1"
-  shift
-  local bin_path="${FUNDEPLOY_ROOT}/bin/${name}"
-  {
-    printf '%s\n' '#!/usr/bin/env bash'
-    printf '%s\n' 'set -euo pipefail'
-    # 必须 export：wrapper 用 exec 启动真正的入口脚本，只有环境变量能传递过去。
-    # 漏掉 export 时 deb(/usr) 与 brew(opt_prefix) 安装下的入口会回落到
-    # ~/.local/fundeploy，导致 _resolve_local_install_sh / FUNDEPLOY_SRC_DIR 找错位置。
-    printf 'export FUNDEPLOY_ROOT=${FUNDEPLOY_ROOT:-%q}\n' "${FUNDEPLOY_WRAPPER_ROOT}"
-    if [[ -n "${FUNDEPLOY_PACKAGE_MANAGER:-}" ]]; then
-      printf 'export FUNDEPLOY_PACKAGE_MANAGER=%q\n' "${FUNDEPLOY_PACKAGE_MANAGER}"
-    fi
-    if [[ $# -gt 0 ]]; then
-      printf 'exec "${FUNDEPLOY_ROOT}/libexec/fundeploy/%s"' "$rel"
-      local a
-      for a in "$@"; do
-        printf ' %q' "$a"
-      done
-      printf ' "$@"\n'
-    else
-      printf 'exec "${FUNDEPLOY_ROOT}/libexec/fundeploy/%s" "$@"\n' "$rel"
-    fi
-  } > "${bin_path}"
-  chmod 0755 "${bin_path}"
-}
-
-do_install_or_update() {
-  local SCRIPTS LIBEXEC dir legacy
-  _guard_fundeploy_root 1
-  _resolve_install_source
-  SCRIPTS=""
-  if SCRIPTS="$(_resolve_scripts_from_install_sh)"; then
-    :
-  else
-    _ensure_clone_for_scripts
-    SCRIPTS="${FUNDEPLOY_SRC_DIR}/scripts"
-  fi
-  [[ -d "$SCRIPTS" ]] || die "找不到 scripts 目录: ${SCRIPTS}"
-
-  _sync_git_upstream_for_scripts "$SCRIPTS"
-  _persist_install_source
-
-  LIBEXEC="${FUNDEPLOY_ROOT}/libexec/fundeploy"
-  mkdir -p "${FUNDEPLOY_ROOT}/bin" "${LIBEXEC}" \
-    "${FUNDEPLOY_ROOT}/share/fundeploy" "${FUNDEPLOY_ROOT}/etc/fundeploy"
-
-  # 仓库和安装目录保持同一层级，新增模块无需再维护复制清单。
-  rm -rf -- "${LIBEXEC}/lib" "${LIBEXEC}/dev" "${LIBEXEC}/tools" \
-    "${LIBEXEC}/services" "${LIBEXEC}/ai-cli"
-  for dir in lib dev tools services ai-cli; do
-    [[ -d "${SCRIPTS}/${dir}" ]] || die "找不到源码目录: ${SCRIPTS}/${dir}"
-    cp -R "${SCRIPTS}/${dir}" "${LIBEXEC}/${dir}"
-  done
-  find "${LIBEXEC}" -type f -name '*.sh' -exec chmod 0755 {} +
-  install -m 0755 "${SCRIPTS}/fundeploy.sh" "${LIBEXEC}/fundeploy.sh"
-  install -m 0755 "${SCRIPTS}/../install.sh" "${LIBEXEC}/fundeploy-install.sh"
-
-  # 清理旧版扁平 libexec 布局。
-  for dir in pip-sources python-env port-kill brew download cockpit-tools skills-sync \
-    airflow celery utils github-net paperclip code-server new-api sub2api open-pencil \
-    funflix-web funread-web; do
-    rm -rf -- "${LIBEXEC}/${dir}"
-  done
-
-  _emit_wrapper fundeploy fundeploy.sh
-
-  rm -rf "${LIBEXEC}/build"
-  # 更新时清理本项目的历史包装器，保留 bin 中的其它命令。
-  for legacy in nlt fundeploy-build fundeploy-dev fundeploy-ai-cli fundeploy-pip-sources \
-    fundeploy-python-env fundeploy-utils fundeploy-github-net fundeploy-port-kill \
-    fundeploy-download fundeploy-cockpit-tools fundeploy-services fundeploy-tools \
-    fundeploy-airflow fundeploy-celery fundeploy-paperclip fundeploy-code-server \
-    fundeploy-new-api fundeploy-sub2api fundeploy-open-pencil fundeploy-airflow-install \
-    fundeploy-celery-install fundeploy-celery-update fundeploy-paperclip-install \
-    fundeploy-code-server-install fundeploy-new-api-install fundeploy-sub2api-install; do
-    rm -f -- "${FUNDEPLOY_ROOT}/bin/${legacy}"
-  done
-  if [[ -z "${FUNDEPLOY_PACKAGE_MANAGER:-}" ]]; then
-    rm -f "${HOME}/opt/nlt/bin/fundeploy-port-kill"
-  fi
-
-  if [[ "${FUNDEPLOY_SKIP_PROFILE_HINT:-}" != "1" ]]; then
-    echo ""
-    echo "已安装到: ${FUNDEPLOY_ROOT}"
-    echo "统一入口: ${FUNDEPLOY_ROOT}/bin/fundeploy"
-    echo "PATH 生效后可运行: fundeploy"
-    _fundeploy_install_path_to_profiles
-    echo ""
-    echo "若不想自动写入 shell 配置，可设置 FUNDEPLOY_SKIP_PROFILE_HINT=1"
-    echo "若不想安装结束后自动 exec 登录 zsh，可设置 FUNDEPLOY_AUTO_EXEC_ZSH_AFTER_INSTALL=0"
-    _fundeploy_post_install_refresh_shell
-  fi
-}
-
-do_uninstall() {
-  local ap rc
-  if [[ ! -d "${FUNDEPLOY_ROOT}" ]]; then
-    echo "未找到安装目录，跳过: ${FUNDEPLOY_ROOT}" >&2
-    exit 0
-  fi
-  _guard_fundeploy_root
-
-  if [[ "${FUNDEPLOY_UNINSTALL_YES:-}" != "1" ]]; then
-    if [[ -t 0 ]]; then
-      if command -v gum >/dev/null 2>&1; then
-        gum confirm "将删除整个 ${FUNDEPLOY_ROOT}（含 bin、libexec、克隆仓库），并从 shell 配置中移除 fundeploy PATH 片段。确认？" || exit 0
-      else
-        read -r -p "确认删除 ${FUNDEPLOY_ROOT}？[y/N] " ap
-        [[ "$ap" == "y" || "$ap" == "Y" ]] || exit 0
-      fi
-    else
-      die "非交互卸载请设置 FUNDEPLOY_UNINSTALL_YES=1"
-    fi
-  fi
-
-  while IFS= read -r rc; do
-    [[ -n "$rc" ]] || continue
-    _remove_managed_path_block_from_file "$rc"
-  done < <(_fundeploy_collect_profile_targets)
-
-  echo "正在删除: ${FUNDEPLOY_ROOT}" >&2
-  rm -rf "${FUNDEPLOY_ROOT}"
-  echo "已卸载 fundeploy。" >&2
-}
-
-# ---- 入口 ----
-_CMD=""
-if [[ $# -eq 0 ]]; then
-  if [[ ! -t 0 ]] || [[ "${NONINTERACTIVE:-}" == "1" ]]; then
-    usage >&2
-    die "请指定子命令 install（或 update）或 uninstall。管道示例: curl …/install.sh | bash -s -- install"
-  fi
-  _CMD="$(_pick_cmd_interactive)"
+if [ "${VERSION}" = latest ]; then
+  # latest/download 这条路由由 GitHub 自己重定向到最新 release，不用先查 API——
+  # 匿名调 API 每小时只有 60 次，装机脚本不值得占一次。
+  BASE="https://github.com/${REPO}/releases/latest/download"
 else
-  _CMD="$1"
-  shift
+  BASE="https://github.com/${REPO}/releases/download/v${VERSION#v}"
 fi
 
-case "${_CMD}" in
-  quit)
-    echo "已退出。" >&2
-    exit 0
-    ;;
-  install | update)
-    _parse_source_args "$@"
-    do_install_or_update
-    ;;
-  uninstall | remove)
-    [[ $# -eq 0 ]] || die "uninstall 不支持额外参数: $*"
-    do_uninstall
-    ;;
-  help | -h | --help)
-    usage
-    exit 0
-    ;;
+# 下载。先整个下到临时文件再用，不边下边解：中途断线留下的半个包，下一步看着
+# 和完整的包没区别。
+fetch() {
+  _url="$1"
+  _dest="$2"
+  if [ -n "${PROXY}" ]; then
+    _url="${PROXY}${_url}"
+  fi
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL --retry 3 --connect-timeout 15 -o "${_dest}" "${_url}"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q --tries=3 --timeout=60 -O "${_dest}" "${_url}"
+  else
+    die "既没有 curl 也没有 wget，下不了东西。"
+  fi
+}
+
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
+TMP="$(mktemp -d)"
+STAGED="${BIN_DIR}/.fundeploy.new.$$"
+trap 'rm -rf -- "${TMP}" "${STAGED}"' EXIT INT TERM
+
+printf '==> 下载 %s\n' "${ASSET}"
+fetch "${BASE}/${ASSET}" "${TMP}/${ASSET}" ||
+  die "下不到 ${BASE}/${ASSET}（版本写错了，或者网络不通）"
+
+# 校验。取不到清单或者本机没有 sha256 工具时只提醒不拦——那会让完全正常的安装
+# 失败；对得上却不匹配则必须停下。
+if fetch "${BASE}/SHA256SUMS" "${TMP}/SHA256SUMS" 2>/dev/null; then
+  WANT="$(awk -v n="${ASSET}" '$2 == n || $2 == "*" n {print $1; exit}' "${TMP}/SHA256SUMS")"
+  GOT="$(sha256_of "${TMP}/${ASSET}")"
+  if [ -z "${WANT}" ]; then
+    printf '警告: SHA256SUMS 里没有 %s，跳过校验。\n' "${ASSET}" >&2
+  elif [ -z "${GOT}" ]; then
+    printf '警告: 本机没有 sha256sum/shasum，跳过校验。\n' >&2
+  elif [ "${WANT}" != "${GOT}" ]; then
+    die "${ASSET} 校验失败
+  期望 ${WANT}
+  实际 ${GOT}"
+  fi
+else
+  printf '警告: 取不到 SHA256SUMS，跳过校验。\n' >&2
+fi
+
+tar -xzf "${TMP}/${ASSET}" -C "${TMP}" || die "${ASSET} 解不开"
+[ -f "${TMP}/fundeploy" ] || die "${ASSET} 里没有 fundeploy"
+
+mkdir -p "${BIN_DIR}"
+# 中转一次落在 BIN_DIR 里，最后那一步是同目录 rename。直接覆盖的话，正在跑的
+# fundeploy 会在写到一半时被读到。
+cp "${TMP}/fundeploy" "${STAGED}"
+chmod 0755 "${STAGED}"
+"${STAGED}" --version >/dev/null 2>&1 || die "下下来的二进制跑不起来，没有装上去。"
+mv -f "${STAGED}" "${BIN_DIR}/fundeploy"
+
+printf '✓ 装好了: %s\n' "${BIN_DIR}/fundeploy"
+"${BIN_DIR}/fundeploy" --version
+
+# PATH 不动别人的 shell 配置，只说该加哪一行。装机脚本偷偷往 ~/.bashrc 里写东西
+# 是个常见做法，但那意味着卸载时还得把它找回来删掉，而卸载这件事这里做不到。
+case ":${PATH}:" in
+  *":${BIN_DIR}:"*) ;;
   *)
-    usage >&2
-    die "未知命令: ${_CMD}"
+    printf '\n%s 不在 PATH 上。把这行加进 shell 配置（~/.bashrc 或 ~/.zshrc）:\n' "${BIN_DIR}"
+    printf '  export PATH="%s:$PATH"\n' "${BIN_DIR}"
     ;;
 esac

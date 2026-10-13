@@ -5,9 +5,7 @@ on:
     tags:
       - "v[0-9]*"
 
-# 顶层默认最小权限；确实需要写权限的 job（release / deploy-apt-pages）
-# 各自单独声明。此前没有顶层默认，apt-repository 与 homebrew-tap 会继承
-# 仓库默认的 GITHUB_TOKEN 范围。
+# 顶层默认最小权限；确实需要写权限的 job 各自单独声明。
 permissions:
   contents: read
 
@@ -16,53 +14,116 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
+  check:
+    name: 版本号核对
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # 二进制自报的版本来自 CARGO_PKG_VERSION。它和 tag 对不上的话，装出来的
+      # fundeploy 会说自己是另一个版本，`upgrade` 从此每次都认为有新版可升。
+      - id: v
+        run: |
+          set -eu
+          version="$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)"
+          if [ "$GITHUB_REF_NAME" != "v${version}" ]; then
+            echo "tag ${GITHUB_REF_NAME} 和 Cargo.toml 里的 ${version} 对不上" >&2
+            exit 1
+          fi
+          echo "version=${version}" >>"$GITHUB_OUTPUT"
+
+  build:
+    name: build ${{ matrix.target }}
+    needs: check
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-latest }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm }
+          - { target: x86_64-apple-darwin, os: macos-latest }
+          - { target: aarch64-apple-darwin, os: macos-latest }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 装 musl 工具链
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -y && sudo apt-get install -y musl-tools
+
+      - name: 装工具链
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup target add ${{ matrix.target }}
+
+      - run: cargo build --release --target ${{ matrix.target }}
+
+      - name: 打包
+        run: |
+          set -eu
+          mkdir -p dist
+          tar -czf "dist/fundeploy-${{ matrix.target }}.tar.gz" \
+            -C "target/${{ matrix.target }}/release" fundeploy
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-${{ matrix.target }}
+          path: dist/*.tar.gz
+          retention-days: 7
+
   release:
+    name: 发布
+    needs: [check, build]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
         with:
-          fetch-depth: 0
+          pattern: bin-*
+          merge-multiple: true
+          path: dist
 
-      # 此前 release job 未安装这些工具，而 package_smoke.sh 在缺工具时会
-      # exit 0 静默跳过 —— 于是真正用于发布的 .deb 构建路径从未被冒烟测试过。
-      # （下面的 apt-repository job 显式安装它们，正说明 runner 默认没有。）
-      - name: Install packaging tools
+      - name: 打 .deb
         run: |
-          sudo apt-get update -y
-          sudo apt-get install -y apt-utils dpkg-dev gnupg
+          set -eu
+          sudo apt-get update -y && sudo apt-get install -y dpkg-dev
+          work="$(mktemp -d)"
+          for pair in "x86_64-unknown-linux-musl amd64" "aarch64-unknown-linux-musl arm64"; do
+            set -- $pair
+            mkdir -p "${work}/$2"
+            tar -xzf "dist/fundeploy-$1.tar.gz" -C "${work}/$2"
+            bash packaging/build-deb.sh "${work}/$2/fundeploy" "${{ needs.check.outputs.version }}" "$2" dist
+          done
 
-      - name: Test
-        env:
-          FUNDEPLOY_REQUIRE_PACKAGE_TESTS: "1"
-        run: bash tests/run-all.sh
+      # 校验和清单最后生成：它要覆盖上面所有的附件，提前算就漏掉 .deb。
+      - name: 生成 SHA256SUMS
+        working-directory: dist
+        run: sha256sum ./* | sed 's# \./# #' >SHA256SUMS
 
-      - name: Build release assets
+      - name: 生成 Homebrew formula
         env:
-          GH_TOKEN: ${{ github.token }}
+          FUNDEPLOY_GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
-          set -euo pipefail
-          version="$(tr -d '[:space:]' < VERSION)"
-          [[ "$GITHUB_REF_NAME" == "v${version}" ]] || {
-            echo "Tag ${GITHUB_REF_NAME} does not match VERSION ${version}." >&2
-            exit 1
-          }
-          mkdir -p dist
-          bash packaging/build-deb.sh "$version" dist
-          curl -fsSL "https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz" \
-            -o "dist/fundeploy-${version}.tar.gz"
-          sha256="$(sha256sum "dist/fundeploy-${version}.tar.gz" | awk '{print $1}')"
-          FUNDEPLOY_GITHUB_REPOSITORY="${GITHUB_REPOSITORY}" \
-            bash packaging/render-homebrew-formula.sh "$version" "$sha256" dist/fundeploy.rb
+          bash packaging/render-homebrew-formula.sh \
+            "${{ needs.check.outputs.version }}" dist/SHA256SUMS dist/fundeploy.rb
 
-      - name: Publish GitHub Release
+      - name: 发 GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          set -euo pipefail
+          set -eu
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" dist/* --clobber
           else
@@ -74,6 +135,39 @@ jobs:
           name: release-assets
           path: dist/*
           retention-days: 7
+
+  verify-install:
+    name: 装机验证 (${{ matrix.os }})
+    needs: [check, release]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      # install.sh 是别人碰到这个项目的第一条命令，而它只有在真有一个发布好的
+      # release 时才跑得通——所以验证只能放在发布之后。这一步失败说明刚发出去
+      # 的那一版装不上，得立刻补一个。
+      - name: 照装机脚本装一遍
+        run: sh install.sh --version "${{ needs.check.outputs.version }}"
+
+      - name: 装出来的是不是这一版
+        run: |
+          set -eu
+          got="$("$HOME/.local/bin/fundeploy" --version)"
+          echo "$got"
+          case "$got" in
+            *"${{ needs.check.outputs.version }}"*) ;;
+            *)
+              echo "装出来的版本不对" >&2
+              exit 1
+              ;;
+          esac
+          "$HOME/.local/bin/fundeploy" list >/dev/null
+          "$HOME/.local/bin/fundeploy" upgrade --check
 
   apt-repository:
     needs: release
@@ -125,8 +219,7 @@ jobs:
         env:
           APT_GPG_PASSPHRASE: ${{ secrets.APT_GPG_PASSPHRASE }}
         run: |
-          deb="$(find dist -maxdepth 1 -type f -name '*.deb' -print -quit)"
-          bash packaging/build-apt-repo.sh "$deb" public "${{ steps.signing-key.outputs.fingerprint }}"
+          bash packaging/build-apt-repo.sh dist public "${{ steps.signing-key.outputs.fingerprint }}"
 
       - uses: actions/upload-pages-artifact@v3
         if: steps.config.outputs.apt == 'true'
