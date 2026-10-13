@@ -3,7 +3,7 @@
 版本号以 `Cargo.toml` 里的 `version` 为准；发布由推同版本的 `v*` tag 触发（见
 `.github/workflows/release.yml`），因此「有 tag ＝ 已发布」。
 
-## [0.3.0] - 未发布
+## [0.3.0] - 2026-10-13
 
 整个项目从 Bash 重写为 Rust，发布物从一棵脚本树变成单个静态二进制。原来的
 Bash 保留在 `bak` 分支，`master` 上的 `scripts/` 与 `tests/` 已整体删除。
