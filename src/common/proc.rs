@@ -92,6 +92,14 @@ pub fn stop_pid(pid: i32, timeout: Duration, process_group: bool) -> Result<()> 
     Ok(())
 }
 
+/// 只投一个 SIGTERM，不等、也不升级成 SIGKILL。
+///
+/// 给那些「停不下来就该停手」的进程用。数据库是典型：SIGKILL 过去虽然能从 WAL
+/// 恢复，但那是下次启动时实打实的一轮崩溃恢复，不该由一条 upgrade 顺手触发。
+pub fn term(pid: i32) {
+    signal(pid, libc::SIGTERM);
+}
+
 /// 投信号。失败一律忽略：进程正好在这一刻退出（ESRCH）是竞态而非错误，
 /// 而权限不足（EPERM）在 stop 的语义下也只能继续往下走到超时。
 fn signal(target: i32, sig: libc::c_int) {

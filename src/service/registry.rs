@@ -11,10 +11,12 @@ use std::path::PathBuf;
 
 use super::config;
 use super::daemon::{self, DaemonSpec, Github, Proc};
+use super::paperclip::Paperclip;
 use super::spec::{Arg, CliShape, Component, Pkg, ServiceSpec};
 use super::upstream::{self, Upstream};
 use super::Service;
 use crate::args;
+use crate::common::env::{home, opt as env_opt, port as env_port, str_or as env_str};
 use crate::common::platform::{self, Platform};
 use crate::ui;
 
@@ -29,6 +31,7 @@ pub fn all() -> Vec<Box<dyn Service>> {
         daemon::boxed(new_api()),
         daemon::declared(code_server()),
         daemon::boxed(sub2api()),
+        Box::new(Paperclip::from_env()),
     ]
 }
 
@@ -38,40 +41,6 @@ pub fn names() -> Vec<String> {
 
 pub fn find(name: &str) -> Option<Box<dyn Service>> {
     all().into_iter().find(|s| s.name() == name)
-}
-
-// ---------------------------------------------------------------- 环境变量
-
-fn env_str(key: &str, default: &str) -> String {
-    match std::env::var(key) {
-        Ok(v) if !v.trim().is_empty() => v,
-        _ => default.to_string(),
-    }
-}
-
-fn env_opt(key: &str) -> Option<String> {
-    std::env::var(key).ok().filter(|v| !v.trim().is_empty())
-}
-
-/// 读端口。值不合法时**用默认值并明确报出来**——静默回退的话，操作者会盯着
-/// 一个他以为改了的端口，而服务起在另一个端口上。
-fn env_port(key: &str, default: u16) -> u16 {
-    let Some(raw) = env_opt(key) else {
-        return default;
-    };
-    match raw.trim().parse::<u16>() {
-        Ok(p) if p > 0 => p,
-        _ => {
-            ui::warn(format!(
-                "{key}={raw} 不是合法端口，按默认值 {default} 处理。"
-            ));
-            default
-        }
-    }
-}
-
-fn home() -> PathBuf {
-    dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
 }
 
 // ---------------------------------------------------------------- funfluid-web
@@ -992,27 +961,6 @@ mod tests {
         let spec = funlesson_web();
         assert_eq!(spec.component("frontend").unwrap().port, 19999);
         std::env::remove_var("FUNLESSON_WEB_FRONTEND_PORT");
-    }
-
-    #[test]
-    fn 非法端口退回默认值而不是崩掉() {
-        let _排队 = 排队();
-        std::env::set_var("__FD_TEST_PORT", "八千");
-        assert_eq!(env_port("__FD_TEST_PORT", 1234), 1234);
-        std::env::set_var("__FD_TEST_PORT", "0");
-        assert_eq!(env_port("__FD_TEST_PORT", 1234), 1234);
-        std::env::set_var("__FD_TEST_PORT", "70000");
-        assert_eq!(env_port("__FD_TEST_PORT", 1234), 1234);
-        std::env::remove_var("__FD_TEST_PORT");
-    }
-
-    #[test]
-    fn 空环境变量当作没设置() {
-        let _排队 = 排队();
-        std::env::set_var("__FD_TEST_STR", "   ");
-        assert_eq!(env_str("__FD_TEST_STR", "默认"), "默认");
-        assert_eq!(env_opt("__FD_TEST_STR"), None);
-        std::env::remove_var("__FD_TEST_STR");
     }
 
     /// 上游自带守护那一族的全部声明。`all()` 里只剩 `dyn Service`，

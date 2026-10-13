@@ -3,6 +3,7 @@
 pub mod archive;
 pub mod cmd;
 pub mod download;
+pub mod env;
 pub mod github;
 pub mod npm;
 pub mod pip;

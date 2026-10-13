@@ -60,20 +60,44 @@ enum Action {
     Status,
     /// 卸载
     Uninstall,
+
+    /// 服务自己声明的额外动作（见 [`Service::extras`]），原样收下交给它。
+    ///
+    /// 参数不在这里解析：额外动作多半是转调上游 CLI，`-f`、`--repair` 这些该由
+    /// 上游自己认，clap 插一手只会把它不认识的选项拦下来。
+    #[command(external_subcommand)]
+    Extra(Vec<String>),
 }
 
+/// 九个标准动作的名字。
+///
+/// [`Action::Extra`] 一旦生效，clap 就不再为拼错的子命令报错了——`statsu` 会被
+/// 原样收下。这份名单是用来把那条报错补回去的，有测试守着它和 clap 不脱节。
+const STANDARD: [&str; 9] = [
+    "install",
+    "upgrade",
+    "rollback",
+    "start",
+    "run",
+    "stop",
+    "restart",
+    "status",
+    "uninstall",
+];
+
 impl Action {
-    fn label(&self) -> &'static str {
+    fn label(&self) -> String {
         match self {
-            Action::Install { .. } => "install  安装",
-            Action::Upgrade => "upgrade  升到最新版",
-            Action::Rollback { .. } => "rollback 回退到指定版本",
-            Action::Start => "start    后台启动",
-            Action::Run => "run      前台运行",
-            Action::Stop => "stop     停止",
-            Action::Restart => "restart  重启",
-            Action::Status => "status   看状态",
-            Action::Uninstall => "uninstall 卸载",
+            Action::Install { .. } => "install  安装".to_string(),
+            Action::Upgrade => "upgrade  升到最新版".to_string(),
+            Action::Rollback { .. } => "rollback 回退到指定版本".to_string(),
+            Action::Start => "start    后台启动".to_string(),
+            Action::Run => "run      前台运行".to_string(),
+            Action::Stop => "stop     停止".to_string(),
+            Action::Restart => "restart  重启".to_string(),
+            Action::Status => "status   看状态".to_string(),
+            Action::Uninstall => "uninstall 卸载".to_string(),
+            Action::Extra(argv) => argv.join(" "),
         }
     }
 
@@ -102,8 +126,37 @@ impl Action {
             Action::Restart => svc.restart(),
             Action::Status => svc.status(),
             Action::Uninstall => svc.uninstall(),
+            Action::Extra(argv) => run_extra(svc, argv),
         }
     }
+}
+
+/// 执行一个服务声明的额外动作。
+///
+/// 名字先对着 [`Service::extras`] 核一遍再往下传：clap 的 external_subcommand 会
+/// 原样收下任何没见过的词，不核的话 `statsu` 这种手滑会一路传到服务里，变成一条
+/// 拿拼错的子命令去调上游 CLI 的调用——报错也就成了上游的用法提示，与手滑无关。
+fn run_extra(svc: &dyn Service, argv: &[String]) -> Result<()> {
+    let Some((name, args)) = argv.split_first() else {
+        bail!(
+            "没给动作名。看全部动作: fundeploy service {} --help",
+            svc.name()
+        );
+    };
+    let extras = svc.extras();
+    if !extras.iter().any(|e| e.name == name) {
+        let known: Vec<&str> = STANDARD
+            .iter()
+            .copied()
+            .chain(extras.iter().map(|e| e.name))
+            .collect();
+        bail!(
+            "{} 没有 {name} 这个动作。可选: {}",
+            svc.name(),
+            known.join("、")
+        );
+    }
+    svc.extra(name, args)
 }
 
 pub fn cli_main() -> Result<()> {
@@ -180,19 +233,35 @@ fn pick_service() -> Result<Box<dyn Service>> {
 
 fn pick_and_run(svc: &dyn Service) -> Result<()> {
     if !ui::interactive() {
-        bail!(
-            "要做什么？例如 `fundeploy service {} status`（看全部动作: `fundeploy service {} --help`）",
-            svc.name(),
+        let mut msg = format!(
+            "要做什么？例如 `fundeploy service {0} status`（看全部动作: `fundeploy service {0} --help`）",
             svc.name()
         );
+        // 额外动作不在 --help 里（clap 不认识它们），不在这儿说就等于没有。
+        if !svc.extras().is_empty() {
+            let names: Vec<&str> = svc.extras().iter().map(|e| e.name).collect();
+            msg.push_str(&format!("\n{} 还支持: {}", svc.name(), names.join("、")));
+        }
+        bail!(msg);
     }
 
     let actions = Action::menu();
-    let labels: Vec<String> = actions.iter().map(|a| a.label().to_string()).collect();
+    let mut labels: Vec<String> = actions.iter().map(Action::label).collect();
+    // 额外动作跟标准动作并列进菜单：对使用者来说它们同样是「这个服务能做的事」。
+    labels.extend(
+        svc.extras()
+            .iter()
+            .map(|e| format!("{:<9}{}", e.name, e.about)),
+    );
+
     let picked = ui::select(&format!("{} 要做什么", svc.name()), &labels)?
         .ok_or_else(|| anyhow::anyhow!("已取消。"))?;
     let idx = labels.iter().position(|l| l == picked).unwrap();
-    actions[idx].apply(svc)
+    match actions.get(idx) {
+        Some(a) => a.apply(svc),
+        // 越过标准动作的下标落在 extras 上，顺序跟上面拼 labels 时一致。
+        None => svc.extra(svc.extras()[idx - actions.len()].name, &[]),
+    }
 }
 
 #[cfg(test)]
@@ -261,6 +330,61 @@ mod tests {
     #[test]
     fn 不认识的子命令要报错() {
         assert!(Cli::try_parse_from(["fundeploy", "没这个命令"]).is_err());
+    }
+
+    #[test]
+    fn 标准动作名单和_clap_不脱节() {
+        // STANDARD 是手抄的，加了动作忘了抄就会在报错里漏掉它。
+        let cmd = Cli::command();
+        let svc = cmd.find_subcommand("service").expect("没有 service 子命令");
+        let mut from_clap: Vec<&str> = svc
+            .get_subcommands()
+            .map(|c| c.get_name())
+            .filter(|n| *n != "help")
+            .collect();
+        from_clap.sort_unstable();
+        let mut mine = STANDARD.to_vec();
+        mine.sort_unstable();
+        assert_eq!(from_clap, mine);
+    }
+
+    #[test]
+    fn 没见过的动作被原样收下交给服务() {
+        // external_subcommand 生效后 clap 不再报错，核名字这件事归 run_extra。
+        let cli = Cli::try_parse_from(["fundeploy", "service", "paperclip", "doctor", "--repair"])
+            .unwrap();
+        match cli.command {
+            Some(Command::Service {
+                action: Some(Action::Extra(argv)),
+                ..
+            }) => assert_eq!(argv, ["doctor", "--repair"]),
+            _ => panic!("解析成了别的命令"),
+        }
+    }
+
+    #[test]
+    fn 手滑拼错的动作报错里列出可选项() {
+        // 不核名字的话，`statsu` 会被当成额外动作一路传到上游 CLI，
+        // 报出来的是上游的用法提示，跟「打错了」八竿子打不着。
+        let err = service_cmd(
+            Some("funread-web".into()),
+            Some(Action::Extra(vec!["statsu".into()])),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("statsu"), "实际: {err}");
+        assert!(err.contains("status"), "实际: {err}");
+    }
+
+    #[test]
+    fn 声明了额外动作的服务在报错里也列出它们() {
+        let err = service_cmd(
+            Some("paperclip".into()),
+            Some(Action::Extra(vec!["没这个".into()])),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("doctor"), "实际: {err}");
     }
 
     #[test]

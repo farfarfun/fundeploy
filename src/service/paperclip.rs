@@ -1,0 +1,1778 @@
+//! Paperclip。
+//!
+//! 装、升、诊断和后台服务都归官方 `paperclipai` CLI。它既不属于
+//! [`upstream`](super::upstream)——那族的上游只管起停、装包归 fundeploy；也不属于
+//! [`daemon`](super::daemon)——那族的上游只给一个前台二进制。Paperclip 两头都自己
+//! 管：managed install 自带版本仓库和 shim，`service` 子命令会去写 systemd --user
+//! 单元或 LaunchAgent。fundeploy 在它上面只补两件事：
+//!
+//! 1. 中文封装，以及把官方那些「用退出码传信息」「检测不到就假装成功」的接口
+//!    翻译成明确的话；
+//! 2. 没有服务管理器的机器上的后台托管。`systemd --user` 需要一个用户级 systemd
+//!    实例，容器、WSL1 和没有登录会话的终端里不存在；官方 `service start/stop/status`
+//!    在那种机器上只打印一条 reason 就以 0 退出（`resolveManager` 返回 null 而不是
+//!    抛错），对调用方是彻底的假成功——返回 0、什么都没启动。官方给出的唯一出路
+//!    `paperclipai run` 是前台、不自守护的。
+//!
+//! 为什么不走官方 install.sh：paperclip.ing 上那份是过期快照（给 CLI 传了 `install`
+//! 并不接受的 `--no-prompt`、Node 下限写成 20、用了 bash 4 语法在 macOS 自带的 3.2 上
+//! 崩），而 master 上那份正确的没有发布 .sha256，无从校验，它的 Node 引导还会在见到
+//! `~/.nvm` 时直接 fail。只要 PATH 上已有够新的 node，install.sh 的 Node 引导块会被
+//! 整个跳过，剩下的就是本模块执行的那一行 npx——终态一致，但不引入一个过期、且在装了
+//! nvm 的机器上根本跑不起来的脚本依赖。
+
+use anyhow::{anyhow, bail, Context, Result};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+use super::{Extra, Service};
+use crate::common::cmd::{self, EnvEdit};
+use crate::common::{env, port, proc, version};
+use crate::ui;
+
+/// 上游要求的 Node 下限。只有 npx 引导首次安装那一步真需要它——装完之后 shim 里
+/// 是绝对路径，自带了它那份 node，PATH 上是不是旧版无关。
+const NODE_MIN: &str = "24.11.0";
+
+/// 官方源。用途只有一个：npx 引导那一跳的 registry。managed install 自己也把它钉死
+/// （见 [`Paperclip::npm_env`]），这里跟着写一遍只是让那一跳落在同一个源上。
+const NPM_REGISTRY: &str = "https://registry.npmjs.org";
+
+/// 还没 onboard 过时的端口，跟上游的默认值一致。
+const DEFAULT_SERVER_PORT: u16 = 8804;
+const DEFAULT_PG_PORT: u16 = 5432;
+
+/// 无人值守下确认降级的开关。
+const DOWNGRADE_YES: &str = "FUNDEPLOY_PAPERCLIP_DOWNGRADE_YES";
+
+const EXTRAS: &[Extra] = &[
+    Extra {
+        name: "install-canary",
+        about: "装开发版（官方 managed install）",
+    },
+    Extra {
+        name: "check",
+        about: "只查有没有新版，什么都不改 [canary|prod]",
+    },
+    Extra {
+        name: "backup",
+        about: "备份数据库（官方 db:backup）",
+    },
+    Extra {
+        name: "channels",
+        about: "看发布通道和当前跟的那个",
+    },
+    Extra {
+        name: "doctor",
+        about: "官方诊断；加 --repair 试着自动修",
+    },
+    Extra {
+        name: "health",
+        about: "官方健康检查，不通时退出码非 0",
+    },
+    Extra {
+        name: "onboard",
+        about: "首次配置向导",
+    },
+    Extra {
+        name: "logs",
+        about: "看日志 [-f] [-n 行数]",
+    },
+    Extra {
+        name: "plugin",
+        about: "插件 list / install [包名] / installed",
+    },
+    Extra {
+        name: "service-install",
+        about: "注册后台服务并设开机自启",
+    },
+];
+
+// ------------------------------------------------------------------ 发布通道
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Channel {
+    Prod,
+    Canary,
+}
+
+impl Channel {
+    fn parse(s: &str) -> Result<Self> {
+        match s {
+            "canary" => Ok(Self::Canary),
+            "prod" | "latest" | "stable" => Ok(Self::Prod),
+            other => bail!("未知通道 {other}（支持 canary / prod）"),
+        }
+    }
+
+    /// 传给官方 `update` 的通道选项。
+    fn flag(self) -> &'static str {
+        match self {
+            Self::Prod => "--latest",
+            Self::Canary => "--canary",
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Prod => "prod",
+            Self::Canary => "canary",
+        }
+    }
+}
+
+// -------------------------------------------------------------------- 配置
+
+/// 实例 config.json 里本模块用得到的那几项。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Config {
+    /// 数据库是不是服务自己带起来的那份 PostgreSQL。
+    ///
+    /// 是的话它就是服务的子进程，这件事有三处后果：外部的 `DATABASE_URL` 会让 CLI
+    /// 连错库、服务停着就备份不了、服务被强停后它可能变成孤儿占住端口。
+    embedded_pg: bool,
+    pg_dir: PathBuf,
+    pg_port: u16,
+    host: String,
+    port: u16,
+}
+
+/// 解析 config.json。给空串就得到一份默认值——还没 onboard 过是正常状态，不是故障。
+fn parse_config(raw: &str, default_pg_dir: &Path) -> Config {
+    let v: serde_json::Value = serde_json::from_str(raw).unwrap_or(serde_json::Value::Null);
+    let db = &v["database"];
+    let server = &v["server"];
+    Config {
+        embedded_pg: db["mode"].as_str() == Some("embedded-postgres"),
+        pg_dir: db["embeddedPostgresDataDir"]
+            .as_str()
+            .map(env::expand_tilde)
+            .unwrap_or_else(|| default_pg_dir.to_path_buf()),
+        pg_port: json_port(&db["embeddedPostgresPort"]).unwrap_or(DEFAULT_PG_PORT),
+        host: server["host"].as_str().unwrap_or("127.0.0.1").to_string(),
+        port: json_port(&server["port"]).unwrap_or(DEFAULT_SERVER_PORT),
+    }
+}
+
+fn json_port(v: &serde_json::Value) -> Option<u16> {
+    v.as_u64()
+        .and_then(|n| u16::try_from(n).ok())
+        .filter(|p| *p > 0)
+}
+
+// ------------------------------------------------------------------- 主体
+
+/// npm 取回参数。
+///
+/// npm 默认 fetch-retries=2、fetch-timeout=5min，而 paperclip 单个 tarball 能到 370M
+/// （@openai/codex-linux-x64），跨境直连极易中途断流；一次失败整棵 1.4G 的依赖树都要
+/// 重来，所以重试次数和超时默认都放宽。
+struct NpmFetch {
+    retries: u32,
+    min_timeout: u64,
+    max_timeout: u64,
+    timeout: u64,
+}
+
+pub struct Paperclip {
+    home: PathBuf,
+    instance: String,
+    run_dir: PathBuf,
+    log_file: PathBuf,
+    /// 没有服务管理器时由 fundeploy 托管后台进程。`PAPERCLIP_FALLBACK=off` 关掉它，
+    /// 维持官方行为。
+    fallback: bool,
+    /// `PAPERCLIP_CHANNEL` 显式指定的通道，覆盖 install / upgrade 各自的默认值。
+    channel: Option<Channel>,
+    proxy: Option<String>,
+    no_proxy: Option<String>,
+    network_hint: bool,
+    install_via_npx: bool,
+    prefer_offline: bool,
+    fetch: NpmFetch,
+    start_timeout: Duration,
+    stop_timeout: Duration,
+    update_timeout: Duration,
+    log_lines: usize,
+}
+
+impl Paperclip {
+    pub fn from_env() -> Self {
+        let home = env::opt("PAPERCLIP_HOME")
+            .map(|v| env::expand_tilde(&v))
+            .unwrap_or_else(|| env::home().join(".paperclip"));
+        let instance = env::str_or("PAPERCLIP_INSTANCE_ID", "default");
+        // 运行时文件落在 ${PAPERCLIP_HOME}/run/<实例>/：官方在那底下只用 cli/ 和
+        // instances/，不会撞上。刻意不放仓库里——fundeploy 以 apt / Homebrew /
+        // ~/.local 形式分发，运行时根本不存在「仓库工作区」。
+        let run_dir = env::opt("PAPERCLIP_RUN_DIR")
+            .map(|v| env::expand_tilde(&v))
+            .unwrap_or_else(|| home.join("run").join(&instance));
+        let log_file = env::opt("PAPERCLIP_LOG_FILE")
+            .map(|v| env::expand_tilde(&v))
+            .unwrap_or_else(|| run_dir.join("paperclip.log"));
+
+        Self {
+            home,
+            instance,
+            run_dir,
+            log_file,
+            fallback: env::str_or("PAPERCLIP_FALLBACK", "auto") != "off",
+            channel: env::opt("PAPERCLIP_CHANNEL").and_then(|v| match Channel::parse(&v) {
+                Ok(c) => Some(c),
+                Err(e) => {
+                    ui::warn(format!("{e}；PAPERCLIP_CHANNEL 当没设处理。"));
+                    None
+                }
+            }),
+            proxy: env::opt("PAPERCLIP_HTTPS_PROXY").and_then(checked_proxy),
+            no_proxy: env::opt("PAPERCLIP_NO_PROXY"),
+            network_hint: env::flag("PAPERCLIP_NETWORK_HINT", true),
+            install_via_npx: env::flag("PAPERCLIP_INSTALL_VIA_NPX", false),
+            prefer_offline: env::flag("PAPERCLIP_NPM_PREFER_OFFLINE", false),
+            fetch: NpmFetch {
+                retries: env::num("PAPERCLIP_NPM_FETCH_RETRIES", 5),
+                min_timeout: env::num("PAPERCLIP_NPM_FETCH_RETRY_MINTIMEOUT", 20_000),
+                max_timeout: env::num("PAPERCLIP_NPM_FETCH_RETRY_MAXTIMEOUT", 180_000),
+                timeout: env::num("PAPERCLIP_NPM_FETCH_TIMEOUT", 1_200_000),
+            },
+            // 升级后要等 embedded PostgreSQL 冷启动、数据库迁移和服务就绪，低配或
+            // 受限网络的机器 60 秒常不够，超时就报错会把「还在启动」说成「升级失败」。
+            start_timeout: secs("PAPERCLIP_START_HEALTH_TIMEOUT_SEC", 180),
+            // 与官方 systemd 单元的 TimeoutStopSec=300 对齐：SIGTERM 之后服务要排空
+            // 正在跑的 heartbeat run，提前 KILL 会打断执行中的任务。
+            stop_timeout: secs("PAPERCLIP_STOP_TIMEOUT_SEC", 300),
+            update_timeout: secs("PAPERCLIP_UPDATE_HEALTH_TIMEOUT_SEC", 180),
+            log_lines: env::num("PAPERCLIP_LOG_TAIL_LINES", 200),
+        }
+    }
+
+    // --------------------------------------------------------------- 路径
+
+    fn instance_dir(&self) -> PathBuf {
+        self.home.join("instances").join(&self.instance)
+    }
+
+    fn config_path(&self) -> PathBuf {
+        self.instance_dir().join("config.json")
+    }
+
+    fn pid_file(&self) -> PathBuf {
+        self.run_dir.join("paperclip.pid")
+    }
+
+    fn config(&self) -> Config {
+        let default_pg_dir = self.instance_dir().join("db");
+        let raw = std::fs::read_to_string(self.config_path()).unwrap_or_default();
+        parse_config(&raw, &default_pg_dir)
+    }
+
+    // ------------------------------------------------------------ 官方 CLI
+
+    /// 官方 shim 的位置。
+    ///
+    /// managed install 固定装到 `~/.local/bin/paperclipai`，而那个目录可能还没进
+    /// PATH（新装的机器上要重开 shell 才生效），所以先看文件再查 PATH。
+    fn cli_path(&self) -> Option<PathBuf> {
+        let shim = env::home().join(".local/bin/paperclipai");
+        if is_executable(&shim) {
+            return Some(shim);
+        }
+        cmd::find("paperclipai").map(PathBuf::from)
+    }
+
+    fn require_cli(&self) -> Result<PathBuf> {
+        self.cli_path().ok_or_else(|| {
+            anyhow!("没找到 paperclipai，先执行: fundeploy service paperclip install")
+        })
+    }
+
+    /// 调官方 CLI 时要带的环境。
+    ///
+    /// embedded 模式下必须把 `DATABASE_URL` 从环境里删掉：操作者 shell 里为别的项目
+    /// export 过一个，CLI 就会拿它去连——连的是另一个库，而且谁也不会报错。
+    fn cli_env(&self, cfg: &Config) -> Vec<EnvEdit> {
+        let mut env = vec![
+            (
+                "PAPERCLIP_HOME".to_string(),
+                Some(self.home.display().to_string()),
+            ),
+            (
+                "PAPERCLIP_INSTANCE_ID".to_string(),
+                Some(self.instance.clone()),
+            ),
+        ];
+        if cfg.embedded_pg {
+            env.push(("DATABASE_URL".to_string(), None));
+        }
+        env
+    }
+
+    fn exec(&self, args: &[&str]) -> Result<i32> {
+        self.exec_with(args, &[])
+    }
+
+    /// 跑一条官方命令，输出直通终端，返回退出码。
+    fn exec_with(&self, args: &[&str], extra_env: &[EnvEdit]) -> Result<i32> {
+        let bin = self.require_cli()?;
+        let mut env = self.cli_env(&self.config());
+        env.extend_from_slice(extra_env);
+
+        let mut argv = vec![bin.display().to_string()];
+        argv.extend(args.iter().map(|s| (*s).to_string()));
+        let code = cmd::spawn_status_in(&argv, &env, None)?;
+
+        // payload 被删或损坏而 shim 还在时，官方 CLI 抛的是 node 的原始堆栈，看不出
+        // 是安装坏了。失败之后补一次探测把它翻译成能照着做的事；正常路径零开销。
+        if code != Some(0) && !cli_runnable(&bin) {
+            ui::warn(format!(
+                "{} 跑不起来，paperclipai 的安装可能已损坏。\n\
+                 修复: fundeploy service paperclip install",
+                bin.display()
+            ));
+        }
+        Ok(code.unwrap_or(-1))
+    }
+
+    fn must(&self, args: &[&str]) -> Result<()> {
+        self.must_with(args, &[])
+    }
+
+    fn must_with(&self, args: &[&str], extra_env: &[EnvEdit]) -> Result<()> {
+        match self.exec_with(args, extra_env)? {
+            0 => Ok(()),
+            code => bail!("paperclipai {} 失败（退出码 {code}）", args.join(" ")),
+        }
+    }
+
+    /// 跑一条 `--json` 命令并解析 stdout。
+    ///
+    /// 刻意不看退出码：官方拿它传信息而不只是成败（`update --check` 有可用更新时退
+    /// 10，像 diff 那样）。把非零当失败，恰好就把唯一需要升级的那种情况判成「查不到
+    /// 版本」。判据只有一个——stdout 能不能解析成 JSON。
+    fn json(&self, args: &[&str]) -> Option<serde_json::Value> {
+        let bin = self.cli_path()?;
+        let mut c = std::process::Command::new(&bin);
+        c.args(args)
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        cmd::apply_env(&mut c, &self.cli_env(&self.config()));
+        serde_json::from_slice(&c.output().ok()?.stdout).ok()
+    }
+
+    fn installed_version(&self) -> Option<String> {
+        let bin = self.cli_path()?;
+        let out = cmd::try_run([bin.display().to_string().as_str(), "--version"]).ok()?;
+        out.success()
+            .then(|| {
+                out.stdout
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .to_string()
+            })
+            .filter(|s| !s.is_empty())
+    }
+
+    // ------------------------------------------------------- 官方服务管理器
+
+    fn supervisor(&self) -> Supervisor {
+        let Some(v) = self.json(&["service", "status", "--json"]) else {
+            return Supervisor {
+                available: None,
+                pid: None,
+                message: String::new(),
+            };
+        };
+        Supervisor {
+            // 只有明确的 supported:false 才算「没有」。字段缺失说明是旧版本或换了
+            // 格式，那种情况下走官方路径、让它自己报错，比我们猜一个强。
+            available: Some(v["supported"].as_bool() != Some(false)),
+            pid: v["pid"]
+                .as_i64()
+                .and_then(|p| i32::try_from(p).ok())
+                .filter(|p| *p > 0),
+            message: v["message"]
+                .as_str()
+                .unwrap_or_default()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" "),
+        }
+    }
+
+    /// 官方 supervisor 不可用时，该不该由 fundeploy 接管。
+    fn require_fallback(&self, sup: &Supervisor) -> Result<()> {
+        if self.fallback {
+            return Ok(());
+        }
+        bail!(
+            "{}（PAPERCLIP_FALLBACK=off）\n\
+             可选: `fundeploy service paperclip run` 前台跑，或在有登录会话的 shell 里执行 \
+             `fundeploy service paperclip service-install --enable-linger`",
+            sup.reason()
+        )
+    }
+
+    // ------------------------------------------------------------ 端口与健康
+
+    /// 一次健康探测：数据库端口（embedded 时）、服务端口、`/api/health` 都通。
+    ///
+    /// 刻意用裸 HTTP 而不是官方 `paperclipai health`：后者每次都要起一个 node 进程
+    /// 加载整个 CLI bundle，按秒轮询最多 180 次扛不住。`health` 作为用户命令另给。
+    fn healthy(&self, cfg: &Config) -> bool {
+        if cfg.embedded_pg && !port::is_listening("127.0.0.1", cfg.pg_port) {
+            return false;
+        }
+        port::is_listening(&cfg.host, cfg.port) && health_endpoint_ok(cfg)
+    }
+
+    /// 等端口和 `/api/health` 就绪。超时返回 false，由调用方决定怎么报。
+    ///
+    /// 首探就通过时一声不吭：升级编排里 start 已经等过一轮，再打一遍只是噪音。
+    fn wait_healthy(&self, cfg: &Config, timeout: Duration) -> bool {
+        if self.healthy(cfg) {
+            return true;
+        }
+        let mut targets = format!("Paperclip {} 和 /api/health", cfg.port);
+        if cfg.embedded_pg {
+            targets = format!("PostgreSQL {}、{targets}", cfg.pg_port);
+        }
+        ui::step(format!("检查 {targets}（最长 {} 秒）", timeout.as_secs()));
+
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            std::thread::sleep(Duration::from_secs(1));
+            if self.healthy(cfg) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// 收掉 embedded PostgreSQL。
+    ///
+    /// 它是服务的子进程，但托管进程被收掉之后它可能变成孤儿继续占着端口，换 payload
+    /// 或重启时就会失败。所有平台都要收，不是 macOS 专属。
+    ///
+    /// 停不下来就停手，不升级成 SIGKILL：那会让下次启动走一轮 WAL 崩溃恢复，不该由
+    /// 一条 upgrade 顺手触发。
+    fn stop_embedded_pg(&self, cfg: &Config) -> Result<()> {
+        let Some(pid) = postmaster_pid(&cfg.pg_dir.join("postmaster.pid")) else {
+            return Ok(());
+        };
+        if !proc::is_alive(pid) {
+            return Ok(());
+        }
+        // 认准再动手：PID 会被复用，这个文件可能是上次崩溃留下的。
+        let cmdline = process_cmdline(pid).unwrap_or_default();
+        let dir = cfg.pg_dir.display().to_string();
+        if !cmdline.contains("postgres") || !cmdline.contains(&dir) {
+            bail!("PID {pid} 跑的不是 {dir} 的 PostgreSQL，没有动它");
+        }
+
+        ui::step(format!("停止 embedded PostgreSQL（PID {pid}）"));
+        proc::term(pid);
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while Instant::now() < deadline {
+            if !proc::is_alive(pid) {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(300));
+        }
+        bail!("embedded PostgreSQL 在 30 秒内没停下来，升级中止")
+    }
+
+    // ------------------------------------------------------- fundeploy 托管
+
+    /// fundeploy 托管的那个进程的 PID；没在跑返回 None。
+    fn fallback_pid(&self) -> Option<i32> {
+        let pid = proc::read_pid_file(&self.pid_file())?;
+        if !proc::is_alive(pid) {
+            return None;
+        }
+        // PID 会被复用，而这份文件可能是上次重启前留下的。只认命令行里确实是
+        // paperclipai 的进程，否则宁可当成「没在跑」，也不能朝陌生进程发信号。
+        process_cmdline(pid)?.contains("paperclipai").then_some(pid)
+    }
+
+    fn start_fallback(&self, cfg: &Config, reason: &str) -> Result<()> {
+        let bin = self.require_cli()?;
+        if let Some(pid) = self.fallback_pid() {
+            ui::info(format!(
+                "Paperclip 已由 fundeploy 在后台运行（PID {pid}，日志 {}）。",
+                self.log_file.display()
+            ));
+            return Ok(());
+        }
+        // 端口上已经有别的进程（比如一个 `run` 起的前台实例）时再起一个，只会抢不到
+        // 端口后自己退出，白留一份 PID 文件。
+        if port::is_listening(&cfg.host, cfg.port) {
+            match port::listener_pid(cfg.port) {
+                Some(other) => bail!(
+                    "端口 {} 已被 PID {other} 占着（可能是 `fundeploy service paperclip run` 的前台实例），先停掉再试",
+                    cfg.port
+                ),
+                None => bail!(
+                    "端口 {} 已经有人在听（查不到 PID，多半属于别的用户），先腾出来再试",
+                    cfg.port
+                ),
+            }
+        }
+
+        let mut spawn_env = self.cli_env(cfg);
+        spawn_env.extend(self.node_env()?);
+        // 刻意不设 PAPERCLIP_SERVICE_MANAGED=1：它只用来让 run 跳过「同实例已在
+        // supervisor 下运行」的检查，而这里恰好要保留那层保护。
+
+        ui::step(reason);
+        ui::step(format!(
+            "改由 fundeploy 托管后台进程；PID {}，日志 {}",
+            self.pid_file().display(),
+            self.log_file.display()
+        ));
+
+        let argv = [
+            bin.display().to_string(),
+            "run".to_string(),
+            "--instance".to_string(),
+            self.instance.clone(),
+        ];
+        // cwd 对齐官方单元的 WorkingDirectory=%h：别让服务继承调用者的目录，否则
+        // agent 的 fallback cwd 会随在哪儿执行 start 而变。
+        let pid = proc::spawn_detached(&argv, &env::home(), &spawn_env, &self.log_file)?;
+        proc::write_pid_file(&self.pid_file(), pid)?;
+
+        if self.wait_healthy(cfg, self.start_timeout) {
+            ui::ok(format!(
+                "Paperclip 已启动（PID {pid}，http://{}:{}），健康检查通过。",
+                cfg.host, cfg.port
+            ));
+            return Ok(());
+        }
+
+        if !proc::is_alive(pid) {
+            let _ = std::fs::remove_file(self.pid_file());
+            ui::warn("进程已经退出，日志末尾：");
+            print_tail(&self.log_file, 40);
+            bail!(
+                "Paperclip 启动失败（完整日志: {}）",
+                self.log_file.display()
+            );
+        }
+        ui::warn(format!("进程还在（PID {pid}），日志末尾："));
+        print_tail(&self.log_file, 40);
+        bail!(
+            "Paperclip 没在 {} 秒内通过健康检查（用 status / logs 确认，stop 停止）",
+            self.start_timeout.as_secs()
+        )
+    }
+
+    /// 停掉 fundeploy 托管的进程并清掉 PID 文件。
+    ///
+    /// `quiet`：没东西可停时不出声，供官方 stop 之后的收尾调用——那条路径已经有输出了。
+    fn stop_fallback(&self, quiet: bool) -> Result<()> {
+        let Some(pid) = self.fallback_pid() else {
+            if !quiet {
+                ui::info("Paperclip 没在运行（没有 fundeploy 托管的进程）。");
+            }
+            let _ = std::fs::remove_file(self.pid_file());
+            return Ok(());
+        };
+        ui::step(format!(
+            "停止 fundeploy 托管的 Paperclip（PID {pid}，最长等 {} 秒排空运行中的任务）",
+            self.stop_timeout.as_secs()
+        ));
+        // 整组停：spawn_detached 做过 setsid，这个 PID 就是组 leader，而服务会派生
+        // 数据库和 agent 子进程，只停父进程会留下孤儿。
+        proc::stop_pid(pid, self.stop_timeout, true)?;
+        let _ = std::fs::remove_file(self.pid_file());
+        if !quiet {
+            ui::ok("已停止 fundeploy 托管的 Paperclip。");
+        }
+        Ok(())
+    }
+
+    fn status_fallback(&self, cfg: &Config) {
+        match self.fallback_pid() {
+            Some(pid) => ui::info(format!("fundeploy 托管: 运行中（PID {pid}）")),
+            None if self.pid_file().exists() => ui::info(format!(
+                "fundeploy 托管: 没在运行（PID 文件 {} 已失效）",
+                self.pid_file().display()
+            )),
+            None => ui::info("fundeploy 托管: 没在运行"),
+        }
+        ui::kv("版本", self.installed_version().as_deref());
+        ui::info(format!(
+            "端口 {}: {}",
+            cfg.port,
+            yes_no(port::is_listening(&cfg.host, cfg.port), "监听中", "没监听")
+        ));
+        ui::info(format!(
+            "健康检查 http://{}:{}/api/health: {}",
+            cfg.host,
+            cfg.port,
+            yes_no(health_endpoint_ok(cfg), "通过", "不通过")
+        ));
+        ui::info(format!("日志: {}", self.log_file.display()));
+    }
+
+    fn logs_fallback(&self, args: &[&str]) -> Result<()> {
+        if !self.log_file.exists() {
+            bail!(
+                "没有 fundeploy 托管的日志（{} 不存在）；这个实例多半不是用 \
+                 `fundeploy service paperclip start` 起的",
+                self.log_file.display()
+            );
+        }
+        let (lines, follow) = parse_log_args(args, self.log_lines);
+        for line in tail_lines(&self.log_file, lines) {
+            println!("{line}");
+        }
+        if follow {
+            follow_log(&self.log_file)?;
+        }
+        Ok(())
+    }
+
+    // --------------------------------------------------------------- Node
+
+    /// 保证子进程的 PATH 上有个够新的 node，返回要追加的环境改动。
+    fn node_env(&self) -> Result<Vec<EnvEdit>> {
+        let current = node_version();
+        if current
+            .as_deref()
+            .is_some_and(|v| !version::is_newer(NODE_MIN, v))
+        {
+            return Ok(Vec::new());
+        }
+        if let Some(bin) = nvm_node_bin(NODE_MIN) {
+            let path = format!(
+                "{}:{}",
+                bin.display(),
+                std::env::var("PATH").unwrap_or_default()
+            );
+            return Ok(vec![("PATH".to_string(), Some(path))]);
+        }
+        bail!(
+            "需要 Node.js {NODE_MIN}+，当前 {}。可执行: nvm install 24",
+            current.unwrap_or_else(|| "没装".to_string())
+        )
+    }
+
+    // ---------------------------------------------------------------- npm
+
+    /// 装包期间要透给 npm 的环境改动。
+    ///
+    /// 官方 managed install 把 registry 钉死在 registry.npmjs.org：它另写一份只含
+    /// registry 的临时 npmrc、用 `npm_config_userconfig` 强制 npm 子进程改用它，命令行
+    /// 上再传一次 `--registry`。这是刻意的防投毒设计，有上游测试守着，所以 `~/.npmrc`
+    /// 里的 registry / proxy / fetch-* 对它一概无效（文件被整体替换），
+    /// `npm_config_registry` 也压不过命令行。唯一透得进去的是环境变量——它以
+    /// `{...process.env, npm_config_userconfig}` 起 npm。因此这里只设它没有在命令行上
+    /// 显式传过的那些键：取回重试与超时，以及代理。
+    fn npm_env(&self, npmrc: Option<&Npmrc>) -> Vec<EnvEdit> {
+        let mut e: Vec<EnvEdit> = vec![
+            ("npm_config_allow_scripts".to_string(), None),
+            (
+                "npm_config_fetch_retries".to_string(),
+                Some(self.fetch.retries.to_string()),
+            ),
+            (
+                "npm_config_fetch_retry_mintimeout".to_string(),
+                Some(self.fetch.min_timeout.to_string()),
+            ),
+            (
+                "npm_config_fetch_retry_maxtimeout".to_string(),
+                Some(self.fetch.max_timeout.to_string()),
+            ),
+            (
+                "npm_config_fetch_timeout".to_string(),
+                Some(self.fetch.timeout.to_string()),
+            ),
+        ];
+        if let Some(rc) = npmrc {
+            e.push((
+                "npm_config_userconfig".to_string(),
+                Some(rc.path.display().to_string()),
+            ));
+        }
+        if self.prefer_offline {
+            e.push((
+                "npm_config_prefer_offline".to_string(),
+                Some("true".to_string()),
+            ));
+        }
+        let Some(proxy) = &self.proxy else {
+            return e;
+        };
+        ui::info(format!("npm 下载走代理 {proxy}"));
+        for key in [
+            "npm_config_proxy",
+            "npm_config_https_proxy",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "http_proxy",
+            "https_proxy",
+        ] {
+            e.push((key.to_string(), Some(proxy.clone())));
+        }
+        if let Some(no) = &self.no_proxy {
+            for key in ["NO_PROXY", "no_proxy"] {
+                e.push((key.to_string(), Some(no.clone())));
+            }
+        }
+        e
+    }
+
+    fn print_network_hint(&self) {
+        if !self.network_hint || self.proxy.is_some() {
+            return;
+        }
+        ui::warn(
+            "Paperclip 的依赖树实测约 1.4G（@openai/codex 370M、@paperclipai/server 360M、\
+             @anthropic-ai/* 220M）。官方 managed install 把 registry 钉死在 npmjs.org，换镜像\
+             对它无效（刻意的防投毒设计，有上游测试守着），受限网络请走代理：\
+             PAPERCLIP_HTTPS_PROXY=http://127.0.0.1:7890。设 PAPERCLIP_NETWORK_HINT=0 隐藏本行。",
+        );
+    }
+
+    // ------------------------------------------------------------ 安装与升级
+
+    fn install_channel(&self, ch: Channel) -> Result<()> {
+        let npmrc = Npmrc::write(NPM_REGISTRY);
+        let mut env = self.npm_env(npmrc.as_ref());
+        self.print_network_hint();
+
+        // 执行器优先级：本机已装的 CLI > npx。
+        //
+        // `npx paperclipai@latest` 会把整棵依赖树再下一份到 ~/.npm/_npx（实测 1.4G），
+        // 而它唯一的用途是执行一次 install 子命令；install 自己会解析目标版本，跟执行
+        // 它的那个 CLI 的版本无关，所以复用已有 CLI 不会装到旧版。
+        // PAPERCLIP_INSTALL_VIA_NPX=1 是本机 CLI 坏掉时的逃生门。
+        let reuse = if self.install_via_npx {
+            None
+        } else {
+            self.cli_path().filter(|b| cli_runnable(b))
+        };
+
+        let mut argv: Vec<String> = Vec::new();
+        match reuse {
+            Some(bin) => {
+                ui::step("复用本机 paperclipai 执行 managed install（省掉 npx 那份重复下载）");
+                argv.push(bin.display().to_string());
+            }
+            None => {
+                // 只有这条路需要版本门槛：此时还没有 shim，npx 用的就是 PATH 上那个 node。
+                env.extend(self.node_env()?);
+                cmd::require("npx", "它随 Node.js 一起装：https://nodejs.org/")?;
+                for a in [
+                    "npx",
+                    "--yes",
+                    "--registry",
+                    NPM_REGISTRY,
+                    "paperclipai@latest",
+                ] {
+                    argv.push(a.to_string());
+                }
+            }
+        }
+        argv.push("install".to_string());
+        argv.push("--yes".to_string());
+        if ch == Channel::Canary {
+            argv.push("--canary".to_string());
+        }
+
+        let mut full = self.cli_env(&self.config());
+        full.extend(env);
+        match cmd::spawn_status_in(&argv, &full, None)? {
+            Some(0) => {}
+            other => bail!(
+                "managed install 失败（退出码 {}）",
+                other.map_or_else(|| "信号终止".to_string(), |c| c.to_string())
+            ),
+        }
+        self.must(&["--version"])
+    }
+
+    fn check(&self, ch: Channel) -> Result<()> {
+        let Some(c) = self.update_check(ch) else {
+            bail!(
+                "取不到 {} 通道的版本信息（网络不通，或者还没装 paperclipai）",
+                ch.name()
+            );
+        };
+        ui::info(format!("当前版本: {}", or_unknown(&c.current)));
+        ui::info(format!("通道目标: {}", or_unknown(&c.target)));
+        if c.downgrade {
+            ui::info("结论: 目标比当前旧，执行 upgrade 会是一次降级（要确认）");
+        } else if c.available {
+            ui::info(format!(
+                "结论: 有新版可升，执行: PAPERCLIP_CHANNEL={} fundeploy service paperclip upgrade",
+                ch.name()
+            ));
+        } else {
+            ui::info("结论: 已经是该通道的最新版");
+        }
+        Ok(())
+    }
+
+    fn update_check(&self, ch: Channel) -> Option<UpdateCheck> {
+        let v = self.json(&["update", ch.flag(), "--check", "--json"])?;
+        Some(UpdateCheck {
+            current: v["currentVersion"].as_str().unwrap_or_default().to_string(),
+            target: v["targetVersion"].as_str().unwrap_or_default().to_string(),
+            available: v["updateAvailable"].as_bool().unwrap_or(false),
+            downgrade: v["downgrade"].as_bool().unwrap_or(false),
+        })
+    }
+
+    fn upgrade_channel(&self, ch: Channel) -> Result<()> {
+        let npmrc = Npmrc::write(NPM_REGISTRY);
+        let npm = self.npm_env(npmrc.as_ref());
+        self.print_network_hint();
+
+        let mut args: Vec<&str> = vec![ch.flag()];
+        // 先问官方要不要动，别自己比版本号。问不出来（离线、还没装）就不阻塞，往下走。
+        if let Some(c) = self.update_check(ch) {
+            if c.downgrade {
+                // canary 机器上 --latest 指向的 stable 往往比当前版本旧；官方 update
+                // 把这种情况当显式降级、要 -y 确认，不补的话非交互环境里会卡住。
+                ui::warn(format!(
+                    "{} 通道的 {} 比当前的 {} 旧，这是一次降级。",
+                    ch.name(),
+                    or_unknown(&c.target),
+                    or_unknown(&c.current)
+                ));
+                ui::confirm_destructive(
+                    &format!(
+                        "确认把 Paperclip 从 {} 降到 {}？（不会备份数据库，要备份先执行 backup）",
+                        or_unknown(&c.current),
+                        or_unknown(&c.target)
+                    ),
+                    DOWNGRADE_YES,
+                )?;
+                args.push("-y");
+            } else if !c.available {
+                ui::info(format!(
+                    "已经是 {} 通道的最新版 {}，跳过更新（没有重启服务；要重启用 restart）",
+                    ch.name(),
+                    or_unknown(&c.current)
+                ));
+                return Ok(());
+            } else {
+                ui::step(format!(
+                    "{} 通道有新版本: {} → {}",
+                    ch.name(),
+                    or_unknown(&c.current),
+                    or_unknown(&c.target)
+                ));
+            }
+        }
+        self.apply_update(&args, &npm)
+    }
+
+    /// 停服 → 一次官方 update → doctor --repair → 重启 → 健康检查。upgrade 和
+    /// rollback 共用这套编排。
+    ///
+    /// 刻意不做升级前备份，还给官方 update 传 `--no-backup` 关掉它自己那次：实测一次
+    /// 备份 370M、耗时数十秒，而 update 换的是 payload，不动数据目录；payload 要退回去
+    /// 有 rollback。备份是单独的 backup 动作，需要就先执行一次再升级。
+    fn apply_update(&self, update_args: &[&str], npm: &[EnvEdit]) -> Result<()> {
+        let cfg = self.config();
+
+        // 两条通道都要停：官方 service stop 在没有服务管理器的机器上会假成功（返回 0
+        // 且什么都没停），fundeploy 托管的那个只能从 PID 文件收。这里刻意尽力而为、
+        // 不因为停不掉就退出——真正的护栏是紧随其后的端口检查。
+        let _ = self.exec(&["service", "stop"]);
+        let _ = self.stop_fallback(true);
+
+        // 假成功会让上面两步什么都没停下，继续下去就是在服务运行中替换 payload；用
+        // `run` 前台起的实例正是这种情况。所以无条件确认端口真的放开了。
+        if port::is_listening(&cfg.host, cfg.port) {
+            bail!(
+                "Paperclip 还在监听 {}（可能是 `fundeploy service paperclip run` 起的前台实例，\
+                 不归服务管理器管），先停掉再试",
+                cfg.port
+            );
+        }
+        if cfg.embedded_pg {
+            self.stop_embedded_pg(&cfg)?;
+        }
+
+        let mut argv = vec!["update"];
+        argv.extend_from_slice(update_args);
+        argv.push("--no-backup");
+        if self.exec_with(&argv, npm)? != 0 {
+            // 尽力把服务拉起来，但保留 update 本身的失败语义。
+            if let Err(e) = self.start() {
+                ui::warn(format!("换包失败后想把服务拉起来，也没成功: {e}"));
+            }
+            bail!("paperclipai update 失败");
+        }
+
+        // 上游专门有这条修复命令：检查配置、install store、manifest、current 链接、
+        // shim、PATH、目录权限并尝试修好。刻意放在 start 之前——官方 `paperclipai run`
+        // 自己也是 onboard + doctor --repair 之后才启动。不让它的返回值挡住启动：服务
+        // 停着时「数据库连不上」这类检查必然判失败，真正的闸门是启动后的健康检查。
+        if self.exec(&["doctor", "--repair", "--yes"])? != 0 {
+            ui::warn(
+                "doctor --repair 没全过，继续启动；起来之后可执行 \
+                 `fundeploy service paperclip doctor` 看详情",
+            );
+        }
+
+        self.start()?;
+
+        // payload 换过之后配置可能也变了，重新读一次。
+        let cfg = self.config();
+        if self.wait_healthy(&cfg, self.update_timeout) {
+            ui::ok("Paperclip 升级完成，健康检查通过。");
+            return Ok(());
+        }
+        // payload 已经换完、start 也执行过了，服务很可能只是还在起——先把状态打出来，
+        // 别把「仍在启动」报成「升级失败」。
+        ui::warn("健康检查没通过，当前状态：");
+        let _ = self.status();
+        bail!(
+            "Paperclip 升级后没在 {} 秒内通过健康检查（payload 已经换好，服务可能还在启动，\
+             用 status / logs 确认）",
+            self.update_timeout.as_secs()
+        )
+    }
+
+    // -------------------------------------------------------------- 其他动作
+
+    fn backup(&self, args: &[&str]) -> Result<()> {
+        let cfg = self.config();
+        // embedded PostgreSQL 是服务的子进程，服务停着它就没在跑，db:backup 必然连不上。
+        // 在这儿说清楚，别把上游的连接错误丢给人自己猜。
+        if cfg.embedded_pg && !port::is_listening("127.0.0.1", cfg.pg_port) {
+            bail!(
+                "embedded PostgreSQL 没在监听 {}（它随 Paperclip 一起停），先 start 再备份",
+                cfg.pg_port
+            );
+        }
+        self.must(&prepend(&["db:backup"], args))
+    }
+
+    fn logs(&self, args: &[&str]) -> Result<()> {
+        let sup = self.supervisor();
+        if sup.available != Some(false) {
+            // 官方 service logs 读的是 journalctl / launchd 的日志。
+            return self.must(&prepend(&["service", "logs"], args));
+        }
+        self.require_fallback(&sup)?;
+        self.logs_fallback(args)
+    }
+
+    fn onboard(&self, args: &[&str]) -> Result<()> {
+        let mut argv = prepend(&["onboard"], args);
+        // 无人值守下向导会停在第一个问题上等输入，表现是「卡死」。
+        if !ui::interactive() && !args.iter().any(|a| *a == "--yes" || *a == "-y") {
+            argv.push("--yes");
+        }
+        self.must(&argv)
+    }
+
+    fn plugin(&self, args: &[&str]) -> Result<()> {
+        let (action, rest) = match args.split_first() {
+            Some((a, rest)) => (*a, rest),
+            None => ("install", &[][..]),
+        };
+        match action {
+            "list" => {
+                print_catalog();
+                Ok(())
+            }
+            "installed" => self.must(&prepend(&["plugin", "list"], rest)),
+            "install" => self.plugin_install(rest),
+            other => bail!("未知的插件命令 {other}（支持 list / install / installed）"),
+        }
+    }
+
+    fn plugin_install(&self, rest: &[&str]) -> Result<()> {
+        let npmrc = Npmrc::write(NPM_REGISTRY);
+        let npm = self.npm_env(npmrc.as_ref());
+        if let Some((pkg, more)) = rest.split_first() {
+            return self.must_with(&prepend(&["plugin", "install", pkg], more), &npm);
+        }
+
+        // 没给包名就从清单里挑。清单里有的条目不是 npm 包（装法由各自仓库说明），
+        // 挑不了，只在 list 里露面。
+        let pickable: Vec<&Plugin> = CATALOG.iter().filter(|p| !p.pkg.is_empty()).collect();
+        let labels: Vec<String> = pickable
+            .iter()
+            .map(|p| format!("{} - {}", p.name, p.about))
+            .collect();
+        let Some(picked) = ui::select("从 awesome-paperclip 挑一个插件", &labels)? else {
+            return Ok(());
+        };
+        let i = labels
+            .iter()
+            .position(|l| l == picked)
+            .ok_or_else(|| anyhow!("认不出选中的插件"))?;
+        ui::step(format!(
+            "安装 Paperclip 插件 {}（来源: {}）",
+            pickable[i].pkg, pickable[i].url
+        ));
+        self.must_with(&["plugin", "install", pickable[i].pkg], &npm)
+    }
+}
+
+// --------------------------------------------------------------- Service
+
+impl Service for Paperclip {
+    fn name(&self) -> &str {
+        "paperclip"
+    }
+
+    fn summary(&self) -> &str {
+        "Paperclip 本机服务"
+    }
+
+    fn ports(&self) -> Vec<u16> {
+        vec![self.config().port]
+    }
+
+    fn install(&self, version: Option<&str>) -> Result<()> {
+        let ch = match version {
+            None => self.channel.unwrap_or(Channel::Prod),
+            Some(v) => Channel::parse(v).context(
+                "paperclip 的 managed install 自己决定装哪个版本，钉不到指定版本；\
+                 这里的 --version 只认通道",
+            )?,
+        };
+        self.install_channel(ch)
+    }
+
+    fn upgrade(&self) -> Result<()> {
+        // 默认跟 canary：装了这个项目的机器基本都在跟开发版，stable 落后得多。
+        // 要走正式版: PAPERCLIP_CHANNEL=prod。
+        self.upgrade_channel(self.channel.unwrap_or(Channel::Canary))
+    }
+
+    fn rollback(&self, version: &str) -> Result<()> {
+        // 官方只在 install store 里留上一份 payload，没有「回到任意版本」这回事。
+        if !matches!(version, "previous" | "prev" | "last" | "-") {
+            bail!(
+                "paperclip 只能退回 install store 里留着的上一份 payload，退不到指定版本。\n\
+                 执行: fundeploy service paperclip rollback previous"
+            );
+        }
+        let npmrc = Npmrc::write(NPM_REGISTRY);
+        let npm = self.npm_env(npmrc.as_ref());
+        self.apply_update(&["--rollback"], &npm)
+    }
+
+    fn start(&self) -> Result<()> {
+        let sup = self.supervisor();
+        if sup.available != Some(false) {
+            // supervisor 可用（含问不出来的情况）就维持官方路径：systemd 的 Type=notify
+            // 和 launchd 自己会等到就绪，不必再叠一层健康检查。
+            return self.must(&["service", "start"]);
+        }
+        self.require_fallback(&sup)?;
+        self.start_fallback(&self.config(), &sup.reason())
+    }
+
+    fn run(&self) -> Result<()> {
+        let bin = self.require_cli()?;
+        // 官方 run 自带的「同实例已在 supervisor 下运行」检查覆盖不到 fundeploy 托管的
+        // 进程（那种机器上根本没有 supervisor），不挡住就会起第二个实例去抢同一个端口。
+        if let Some(pid) = self.fallback_pid() {
+            bail!(
+                "Paperclip 已由 fundeploy 在后台运行（PID {pid}），\
+                 先执行: fundeploy service paperclip stop"
+            );
+        }
+        let mut env = self.cli_env(&self.config());
+        env.extend(self.node_env()?);
+        let argv = [bin.display().to_string(), "run".to_string()];
+        match cmd::spawn_status_in(argv, &env, None)? {
+            // 被信号终止就是 Ctrl+C，那是前台运行的正常收场。
+            Some(0) | None => Ok(()),
+            Some(code) => bail!("paperclipai run 退出（退出码 {code}）"),
+        }
+    }
+
+    fn stop(&self) -> Result<()> {
+        let sup = self.supervisor();
+        if sup.available != Some(false) {
+            self.must(&["service", "stop"])?;
+            // 无条件再收一次 fundeploy 托管的进程：机器从「没有 supervisor」变成「有」
+            // 之后，上次 start 留下的那个不归 supervisor 管辖，只能从 PID 文件收尾。
+            return self.stop_fallback(true);
+        }
+        // 关掉兜底时也不该假成功：官方 stop 在这种机器上什么都不会停。
+        self.require_fallback(&sup)?;
+        self.stop_fallback(false)
+    }
+
+    fn restart(&self) -> Result<()> {
+        let sup = self.supervisor();
+        match sup.available {
+            Some(false) => {
+                self.require_fallback(&sup)?;
+                self.stop_fallback(false)?;
+                self.start_fallback(&self.config(), &sup.reason())
+            }
+            // 问不出状态就交给官方 restart 自己报错，不猜。
+            None => self.must(&["service", "restart"]),
+            Some(true) => {
+                // 官方 service restart 只做热重启：writeHotRestartIntent 第一步就是
+                // `if (!status.pid) throw`，服务没在跑时它永远失败——那种场景要的其实
+                // 是 start。
+                if sup.pid.is_none() {
+                    ui::step("服务没在跑（supervisor 里没有 pid），改为 start");
+                    return self.must(&["service", "start"]);
+                }
+                self.must(&["service", "restart"])
+            }
+        }
+    }
+
+    fn status(&self) -> Result<()> {
+        let sup = self.supervisor();
+        let cfg = self.config();
+        if sup.available != Some(false) {
+            let code = self.exec(&["service", "status"])?;
+            // 只在确实留着 PID 文件时才追加托管那段，免得正常机器上多出无关输出。
+            if !self.pid_file().exists() {
+                return match code {
+                    0 => Ok(()),
+                    c => bail!("paperclipai service status 失败（退出码 {c}）"),
+                };
+            }
+            ui::blank();
+        } else {
+            ui::info(format!("官方服务管理器不可用: {}", sup.reason()));
+        }
+        self.status_fallback(&cfg);
+        Ok(())
+    }
+
+    fn uninstall(&self) -> Result<()> {
+        ui::info(format!(
+            "Paperclip 的数据目录 {} 不会删。",
+            self.home.display()
+        ));
+        ui::confirm_destructive(
+            "确认卸载 Paperclip 的官方服务和 CLI？",
+            &super::uninstall_env_var("paperclip"),
+        )?;
+        // 先停再卸：官方 service uninstall 在没有服务管理器的机器上同样假成功，不先
+        // 收掉 fundeploy 托管的进程就会在服务运行中把它的 payload 删掉。
+        self.stop_fallback(false)?;
+        self.must(&["service", "uninstall"])?;
+        self.must(&["uninstall"])?;
+        ui::ok(format!(
+            "已卸载 Paperclip 的服务和 CLI；数据留在 {}。",
+            self.home.display()
+        ));
+        Ok(())
+    }
+
+    fn extras(&self) -> &'static [Extra] {
+        EXTRAS
+    }
+
+    fn extra(&self, name: &str, args: &[String]) -> Result<()> {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        match name {
+            "install-canary" => self.install_channel(Channel::Canary),
+            "check" => {
+                let ch = match args.first() {
+                    Some(s) => Channel::parse(s)?,
+                    None => self.channel.unwrap_or(Channel::Canary),
+                };
+                self.check(ch)
+            }
+            "backup" => self.backup(&args),
+            "channels" => self.must(&prepend(&["channels"], &args)),
+            "doctor" => self.must(&prepend(&["doctor"], &args)),
+            "health" => self.must(&prepend(&["health"], &args)),
+            "onboard" => self.onboard(&args),
+            "logs" => self.logs(&args),
+            "plugin" => self.plugin(&args),
+            "service-install" => self.must(&prepend(&["service", "install"], &args)),
+            other => bail!("paperclip 没有 {other} 这个动作"),
+        }
+    }
+}
+
+// --------------------------------------------------------------- 小零件
+
+/// 官方 `service status --json` 的判读。
+struct Supervisor {
+    /// 有没有可用的服务管理器。`None` 表示问不出来——那时候不猜，让官方命令自己报错。
+    available: Option<bool>,
+    pid: Option<i32>,
+    message: String,
+}
+
+impl Supervisor {
+    fn reason(&self) -> String {
+        if self.message.is_empty() {
+            "没检测到可用的服务管理器".to_string()
+        } else {
+            self.message.clone()
+        }
+    }
+}
+
+/// 官方 `update --check --json` 的判读。
+struct UpdateCheck {
+    current: String,
+    target: String,
+    available: bool,
+    downgrade: bool,
+}
+
+/// 装包期间顶掉 `~/.npmrc` 的一份最小 npmrc，临时文件随值一起消失。
+///
+/// 最外层那次 `npx paperclipai@latest` 会读 `~/.npmrc`，并把读到的配置以
+/// `npm_config_*` 注入子进程。已知 npm bug（npm/cli#9783、#9912、#9968）会把这样继承
+/// 来的 allow-scripts 当成命令行显式传入的 `--allow-scripts`，直接报 EALLOWSCRIPTS；
+/// 只清环境变量不够——配置本来就来自文件。
+struct Npmrc {
+    path: PathBuf,
+}
+
+impl Npmrc {
+    fn write(registry: &str) -> Option<Self> {
+        let path =
+            std::env::temp_dir().join(format!("fundeploy-paperclip-npmrc.{}", std::process::id()));
+        let registry = registry.trim_end_matches('/');
+        std::fs::write(
+            &path,
+            format!("registry={registry}/\n@paperclipai:registry={registry}/\n"),
+        )
+        .ok()?;
+        Some(Self { path })
+    }
+}
+
+impl Drop for Npmrc {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// awesome-paperclip 收录的插件。`pkg` 为空表示它不是 npm 包，装法见各自仓库。
+struct Plugin {
+    name: &'static str,
+    pkg: &'static str,
+    url: &'static str,
+    about: &'static str,
+}
+
+const CATALOG: &[Plugin] = &[
+    Plugin {
+        name: "Agent Pixels",
+        pkg: "@agent-pixels/paperclip-plugin",
+        url: "https://github.com/gcampton/Agent-Pixels",
+        about: "像素风 agent，可自定义行为、模型、房间，还能看监控摄像头",
+    },
+    Plugin {
+        name: "obsidian-paperclip",
+        pkg: "",
+        url: "https://github.com/istib/obsidian-paperclip",
+        about: "Obsidian 集成：在笔记里浏览、评论、指派 Paperclip issue",
+    },
+    Plugin {
+        name: "paperclip-aperture",
+        pkg: "@tomismeta/paperclip-aperture",
+        url: "https://github.com/tomismeta/paperclip-aperture",
+        about: "另一种 Focus 视图，按审批、issue 活动和待人处理的事件排序",
+    },
+    Plugin {
+        name: "paperclip-live-analytics-plugin",
+        pkg: "@agent-analytics/paperclip-live-analytics-plugin",
+        url: "https://github.com/Agent-Analytics/paperclip-live-analytics-plugin",
+        about: "实时访客地图、仪表盘挂件和 Agent Analytics 设置页",
+    },
+    Plugin {
+        name: "paperclip-plugin-acp",
+        pkg: "paperclip-plugin-acp",
+        url: "https://github.com/mvanhorn/paperclip-plugin-acp",
+        about: "在聊天平台里跑 Claude Code、Codex、Gemini CLI 的 ACP 运行时",
+    },
+    Plugin {
+        name: "paperclip-plugin-avp",
+        pkg: "paperclip-plugin-avp",
+        url: "https://github.com/creatorrmode-lead/paperclip-plugin-avp",
+        about: "基于 Agent Veil Protocol 的信任与声誉层",
+    },
+    Plugin {
+        name: "paperclip-plugin-chat",
+        pkg: "@paperclipai/plugin-chat",
+        url: "https://github.com/webprismdevin/paperclip-plugin-chat",
+        about: "面向任务、agent 和工作区的交互式 AI 聊天助手",
+    },
+    Plugin {
+        name: "paperclip-plugin-company-wizard",
+        pkg: "@yesterday-ai/paperclip-plugin-company-wizard",
+        url: "https://github.com/yesterday-ai/paperclip-plugin-company-wizard",
+        about: "带预设的 AI 公司初始化向导",
+    },
+    Plugin {
+        name: "paperclip-plugin-discord",
+        pkg: "paperclip-plugin-discord",
+        url: "https://github.com/mvanhorn/paperclip-plugin-discord",
+        about: "Discord 双向集成",
+    },
+    Plugin {
+        name: "paperclip-plugin-github-issues",
+        pkg: "paperclip-plugin-github-issues",
+        url: "https://github.com/mvanhorn/paperclip-plugin-github-issues",
+        about: "GitHub Issues 双向同步",
+    },
+    Plugin {
+        name: "paperclip-plugin-linear",
+        pkg: "@oldharlem/paperclip-plugin-linear",
+        url: "https://github.com/Oldharlem/paperclip-linear-plugin",
+        about: "Linear 双向同步，带 webhook 和一个 agent 工具",
+    },
+    Plugin {
+        name: "paperclip-plugin-slack",
+        pkg: "paperclip-plugin-slack",
+        url: "https://github.com/mvanhorn/paperclip-plugin-slack",
+        about: "issue 生命周期事件推到 Slack",
+    },
+    Plugin {
+        name: "paperclip-plugin-telegram",
+        pkg: "paperclip-plugin-telegram",
+        url: "https://github.com/mvanhorn/paperclip-plugin-telegram",
+        about: "issue 生命周期事件推到 Telegram",
+    },
+    Plugin {
+        name: "paperclip-plugin-writbase",
+        pkg: "paperclip-plugin-writbase",
+        url: "https://github.com/Writbase/paperclip-plugin-writbase",
+        about: "Paperclip issue 与 WritBase 任务双向同步",
+    },
+    Plugin {
+        name: "paperclip-plugin-hindsight",
+        pkg: "paperclip-plugin-hindsight",
+        url: "https://github.com/vectorize-io/hindsight/tree/main/hindsight-integrations/paperclip-plugin",
+        about: "给 Paperclip agent 的长期记忆",
+    },
+];
+
+fn print_catalog() {
+    for p in CATALOG {
+        if p.pkg.is_empty() {
+            ui::info(format!("{}（不是 npm 包，装法见仓库）", p.name));
+        } else {
+            ui::info(format!("{}（{}）", p.name, p.pkg));
+        }
+        ui::hint(p.about);
+        ui::hint(p.url);
+    }
+}
+
+fn secs(key: &str, default: u64) -> Duration {
+    Duration::from_secs(env::num(key, default))
+}
+
+fn or_unknown(s: &str) -> &str {
+    if s.is_empty() {
+        "未知"
+    } else {
+        s
+    }
+}
+
+fn yes_no(cond: bool, yes: &'static str, no: &'static str) -> &'static str {
+    if cond {
+        yes
+    } else {
+        no
+    }
+}
+
+/// 把子命令拼在参数前面。
+fn prepend<'a>(head: &[&'a str], rest: &[&'a str]) -> Vec<&'a str> {
+    let mut v = head.to_vec();
+    v.extend_from_slice(rest);
+    v
+}
+
+fn is_executable(p: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
+fn cli_runnable(bin: &Path) -> bool {
+    cmd::try_run([bin.display().to_string().as_str(), "--version"]).is_ok_and(|o| o.success())
+}
+
+/// `postmaster.pid` 的第一行是 PID，后面还有数据目录、启动时间等若干行，所以不能直接
+/// 用 [`proc::read_pid_file`]——它认的是整个文件只有一个数。
+fn postmaster_pid(path: &Path) -> Option<i32> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    raw.lines()
+        .next()?
+        .trim()
+        .parse::<i32>()
+        .ok()
+        .filter(|p| *p > 0)
+}
+
+/// 进程的完整命令行。Linux 直接读 /proc，其余平台退回 ps。
+fn process_cmdline(pid: i32) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    if let Ok(raw) = std::fs::read(format!("/proc/{pid}/cmdline")) {
+        // /proc 里参数之间是 NUL。
+        return Some(
+            String::from_utf8_lossy(&raw)
+                .replace('\0', " ")
+                .trim()
+                .to_string(),
+        );
+    }
+    let out = cmd::try_run(["ps", "-p", &pid.to_string(), "-o", "command="]).ok()?;
+    out.success().then(|| out.stdout.trim().to_string())
+}
+
+fn health_endpoint_ok(cfg: &Config) -> bool {
+    let host = match cfg.host.as_str() {
+        "" | "0.0.0.0" | "*" => "127.0.0.1",
+        "::" => "::1",
+        h => h,
+    };
+    // IPv6 字面量在 URL 里要加方括号。
+    let authority = if host.contains(':') {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    };
+    ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .get(&format!("http://{authority}:{}/api/health", cfg.port))
+        .call()
+        .is_ok()
+}
+
+fn node_version() -> Option<String> {
+    let out = cmd::try_run(["node", "--version"]).ok()?;
+    out.success()
+        .then(|| out.stdout.trim().trim_start_matches('v').to_string())
+        .filter(|v| !v.is_empty())
+}
+
+/// nvm 装的那些 node 里挑一个够新的，返回它的 bin 目录。
+///
+/// 刻意不去 source nvm.sh：那东西只对 shell 有意义，而 nvm 的布局
+/// （`$NVM_DIR/versions/node/v<版本>/bin`）是稳定的。直接挑目录既不用起 shell，挑中
+/// 哪一个也是确定的——官方 install.sh 恰恰相反，它见到 ~/.nvm 就直接 fail。
+fn nvm_node_bin(min: &str) -> Option<PathBuf> {
+    let root = env::opt("NVM_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| env::home().join(".nvm"))
+        .join("versions")
+        .join("node");
+
+    let mut best: Option<(String, PathBuf)> = None;
+    for entry in std::fs::read_dir(root).ok()?.flatten() {
+        let v = entry
+            .file_name()
+            .to_string_lossy()
+            .trim_start_matches('v')
+            .to_string();
+        if version::is_newer(min, &v) {
+            continue; // 比下限旧
+        }
+        let bin = entry.path().join("bin");
+        if !bin.join("node").exists() {
+            continue;
+        }
+        let better = match &best {
+            None => true,
+            Some((cur, _)) => version::is_newer(&v, cur),
+        };
+        if better {
+            best = Some((v, bin));
+        }
+    }
+    best.map(|(_, bin)| bin)
+}
+
+/// 代理只做隧道（HTTPS 经 CONNECT 透传，TLS 仍是端到端），所以本机 `http://` 代理是
+/// 正常用法，这里不强制 https。但限定已知 scheme，免得 registry 地址或一段 shell 被
+/// 误填进来之后静默生效。
+fn checked_proxy(raw: String) -> Option<String> {
+    const OK: [&str; 4] = ["http://", "https://", "socks5://", "socks5h://"];
+    if OK.iter().any(|p| raw.starts_with(p)) {
+        return Some(raw);
+    }
+    ui::warn(format!(
+        "忽略 PAPERCLIP_HTTPS_PROXY（{raw}）：只支持 http:// https:// socks5:// socks5h://"
+    ));
+    None
+}
+
+/// 认 `-f` / `--follow` 和 `-n N` / `-nN` / `--lines=N`，别的提示后忽略。
+///
+/// fundeploy 托管的日志就是一个文件，官方 `service logs` 那套 journalctl 参数在这儿
+/// 没有对应物，与其假装支持，不如明说忽略了什么。
+fn parse_log_args(args: &[&str], default_lines: usize) -> (usize, bool) {
+    let mut lines = default_lines;
+    let mut follow = false;
+    let mut want_lines = false;
+    for a in args {
+        if want_lines {
+            lines = a.parse().unwrap_or(lines);
+            want_lines = false;
+            continue;
+        }
+        if *a == "-f" || *a == "--follow" {
+            follow = true;
+        } else if *a == "-n" || *a == "--lines" {
+            want_lines = true;
+        } else if let Some(n) = a.strip_prefix("--lines=").or_else(|| a.strip_prefix("-n")) {
+            lines = n.parse().unwrap_or(lines);
+        } else {
+            ui::warn(format!("托管日志是直接读文件，忽略不支持的参数 {a}"));
+        }
+    }
+    (lines, follow)
+}
+
+/// 日志末尾的 N 行。
+///
+/// 只读末尾一段：服务日志能涨到几百 M，为看几十行把整个文件读进内存，会在最需要它的
+/// 时候（启动失败、磁盘紧张）把事情变得更糟。
+fn tail_lines(path: &Path, lines: usize) -> Vec<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    const WINDOW: u64 = 256 * 1024;
+
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return Vec::new();
+    };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let from = len.saturating_sub(WINDOW);
+    if f.seek(SeekFrom::Start(from)).is_err() {
+        return Vec::new();
+    }
+    let mut buf = Vec::new();
+    if f.read_to_end(&mut buf).is_err() {
+        return Vec::new();
+    }
+
+    let text = String::from_utf8_lossy(&buf);
+    let mut all: Vec<&str> = text.lines().collect();
+    // 从中间截断的第一行多半是半行，丢掉。
+    if from > 0 && !all.is_empty() {
+        all.remove(0);
+    }
+    all.iter()
+        .skip(all.len().saturating_sub(lines))
+        .map(|s| (*s).to_string())
+        .collect()
+}
+
+fn print_tail(path: &Path, lines: usize) {
+    for line in tail_lines(path, lines) {
+        eprintln!("  {line}");
+    }
+}
+
+/// 跟随日志直到 Ctrl+C。
+///
+/// 自己轮询而不是调 `tail -f`：少一个外部依赖，而且 Ctrl+C 的归属清楚——信号投给的是
+/// fundeploy 自己，不会留下一个还在跑的 tail。
+fn follow_log(path: &Path) -> Result<()> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+
+    let mut f = std::fs::File::open(path)?;
+    let mut pos = f.seek(SeekFrom::End(0))?;
+    loop {
+        std::thread::sleep(Duration::from_millis(300));
+        let len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(pos);
+        if len < pos {
+            // 日志被轮转或清空了。旧的文件句柄指向的还是老 inode，必须重开，
+            // 否则这条通道从此就哑了。
+            f = std::fs::File::open(path)?;
+            pos = 0;
+            continue;
+        }
+        if len == pos {
+            continue;
+        }
+        f.seek(SeekFrom::Start(pos))?;
+        let mut buf = vec![0u8; (len - pos) as usize];
+        let n = f.read(&mut buf)?;
+        buf.truncate(n);
+        pos += n as u64;
+        std::io::stdout().write_all(&buf)?;
+        std::io::stdout().flush()?;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn 通道只认那两个写法() {
+        assert_eq!(Channel::parse("canary").unwrap(), Channel::Canary);
+        for s in ["prod", "latest", "stable"] {
+            assert_eq!(Channel::parse(s).unwrap(), Channel::Prod);
+        }
+        // 版本号不是通道。managed install 钉不到具体版本，这里必须拦住而不是
+        // 把它当成某个通道悄悄装一个别的版本。
+        let err = Channel::parse("2026.1008.0").unwrap_err().to_string();
+        assert!(err.contains("canary / prod"), "实际: {err}");
+    }
+
+    #[test]
+    fn 没有配置文件时用默认端口() {
+        // 还没 onboard 过是正常状态：install 之前本来就没有配置，这里不能崩。
+        let cfg = parse_config("", Path::new("/tmp/db"));
+        assert_eq!(cfg.port, DEFAULT_SERVER_PORT);
+        assert_eq!(cfg.pg_port, DEFAULT_PG_PORT);
+        assert_eq!(cfg.host, "127.0.0.1");
+        assert!(!cfg.embedded_pg);
+        assert_eq!(cfg.pg_dir, Path::new("/tmp/db"));
+    }
+
+    #[test]
+    fn 读得出_embedded_模式和端口() {
+        let cfg = parse_config(
+            r#"{"database":{"mode":"embedded-postgres","embeddedPostgresPort":54329,
+                "embeddedPostgresDataDir":"~/pgdata"},
+                "server":{"host":"0.0.0.0","port":9999}}"#,
+            Path::new("/tmp/db"),
+        );
+        assert!(cfg.embedded_pg);
+        assert_eq!(cfg.pg_port, 54329);
+        assert_eq!(cfg.pg_dir, env::home().join("pgdata"));
+        assert_eq!(cfg.host, "0.0.0.0");
+        assert_eq!(cfg.port, 9999);
+    }
+
+    #[test]
+    fn 外部数据库不算_embedded() {
+        // 这条决定了三件事：要不要删 DATABASE_URL、备份前要不要查端口、
+        // 换 payload 前要不要去收 postmaster。认错一边都会出事。
+        let cfg = parse_config(
+            r#"{"database":{"mode":"postgres","connectionString":"postgresql://x/y"}}"#,
+            Path::new("/tmp/db"),
+        );
+        assert!(!cfg.embedded_pg);
+    }
+
+    #[test]
+    fn 配置坏掉时退回默认值而不是崩掉() {
+        // 写到一半断电、或者上游换了结构，都会得到这种内容。status 这种只读命令
+        // 必须还能打出东西来。
+        for junk in ["", "{", "null", "[]", r#"{"server":{"port":"八千"}}"#] {
+            let cfg = parse_config(junk, Path::new("/tmp/db"));
+            assert_eq!(cfg.port, DEFAULT_SERVER_PORT, "junk={junk}");
+        }
+    }
+
+    #[test]
+    fn 端口为零当作没配() {
+        let cfg = parse_config(r#"{"server":{"port":0}}"#, Path::new("/tmp/db"));
+        assert_eq!(cfg.port, DEFAULT_SERVER_PORT);
+    }
+
+    #[test]
+    fn 日志参数认得出行数和跟随() {
+        assert_eq!(parse_log_args(&[], 200), (200, false));
+        assert_eq!(parse_log_args(&["-f"], 200), (200, true));
+        assert_eq!(parse_log_args(&["-n", "50"], 200), (50, false));
+        assert_eq!(parse_log_args(&["-n50"], 200), (50, false));
+        assert_eq!(parse_log_args(&["--lines=50", "-f"], 200), (50, true));
+        // 不认识的参数只提示，不该让看日志这件事直接失败。
+        assert_eq!(parse_log_args(&["--since=1h"], 200), (200, false));
+        // 行数不是数字时保持默认，而不是 panic。
+        assert_eq!(parse_log_args(&["-n", "很多"], 200), (200, false));
+    }
+
+    #[test]
+    fn 取日志末尾若干行() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("a.log");
+        std::fs::write(&log, "1\n2\n3\n4\n5\n").unwrap();
+        assert_eq!(tail_lines(&log, 2), ["4", "5"]);
+        // 要的比有的多时给全部，不该 panic。
+        assert_eq!(tail_lines(&log, 99).len(), 5);
+        // 文件不存在只是「没日志」，不是错误。
+        assert!(tail_lines(&dir.path().join("nope.log"), 10).is_empty());
+    }
+
+    #[test]
+    fn 代理只认已知的_scheme() {
+        assert_eq!(
+            checked_proxy("http://127.0.0.1:7890".into()).as_deref(),
+            Some("http://127.0.0.1:7890")
+        );
+        assert_eq!(
+            checked_proxy("socks5h://127.0.0.1:1080".into()).as_deref(),
+            Some("socks5h://127.0.0.1:1080")
+        );
+        // 填错的话必须当没填：静默生效的结果是所有下载都走进一个不存在的代理。
+        assert_eq!(checked_proxy("127.0.0.1:7890".into()), None);
+        assert_eq!(checked_proxy("; rm -rf /".into()), None);
+    }
+
+    #[test]
+    fn postmaster_的_pid_只取第一行() {
+        // 这个文件不止一行，直接整篇解析会失败，于是 embedded PostgreSQL 永远收不掉。
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("postmaster.pid");
+        std::fs::write(&p, "12345\n/home/u/db\n1728000000\n5432\n").unwrap();
+        assert_eq!(postmaster_pid(&p), Some(12345));
+        std::fs::write(&p, "乱码\n").unwrap();
+        assert_eq!(postmaster_pid(&p), None);
+        assert_eq!(postmaster_pid(&dir.path().join("nope")), None);
+    }
+
+    #[test]
+    fn 额外动作的名字不重复() {
+        // 重名的那个会被 match 的第一条分支吃掉，另一条永远走不到。
+        let mut names: Vec<&str> = EXTRAS.iter().map(|e| e.name).collect();
+        let n = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), n, "额外动作重名");
+        assert!(EXTRAS.iter().all(|e| !e.about.is_empty()));
+    }
+
+    #[test]
+    fn 不认识的额外动作有明确报错() {
+        // 这条分支必须在动手之前就拦住：往下走就是拿一个拼错的子命令去调官方 CLI。
+        let err = Paperclip::from_env()
+            .extra("__不存在__", &[])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("__不存在__"), "实际: {err}");
+    }
+
+    #[test]
+    fn 插件清单里的包名不重复() {
+        let mut pkgs: Vec<&str> = CATALOG
+            .iter()
+            .map(|p| p.pkg)
+            .filter(|p| !p.is_empty())
+            .collect();
+        let n = pkgs.len();
+        pkgs.sort_unstable();
+        pkgs.dedup();
+        assert_eq!(pkgs.len(), n, "插件清单里有重复的包名");
+        assert!(CATALOG.iter().all(|p| p.url.starts_with("https://")));
+    }
+
+    #[test]
+    fn 回退只接受_previous_这类说法() {
+        let pc = Paperclip::from_env();
+        // 给版本号必须明确说「退不到指定版本」，而不是默默退到上一份。
+        let err = pc.rollback("2026.1008.0").unwrap_err().to_string();
+        assert!(err.contains("退不到指定版本"), "实际: {err}");
+    }
+}

@@ -11,9 +11,13 @@
 //!   下载附件、起后台进程、写 PID、停的时候 TERM 完再 KILL。
 //!
 //! 两族各自把生命周期实现一次，具体服务退化成一份声明。
+//!
+//! 两族都装不下的服务直接实现 [`Service`]（见 [`paperclip`]），并用
+//! [`Service::extras`] 把九个动作之外的东西挂出来。
 
 pub mod config;
 pub mod daemon;
+pub mod paperclip;
 pub mod registry;
 pub mod spec;
 pub mod upstream;
@@ -28,6 +32,16 @@ use crate::ui;
 /// 启动命令只要 fork 成功就返回 0，子进程几秒后崩掉它也不报错，所以必须自己等
 /// 端口。这个值要能覆盖「装了一堆依赖的 Python 后端 import 完」的时间。
 const START_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// 九个标准动作之外、只有某个服务才有的动作。
+///
+/// 上游 CLI 的本事常常不止起停装卸（paperclip 还有 doctor、health、backup、
+/// channels）。把它们硬塞进九个动作会扭曲语义，丢掉又是实打实的功能缺失，
+/// 所以给一个明确的挂点：服务声明有哪些，命令行照着放行。
+pub struct Extra {
+    pub name: &'static str,
+    pub about: &'static str,
+}
 
 /// 一个服务能做的事。两族各自实现一遍，命令行只认这个。
 pub trait Service {
@@ -45,6 +59,20 @@ pub trait Service {
     fn restart(&self) -> anyhow::Result<()>;
     fn status(&self) -> anyhow::Result<()>;
     fn uninstall(&self) -> anyhow::Result<()>;
+
+    /// 这个服务额外支持的动作。绝大多数服务没有。
+    fn extras(&self) -> &'static [Extra] {
+        &[]
+    }
+
+    /// 执行一个额外动作。`args` 是动作名之后的全部参数。
+    ///
+    /// 名字由命令行对着 [`Service::extras`] 核过才会传进来，所以实现里不必再防
+    /// 不认识的名字——走到默认实现只说明声明和实现对不上，那是编程错误。
+    fn extra(&self, name: &str, args: &[String]) -> anyhow::Result<()> {
+        let _ = args;
+        anyhow::bail!("{} 声明了动作 {name} 却没有实现它", self.name())
+    }
 }
 
 /// 停完之后核对端口是不是真的放开了。
