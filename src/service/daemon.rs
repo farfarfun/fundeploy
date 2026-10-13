@@ -20,6 +20,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use std::path::{Path, PathBuf};
 
 use super::{uninstall_env_var, warn_if_still_listening, Service, START_TIMEOUT};
+use crate::common::fs::guard_removable;
 use crate::common::platform::Platform;
 use crate::common::{archive, cmd, download, github, port, proc};
 use crate::ui;
@@ -535,6 +536,8 @@ pub trait Daemon {
             ),
             &uninstall_env_var(&spec.name),
         )?;
+
+        guard_removable(&spec.home)?;
 
         self.stop()?;
         ui::blank();

@@ -31,11 +31,21 @@
   `run-worker` / `run-beat` / `run-flower` 换成三个通用动作——
   `start-one <进程名>`、`run-one <进程名>`、`stop-one <进程名>`，进程名就是
   `worker` / `beat` / `flower`。
+- `open-pencil` 从服务挪到工具：`fundeploy service open-pencil …` →
+  **`fundeploy tool open-pencil …`**。它装完是两个命令行程序，其中
+  `openpencil-mcp` 由 MCP 客户端按需拉起、用完即走，没有一个归 fundeploy 管的
+  常驻进程——留在服务里就得有四个撒谎的动作（`start` 报成功而什么都没起，
+  `status` 答「已停止」而它压根不是跑的东西）。动作相应收敛为
+  `install` / `upgrade` / `status` / `uninstall` + `install-desktop` /
+  `mcp-config`。环境变量 `OPEN_PENCIL_SERVICE_HOME` 随之改名
+  `OPEN_PENCIL_HOME`（旧名仍然认，机器上已下载的 `dist/` 不会因此找不到）。
 
 ### 新增
 
 - 「包 pip 装进独占 venv、进程归 fundeploy 管」的服务（目前是 `airflow`、
   `celery`）统一支持 `start-one` / `run-one` / `stop-one`，不再是 celery 专属。
+- `fundeploy tool`：工具域。跟服务的分界线只有一条——工具没有常驻进程，所以
+  动作只有装、升、卸、查。`fundeploy list` 现在同时列出服务和工具。
 
 ### 修复
 
@@ -45,6 +55,12 @@
   fundeploy 打印、探测、启动前查占用用的却都是 8806：Bash 版只是给了一行错地址
   （它起完进程就返回，不等端口），放到会等端口的 Rust 版里就是每次 `start` 必定
   超时。现在设 `AIRFLOW__API__PORT` / `AIRFLOW__API__HOST`。
+- `open-pencil install-desktop`：改为从 release 的附件清单里按平台挑，不再照
+  模板拼文件名。拼名字的做法一旦上游改了命名就是 404，而 release 里其实躺着一个
+  能用的包；它还得为「取不到 latest」硬编一个兜底 tag（`v0.13.2`），于是网络一抖
+  就去下一个一年前的版本。挑不到时会把这个 release 实际有哪些附件列出来，
+  `OPEN_PENCIL_DESKTOP_ASSET` 仍可点名覆盖。顺带，上游没发 linux/arm64 包这件事
+  现在是从附件清单得出的结论，而不是写死在脚本里的一句「不支持」。
 
 ## [0.1.18]
 

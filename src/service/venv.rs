@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use super::{uninstall_env_var, warn_if_still_listening, Extra, Service, START_TIMEOUT};
+use crate::common::fs::guard_removable;
 use crate::common::{cmd, env, port, proc};
 use crate::ui;
 
@@ -1122,24 +1123,6 @@ fn pip_install(
     cmd::run(&argv)
 }
 
-/// 拦住明显不该被 `rm -rf` 的路径。
-///
-/// 服务目录是从环境变量拼出来的，变量空掉的时候拼出来的可能是 `/` 或者家目录本身。
-fn guard_removable(p: &Path) -> Result<()> {
-    let home = env::home();
-    if p == Path::new("/") || p == home {
-        bail!("拒绝删除 {}：这不像是服务目录。", p.display());
-    }
-    if !p.starts_with(&home) && !p.starts_with("/opt") {
-        bail!(
-            "{} 既不在 {} 下也不在 /opt 下，拒绝自动删除。确认无误的话手工处理。",
-            p.display(),
-            home.display()
-        );
-    }
-    Ok(())
-}
-
 /// 日志末尾若干行。启动失败时贴出来，省得人再去找日志路径。
 fn tail(path: &Path, lines: usize) -> String {
     let Ok(text) = std::fs::read_to_string(path) else {
@@ -1310,15 +1293,6 @@ mod tests {
         let s = 样例(vec![进程("a")]).python_range((3, 9), None);
         assert!(!in_range((3, 8), &s));
         assert!(in_range((3, 20), &s));
-    }
-
-    #[test]
-    fn 拒绝删除根目录和家目录() {
-        assert!(guard_removable(Path::new("/")).is_err());
-        assert!(guard_removable(&env::home()).is_err());
-        assert!(guard_removable(Path::new("/etc")).is_err());
-        assert!(guard_removable(&env::home().join("opt/airflow")).is_ok());
-        assert!(guard_removable(Path::new("/opt/airflow")).is_ok());
     }
 
     #[test]

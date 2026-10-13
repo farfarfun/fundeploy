@@ -4,7 +4,9 @@ use anyhow::{bail, Result};
 use clap::{CommandFactory, Parser, Subcommand};
 
 use crate::service::{self, Service};
+use crate::tool::{self, Tool};
 use crate::ui;
+use crate::Extra;
 
 #[derive(Parser)]
 #[command(
@@ -28,6 +30,13 @@ enum Command {
         name: Option<String>,
         #[command(subcommand)]
         action: Option<Action>,
+    },
+    /// 工具管理
+    Tool {
+        /// 工具名。不给就列出所有工具。
+        name: Option<String>,
+        #[command(subcommand)]
+        action: Option<ToolAction>,
     },
     /// 列出能管的东西
     List,
@@ -131,41 +140,103 @@ impl Action {
     }
 }
 
+#[derive(Subcommand, Clone)]
+enum ToolAction {
+    /// 安装
+    Install {
+        /// 钉到某个版本，不给就装最新版
+        #[arg(long)]
+        version: Option<String>,
+    },
+    /// 升到最新版
+    Upgrade,
+    /// 看状态
+    Status,
+    /// 卸载
+    Uninstall,
+
+    /// 工具自己声明的额外动作（见 [`Tool::extras`]）。
+    #[command(external_subcommand)]
+    Extra(Vec<String>),
+}
+
+/// 工具的四个标准动作。作用同 [`STANDARD`]。
+const TOOL_STANDARD: [&str; 4] = ["install", "upgrade", "status", "uninstall"];
+
+impl ToolAction {
+    fn label(&self) -> String {
+        match self {
+            ToolAction::Install { .. } => "install  安装".to_string(),
+            ToolAction::Upgrade => "upgrade  升到最新版".to_string(),
+            ToolAction::Status => "status   看状态".to_string(),
+            ToolAction::Uninstall => "uninstall 卸载".to_string(),
+            ToolAction::Extra(argv) => argv.join(" "),
+        }
+    }
+
+    fn menu() -> Vec<ToolAction> {
+        vec![
+            ToolAction::Status,
+            ToolAction::Install { version: None },
+            ToolAction::Upgrade,
+            ToolAction::Uninstall,
+        ]
+    }
+
+    fn apply(&self, t: &dyn Tool) -> Result<()> {
+        match self {
+            ToolAction::Install { version } => t.install(version.as_deref()),
+            ToolAction::Upgrade => t.upgrade(),
+            ToolAction::Status => t.status(),
+            ToolAction::Uninstall => t.uninstall(),
+            ToolAction::Extra(argv) => {
+                let (name, args) = split_extra(t.name(), "tool", t.extras(), &TOOL_STANDARD, argv)?;
+                t.extra(name, args)
+            }
+        }
+    }
+}
+
 /// 执行一个服务声明的额外动作。
-///
-/// 名字先对着 [`Service::extras`] 核一遍再往下传：clap 的 external_subcommand 会
-/// 原样收下任何没见过的词，不核的话 `statsu` 这种手滑会一路传到服务里，变成一条
-/// 拿拼错的子命令去调上游 CLI 的调用——报错也就成了上游的用法提示，与手滑无关。
 fn run_extra(svc: &dyn Service, argv: &[String]) -> Result<()> {
+    let (name, args) = split_extra(svc.name(), "service", svc.extras(), &STANDARD, argv)?;
+    svc.extra(name, args)
+}
+
+/// 把 `额外动作名 参数...` 拆开，顺便核一遍这个名字确实被声明过。
+///
+/// 必须核：clap 的 external_subcommand 会原样收下任何没见过的词，不核的话
+/// `statsu` 这种手滑会一路传下去，变成一条拿拼错的子命令去调上游 CLI 的调用——
+/// 报错也就成了上游的用法提示，跟「打错了」八竿子打不着。
+fn split_extra<'a>(
+    who: &str,
+    domain: &str,
+    extras: &[Extra],
+    standard: &[&str],
+    argv: &'a [String],
+) -> Result<(&'a str, &'a [String])> {
     let Some((name, args)) = argv.split_first() else {
-        bail!(
-            "没给动作名。看全部动作: fundeploy service {} --help",
-            svc.name()
-        );
+        bail!("没给动作名。看全部动作: fundeploy {domain} {who} --help");
     };
-    let extras = svc.extras();
     if !extras.iter().any(|e| e.name == name) {
-        let known: Vec<&str> = STANDARD
+        let known: Vec<&str> = standard
             .iter()
             .copied()
             .chain(extras.iter().map(|e| e.name))
             .collect();
-        bail!(
-            "{} 没有 {name} 这个动作。可选: {}",
-            svc.name(),
-            known.join("、")
-        );
+        bail!("{who} 没有 {name} 这个动作。可选: {}", known.join("、"));
     }
-    svc.extra(name, args)
+    Ok((name, args))
 }
 
 pub fn cli_main() -> Result<()> {
     match Cli::parse().command {
         Some(Command::List) => {
-            list_services();
+            list_all();
             Ok(())
         }
         Some(Command::Service { name, action }) => service_cmd(name, action),
+        Some(Command::Tool { name, action }) => tool_cmd(name, action),
         None => no_args(),
     }
 }
@@ -180,11 +251,25 @@ fn no_args() -> Result<()> {
         println!();
         return Ok(());
     }
-    let svc = pick_service()?;
-    pick_and_run(svc.as_ref())
+    let domains = [
+        "service  服务（装、起、停、查）".to_string(),
+        "tool     工具（装、升、卸、查）".to_string(),
+    ];
+    let picked = ui::select("要管什么", &domains)?.ok_or_else(|| anyhow::anyhow!("已取消。"))?;
+    if picked.starts_with("service") {
+        let svc = pick_one(service::registry::all(), "选一个服务", |s| {
+            (s.name().to_string(), s.summary().to_string())
+        })?;
+        pick_and_run(svc.as_ref())
+    } else {
+        let t = pick_one(tool::registry::all(), "选一个工具", |t| {
+            (t.name().to_string(), t.summary().to_string())
+        })?;
+        pick_and_run_tool(t.as_ref())
+    }
 }
 
-fn list_services() {
+fn list_all() {
     ui::heading("服务");
     for s in service::registry::all() {
         let ports: Vec<String> = s.ports().iter().map(u16::to_string).collect();
@@ -195,11 +280,23 @@ fn list_services() {
             ports.join("、")
         );
     }
+    ui::blank();
+    ui::heading("工具");
+    for t in tool::registry::all() {
+        println!("  {:<14} {}", t.name(), t.summary());
+    }
+}
+
+fn list_tools() {
+    ui::heading("工具");
+    for t in tool::registry::all() {
+        println!("  {:<14} {}", t.name(), t.summary());
+    }
 }
 
 fn service_cmd(name: Option<String>, action: Option<Action>) -> Result<()> {
     let Some(name) = name else {
-        list_services();
+        list_all();
         return Ok(());
     };
 
@@ -216,14 +313,35 @@ fn service_cmd(name: Option<String>, action: Option<Action>) -> Result<()> {
     }
 }
 
-fn pick_service() -> Result<Box<dyn Service>> {
-    let all = service::registry::all();
+fn tool_cmd(name: Option<String>, action: Option<ToolAction>) -> Result<()> {
+    let Some(name) = name else {
+        list_tools();
+        return Ok(());
+    };
+
+    let t = tool::registry::find(&name).ok_or_else(|| {
+        anyhow::anyhow!(
+            "没有叫 {name} 的工具。可选: {}",
+            tool::registry::names().join("、")
+        )
+    })?;
+
+    match action {
+        Some(a) => a.apply(t.as_ref()),
+        None => pick_and_run_tool(t.as_ref()),
+    }
+}
+
+/// 从一张表里选一个。`describe` 给出 (名字, 一行说明)。
+fn pick_one<T>(all: Vec<T>, prompt: &str, describe: impl Fn(&T) -> (String, String)) -> Result<T> {
     let labels: Vec<String> = all
         .iter()
-        .map(|s| format!("{:<14} {}", s.name(), s.summary()))
+        .map(|x| {
+            let (name, about) = describe(x);
+            format!("{name:<14} {about}")
+        })
         .collect();
-
-    let picked = ui::select("选一个服务", &labels)?.ok_or_else(|| anyhow::anyhow!("已取消。"))?;
+    let picked = ui::select(prompt, &labels)?.ok_or_else(|| anyhow::anyhow!("已取消。"))?;
     let idx = labels
         .iter()
         .position(|l| l == picked)
@@ -231,28 +349,33 @@ fn pick_service() -> Result<Box<dyn Service>> {
     Ok(all.into_iter().nth(idx).unwrap())
 }
 
+/// 没给动作时的提示。额外动作不在 `--help` 里（clap 不认识它们），不在这儿说
+/// 就等于没有。
+fn no_action_hint(who: &str, domain: &str, extras: &[Extra]) -> String {
+    let mut msg = format!(
+        "要做什么？例如 `fundeploy {domain} {who} status`（看全部动作: `fundeploy {domain} {who} --help`）"
+    );
+    if !extras.is_empty() {
+        let names: Vec<&str> = extras.iter().map(|e| e.name).collect();
+        msg.push_str(&format!("\n{who} 还支持: {}", names.join("、")));
+    }
+    msg
+}
+
+/// 额外动作跟标准动作并列进菜单：对使用者来说它们同样是「这东西能做的事」。
+fn action_labels(standard: Vec<String>, extras: &[Extra]) -> Vec<String> {
+    let mut labels = standard;
+    labels.extend(extras.iter().map(|e| format!("{:<9}{}", e.name, e.about)));
+    labels
+}
+
 fn pick_and_run(svc: &dyn Service) -> Result<()> {
     if !ui::interactive() {
-        let mut msg = format!(
-            "要做什么？例如 `fundeploy service {0} status`（看全部动作: `fundeploy service {0} --help`）",
-            svc.name()
-        );
-        // 额外动作不在 --help 里（clap 不认识它们），不在这儿说就等于没有。
-        if !svc.extras().is_empty() {
-            let names: Vec<&str> = svc.extras().iter().map(|e| e.name).collect();
-            msg.push_str(&format!("\n{} 还支持: {}", svc.name(), names.join("、")));
-        }
-        bail!(msg);
+        bail!(no_action_hint(svc.name(), "service", svc.extras()));
     }
 
     let actions = Action::menu();
-    let mut labels: Vec<String> = actions.iter().map(Action::label).collect();
-    // 额外动作跟标准动作并列进菜单：对使用者来说它们同样是「这个服务能做的事」。
-    labels.extend(
-        svc.extras()
-            .iter()
-            .map(|e| format!("{:<9}{}", e.name, e.about)),
-    );
+    let labels = action_labels(actions.iter().map(Action::label).collect(), svc.extras());
 
     let picked = ui::select(&format!("{} 要做什么", svc.name()), &labels)?
         .ok_or_else(|| anyhow::anyhow!("已取消。"))?;
@@ -261,6 +384,23 @@ fn pick_and_run(svc: &dyn Service) -> Result<()> {
         Some(a) => a.apply(svc),
         // 越过标准动作的下标落在 extras 上，顺序跟上面拼 labels 时一致。
         None => svc.extra(svc.extras()[idx - actions.len()].name, &[]),
+    }
+}
+
+fn pick_and_run_tool(t: &dyn Tool) -> Result<()> {
+    if !ui::interactive() {
+        bail!(no_action_hint(t.name(), "tool", t.extras()));
+    }
+
+    let actions = ToolAction::menu();
+    let labels = action_labels(actions.iter().map(ToolAction::label).collect(), t.extras());
+
+    let picked = ui::select(&format!("{} 要做什么", t.name()), &labels)?
+        .ok_or_else(|| anyhow::anyhow!("已取消。"))?;
+    let idx = labels.iter().position(|l| l == picked).unwrap();
+    match actions.get(idx) {
+        Some(a) => a.apply(t),
+        None => t.extra(t.extras()[idx - actions.len()].name, &[]),
     }
 }
 
@@ -332,20 +472,92 @@ mod tests {
         assert!(Cli::try_parse_from(["fundeploy", "没这个命令"]).is_err());
     }
 
+    /// clap 那边某个域实际有哪些子命令。
+    fn 子命令(域: &str) -> Vec<String> {
+        let cmd = Cli::command();
+        let d = cmd
+            .find_subcommand(域)
+            .unwrap_or_else(|| panic!("没有 {域} 子命令"));
+        let mut names: Vec<String> = d
+            .get_subcommands()
+            .map(|c| c.get_name().to_string())
+            .filter(|n| n != "help")
+            .collect();
+        names.sort();
+        names
+    }
+
     #[test]
     fn 标准动作名单和_clap_不脱节() {
         // STANDARD 是手抄的，加了动作忘了抄就会在报错里漏掉它。
-        let cmd = Cli::command();
-        let svc = cmd.find_subcommand("service").expect("没有 service 子命令");
-        let mut from_clap: Vec<&str> = svc
-            .get_subcommands()
-            .map(|c| c.get_name())
-            .filter(|n| *n != "help")
-            .collect();
-        from_clap.sort_unstable();
         let mut mine = STANDARD.to_vec();
         mine.sort_unstable();
-        assert_eq!(from_clap, mine);
+        assert_eq!(子命令("service"), mine);
+
+        let mut mine = TOOL_STANDARD.to_vec();
+        mine.sort_unstable();
+        assert_eq!(子命令("tool"), mine);
+    }
+
+    #[test]
+    fn 解析工具动作() {
+        let cli = Cli::try_parse_from(["fundeploy", "tool", "open-pencil", "status"]).unwrap();
+        match cli.command {
+            Some(Command::Tool { name, action }) => {
+                assert_eq!(name.as_deref(), Some("open-pencil"));
+                assert!(matches!(action, Some(ToolAction::Status)));
+            }
+            _ => panic!("解析成了别的命令"),
+        }
+    }
+
+    #[test]
+    fn 工具没有起停这类动作() {
+        // 工具是没有进程的东西，`start` 应当像拼错了一样被挡下，而不是被
+        // external_subcommand 收下再传到工具里。
+        let err = tool_cmd(
+            Some("open-pencil".into()),
+            Some(ToolAction::Extra(vec!["start".into()])),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("start"), "实际: {err}");
+        assert!(err.contains("install"), "实际: {err}");
+    }
+
+    #[test]
+    fn 工具的额外动作被放行() {
+        let cli = Cli::try_parse_from(["fundeploy", "tool", "open-pencil", "mcp-config"]).unwrap();
+        match cli.command {
+            Some(Command::Tool {
+                action: Some(ToolAction::Extra(argv)),
+                ..
+            }) => assert_eq!(argv, ["mcp-config"]),
+            _ => panic!("解析成了别的命令"),
+        }
+    }
+
+    #[test]
+    fn 不存在的工具名报错里列出可选项() {
+        let err = tool_cmd(Some("没这个工具".into()), Some(ToolAction::Status))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("open-pencil"), "实际: {err}");
+    }
+
+    #[test]
+    fn 工具菜单里的动作都不需要额外参数() {
+        for a in ToolAction::menu() {
+            assert!(!matches!(a, ToolAction::Extra(_)));
+        }
+    }
+
+    #[test]
+    fn 没给动作时的提示里带上额外动作() {
+        let extras = tool::registry::find("open-pencil").unwrap().extras();
+        let msg = no_action_hint("open-pencil", "tool", extras);
+        assert!(msg.contains("mcp-config"), "实际: {msg}");
+        assert!(msg.contains("fundeploy tool open-pencil"), "实际: {msg}");
     }
 
     #[test]

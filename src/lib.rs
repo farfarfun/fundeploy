@@ -23,9 +23,21 @@
 pub mod cli;
 pub mod common;
 pub mod service;
+pub mod tool;
 pub mod ui;
 
 pub use cli::cli_main;
 
 /// 程序自身版本。
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// 标准动作之外、只有某个服务或工具才有的动作。
+///
+/// 上游 CLI 的本事常常不止装升起停（paperclip 还有 doctor、health、backup、
+/// channels；open-pencil 要下载桌面安装包、要打印 MCP 配置）。把它们硬塞进标准
+/// 动作会扭曲语义，丢掉又是实打实的功能缺失，所以给一个明确的挂点：各自声明有
+/// 哪些，命令行照着放行。
+pub struct Extra {
+    pub name: &'static str,
+    pub about: &'static str,
+}

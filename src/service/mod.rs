@@ -44,15 +44,7 @@ use crate::ui;
 /// 端口。这个值要能覆盖「装了一堆依赖的 Python 后端 import 完」的时间。
 const START_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// 九个标准动作之外、只有某个服务才有的动作。
-///
-/// 上游 CLI 的本事常常不止起停装卸（paperclip 还有 doctor、health、backup、
-/// channels）。把它们硬塞进九个动作会扭曲语义，丢掉又是实打实的功能缺失，
-/// 所以给一个明确的挂点：服务声明有哪些，命令行照着放行。
-pub struct Extra {
-    pub name: &'static str,
-    pub about: &'static str,
-}
+pub use crate::Extra;
 
 /// 一个服务能做的事。两族各自实现一遍，命令行只认这个。
 pub trait Service {
