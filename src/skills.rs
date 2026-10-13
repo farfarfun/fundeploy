@@ -67,7 +67,7 @@ fn guard(dir: &Path) -> Result<()> {
         bail!("FUNDEPLOY_SKILLS_DIR 必须是绝对路径: {}", dir.display());
     }
     // 已存在就先解析符号链接：/a/b/c 完全可能是一条指向 / 的链接。
-    let real = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    let real = unfirmlink(dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf()));
     if real == env::home() {
         bail!("不能直接拿 $HOME 当目标目录: {}", real.display());
     }
@@ -83,6 +83,19 @@ fn guard(dir: &Path) -> Result<()> {
         bail!("目标目录至少要三层: {}", real.display());
     }
     Ok(())
+}
+
+/// 还原 macOS 的 firmlink。
+///
+/// Catalina 起系统卷只读，`/Users`、`/opt`、`/home` 这些实际在数据卷上，
+/// canonicalize 出来是 `/System/Volumes/Data/<原路径>`。不还原的话上面那张系统
+/// 目录名单在 Mac 上形同虚设——`/home` 解析完变成一个五层深、名字也对不上的
+/// 路径，一路放行。
+fn unfirmlink(p: PathBuf) -> PathBuf {
+    match p.strip_prefix("/System/Volumes/Data") {
+        Ok(rest) => Path::new("/").join(rest),
+        Err(_) => p,
+    }
 }
 
 fn ok_char(c: char) -> bool {
@@ -572,6 +585,26 @@ mod tests {
         assert!(guard(Path::new("/a/b")).is_err(), "两层就该拦下");
         assert!(guard(&env::home()).is_err(), "$HOME 本身不能当目标");
         assert!(guard(Path::new("/a/b/c")).is_ok());
+    }
+
+    #[test]
+    fn 系统目录名单不被_macos_的_firmlink_绕过() {
+        // Mac 上 canonicalize("/home") 给的是 /System/Volumes/Data/home，
+        // 照原样比名单就全放行了。这里直接验还原那一步，Linux 上也跑得到。
+        assert_eq!(
+            unfirmlink("/System/Volumes/Data/home".into()),
+            Path::new("/home")
+        );
+        assert_eq!(
+            unfirmlink("/System/Volumes/Data/Users/x".into()),
+            Path::new("/Users/x")
+        );
+        assert_eq!(unfirmlink("/home/x".into()), Path::new("/home/x"));
+        // 前缀只在整段匹配时才算，不能被名字开头像它的目录骗过去。
+        assert_eq!(
+            unfirmlink("/System/Volumes/Datum/x".into()),
+            Path::new("/System/Volumes/Datum/x")
+        );
     }
 
     #[test]

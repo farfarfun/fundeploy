@@ -680,12 +680,35 @@ pub trait Daemon {
 
 /// `pid` 跑的是不是 `bin` 这个文件。
 ///
-/// `None` 表示答不上来——非 Linux 没有 `/proc`，进程不属于当前用户时读
-/// `/proc/<pid>/exe` 也会被拒。「答不上来」和「确认不是」得分开：前者只能保守
+/// `None` 表示答不上来——进程不属于当前用户时，`/proc/<pid>/exe` 读不了，
+/// macOS 上 `ps` 也问不出路径。「答不上来」和「确认不是」得分开：前者只能保守
 /// 处理，后者可以直说。
 fn same_binary(pid: i32, bin: &Path) -> Option<bool> {
-    let exe = std::fs::read_link(format!("/proc/{pid}/exe")).ok()?;
-    Some(exe == bin.canonicalize().ok()?)
+    Some(running_exe(pid)? == bin.canonicalize().ok()?)
+}
+
+/// `pid` 正在跑的可执行文件路径。
+#[cfg(target_os = "linux")]
+fn running_exe(pid: i32) -> Option<PathBuf> {
+    std::fs::read_link(format!("/proc/{pid}/exe")).ok()
+}
+
+/// macOS 没有 `/proc`。`ps -o comm=` 在这儿给的是完整路径（Linux 上只有进程名，
+/// 还会被截到 15 个字符，所以这条路不能两边共用）。
+#[cfg(not(target_os = "linux"))]
+fn running_exe(pid: i32) -> Option<PathBuf> {
+    let out = std::process::Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "comm="])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let line = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    // 进程没了、或者 ps 只给得出进程名（路径里有空格时它照样原样打，但带
+    // 参数的 argv 不会出现在 comm 里），都当答不上来。
+    let p = PathBuf::from(line);
+    p.is_absolute().then(|| p.canonicalize().unwrap_or(p))
 }
 
 // ---------------------------------------------------------------- 安装细节

@@ -100,8 +100,8 @@ fn one(url: &str, timeout: Duration) -> Outcome {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use std::net::TcpListener;
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::{Shutdown, TcpListener, TcpStream};
 
     /// 起一个只会回固定响应的极简 HTTP 服务，返回它的地址。
     ///
@@ -113,15 +113,40 @@ mod tests {
         std::thread::spawn(move || {
             for _ in 0..条数 {
                 let Ok((mut s, _)) = l.accept() else { break };
+                吃掉请求(&s);
                 let _ = s.write_all(响应.as_bytes());
+                let _ = s.flush();
+                // 显式半关闭，让客户端看到一个正常收尾的响应。
+                let _ = s.shutdown(Shutdown::Write);
             }
         });
         format!("http://127.0.0.1:{port}/")
     }
 
+    /// 回响应之前必须先把请求读完。
+    ///
+    /// 收缓冲区里还压着没读的数据时，close() 在 macOS 上发的是 RST 而不是 FIN，
+    /// 连已经写出去的响应一起作废：客户端看到的是「连接被重置」，而不是我们想让
+    /// 它看到的那个状态码。Linux 的回环上同样的写法碰巧能过，于是这类问题只在
+    /// Mac 上现形。
+    fn 吃掉请求(s: &TcpStream) {
+        let mut r = BufReader::new(s);
+        let mut line = String::new();
+        // 读到空行为止——测试里的请求都没有 body。
+        while r.read_line(&mut line).is_ok_and(|n| n > 0) {
+            if line == "\r\n" || line == "\n" {
+                break;
+            }
+            line.clear();
+        }
+    }
+
     #[test]
     fn 二百算可达且量到了时间() {
-        let url = 假服务("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi", 1);
+        let url = 假服务(
+            "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 2\r\n\r\nhi",
+            1,
+        );
         let r = race(&[url], Duration::from_secs(5), 4);
         assert!(matches!(r[0], Outcome::Ok(_)), "实际: {:?}", r[0]);
     }
@@ -131,7 +156,7 @@ mod tests {
         // 镜像站用 301 把 /simple 指到 /simple/ 很常见，判成不可达的话
         // 一个好源会被排到最后。
         let url = 假服务(
-            "HTTP/1.1 301 Moved Permanently\r\nLocation: /x\r\nContent-Length: 0\r\n\r\n",
+            "HTTP/1.1 301 Moved Permanently\r\nConnection: close\r\nLocation: /x\r\nContent-Length: 0\r\n\r\n",
             1,
         );
         let r = race(&[url], Duration::from_secs(5), 4);
@@ -140,7 +165,10 @@ mod tests {
 
     #[test]
     fn 四百零四算不可用并带上状态码() {
-        let url = 假服务("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n", 1);
+        let url = 假服务(
+            "HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+            1,
+        );
         let r = race(&[url], Duration::from_secs(5), 4);
         assert_eq!(r[0], Outcome::Status(404));
         assert_eq!(r[0].describe(), "HTTP 404");
@@ -165,8 +193,14 @@ mod tests {
     fn 结果顺序和输入一一对应() {
         // 并发跑完按完成顺序收结果的话，这里会错位——于是「最快的那个」
         // 配出去的是另一个源的地址。
-        let ok = 假服务("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n", 2);
-        let bad = 假服务("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n", 2);
+        let ok = 假服务(
+            "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+            2,
+        );
+        let bad = 假服务(
+            "HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+            2,
+        );
         let urls = vec![bad.clone(), ok.clone(), bad, ok];
         let r = race(&urls, Duration::from_secs(5), 4);
         assert_eq!(r[0], Outcome::Status(404));
@@ -177,7 +211,10 @@ mod tests {
 
     #[test]
     fn 并发数比地址多也不会卡住() {
-        let url = 假服务("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n", 1);
+        let url = 假服务(
+            "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+            1,
+        );
         let r = race(&[url], Duration::from_secs(5), 32);
         assert_eq!(r.len(), 1);
     }
