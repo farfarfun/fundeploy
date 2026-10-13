@@ -5,7 +5,7 @@
 //! ```text
 //! main.rs / cli.rs            参数解析与分发
 //!   ↓
-//! service / tool / dev / ai   四个域，各自一张注册表
+//! service / tool / source     各域一张注册表；port_kill 这类单条命令直接挂顶层
 //!   ↓
 //! common                      进程、端口、包管理器、下载、版本比较
 //!   ↓
@@ -22,6 +22,7 @@
 
 pub mod cli;
 pub mod common;
+pub mod port_kill;
 pub mod service;
 pub mod source;
 pub mod tool;

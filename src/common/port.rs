@@ -3,7 +3,6 @@
 //! Linux 上监听表直接读 /proc，不依赖 lsof/ss——容器镜像里这两个常常都没装，
 //! 而 `ss` 的输出格式在不同 iproute2 版本间也变过。macOS 没有 /proc，退回 lsof。
 
-use std::collections::HashSet;
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
 
@@ -67,44 +66,95 @@ pub fn wait_for_listener(host: &str, port: u16, timeout: Duration) -> bool {
     }
 }
 
-/// 监听指定端口的进程 PID。查不到返回 None。
+/// 占着某个端口的一个进程。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Holder {
+    pub pid: i32,
+    /// 进程名。读不到时是空串（进程刚退出，或者属于别的用户）。
+    pub comm: String,
+    /// 占的是哪些协议，`tcp` / `udp`，按字母序。
+    pub protos: Vec<&'static str>,
+}
+
+/// 占着 `port` 的所有进程，按 PID 升序。
 ///
-/// 查不到有两种情况，调用方通常不需要区分：没人监听，或者监听者属于别的用户
-/// （非 root 时读不到别人的 /proc/<pid>/fd，`ss -p` 在同样情况下也打不出 pid）。
-pub fn listener_pid(port: u16) -> Option<i32> {
+/// 「占着」只算**监听中**的 TCP 和**已绑定**的 UDP。`lsof -i :8080` 那种匹配法还会
+/// 把本地临时端口恰好是 8080 的出站连接算进来，照它的结果去 kill，杀掉的是一个跟
+/// 这个端口毫无关系的进程。
+///
+/// 同一个端口会有多个进程：`fork` 出来的 worker 继承着同一个监听 fd（gunicorn、
+/// nginx 都是这样），必须全列出来——只停 master，worker 还攥着端口不放。
+///
+/// 非 root 时看不见别的用户的进程（读不到他们的 /proc/<pid>/fd，`ss -p` 同样打不出
+/// pid）。那种情况下这里返回空，但端口是实打实占着的，用 [`is_taken`] 判。
+pub fn holders(port: u16) -> Vec<Holder> {
     #[cfg(target_os = "linux")]
     {
-        linux::listener_pid(port)
+        linux::holders(port)
     }
     #[cfg(not(target_os = "linux"))]
     {
-        lsof::listener_pid(port)
+        lsof::holders(port)
     }
+}
+
+/// 端口上还有没有被占着的 socket——不要求能看出占用者是谁。
+///
+/// 杀完进程之后用它复查：[`holders`] 返回空只说明「我看不见占用者」，
+/// 把这个当成「腾出来了」会在非 root 下报假的成功。
+pub fn is_taken(port: u16) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        // /proc/net/tcp 是全局可读的，别人的监听也在里面。
+        !linux::bound_inodes(port).is_empty()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        !holders(port).is_empty()
+    }
+}
+
+/// 监听指定端口的进程 PID。查不到返回 None。
+///
+/// 多个进程共用一个监听 fd 时给 PID 最小的那个——`fork` 模型下父进程先于子进程
+/// 创建，最小的 PID 通常就是 master，也正是该对它发信号的那个。
+pub fn listener_pid(port: u16) -> Option<i32> {
+    holders(port)
+        .into_iter()
+        .find(|h| h.protos.contains(&"tcp"))
+        .map(|h| h.pid)
 }
 
 #[cfg(target_os = "linux")]
 mod linux {
     use super::*;
+    use std::collections::{BTreeMap, BTreeSet, HashMap};
 
     /// TCP_LISTEN 在 /proc/net/tcp 的 `st` 列里是 0A。
     const TCP_LISTEN: &str = "0A";
 
-    /// 从 /proc/net/tcp 与 /proc/net/tcp6 里收集所有在 `port` 上 LISTEN 的 socket inode。
-    fn listening_inodes(port: u16) -> HashSet<u64> {
-        let mut out = HashSet::new();
-        for path in ["/proc/net/tcp", "/proc/net/tcp6"] {
+    /// 端口上所有被占着的 socket inode，连带它属于哪个协议。
+    pub fn bound_inodes(port: u16) -> HashMap<u64, &'static str> {
+        let mut out = HashMap::new();
+        // UDP 不筛状态：UDP 没有 LISTEN 一说，bind 上了就占着这个端口。
+        for (path, proto, listen_only) in [
+            ("/proc/net/tcp", "tcp", true),
+            ("/proc/net/tcp6", "tcp", true),
+            ("/proc/net/udp", "udp", false),
+            ("/proc/net/udp6", "udp", false),
+        ] {
             let Ok(content) = std::fs::read_to_string(path) else {
                 continue;
             };
             for line in content.lines().skip(1) {
-                // 格式（空格分隔，列数固定）：
+                // 格式（空格分隔，前十列的布局 tcp 与 udp 一致）：
                 //   sl  local_address rem_address st ... uid timeout inode ...
                 //    0: 0100007F:1F90 00000000:0000 0A  ... 1000      0  12345
                 let f: Vec<&str> = line.split_whitespace().collect();
                 if f.len() < 10 {
                     continue;
                 }
-                if f[3] != TCP_LISTEN {
+                if listen_only && f[3] != TCP_LISTEN {
                     continue;
                 }
                 // local_address 是 HEX_IP:HEX_PORT，只取端口。IP 不比对：
@@ -118,22 +168,30 @@ mod linux {
                 if p != port {
                     continue;
                 }
-                if let Ok(inode) = f[9].parse::<u64>() {
-                    out.insert(inode);
+                // inode 0 是没有属主的 socket（TIME_WAIT 之类），既反查不到进程，
+                // 也不该让 is_taken 报出一个谁都腾不掉的占用。
+                match f[9].parse::<u64>() {
+                    Ok(inode) if inode != 0 => {
+                        out.insert(inode, proto);
+                    }
+                    _ => {}
                 }
             }
         }
         out
     }
 
-    pub fn listener_pid(port: u16) -> Option<i32> {
-        let inodes = listening_inodes(port);
+    pub fn holders(port: u16) -> Vec<Holder> {
+        let inodes = bound_inodes(port);
         if inodes.is_empty() {
-            return None;
+            return Vec::new();
         }
 
         // 反查哪个进程持有这些 inode：扫 /proc/<pid>/fd/*，符号链接指向 "socket:[12345]"。
-        let entries = std::fs::read_dir("/proc").ok()?;
+        let Ok(entries) = std::fs::read_dir("/proc") else {
+            return Vec::new();
+        };
+        let mut found: BTreeMap<i32, BTreeSet<&'static str>> = BTreeMap::new();
         for entry in entries.flatten() {
             let name = entry.file_name();
             let Some(name) = name.to_str() else { continue };
@@ -148,46 +206,86 @@ mod linux {
                 let Ok(target) = std::fs::read_link(fd.path()) else {
                     continue;
                 };
-                let Some(t) = target.to_str() else { continue };
-                let Some(rest) = t.strip_prefix("socket:[") else {
+                let Some(inode) = socket_inode(target.to_str().unwrap_or_default()) else {
                     continue;
                 };
-                let Some(num) = rest.strip_suffix(']') else {
-                    continue;
-                };
-                if let Ok(inode) = num.parse::<u64>() {
-                    if inodes.contains(&inode) {
-                        return Some(pid);
-                    }
+                if let Some(proto) = inodes.get(&inode) {
+                    found.entry(pid).or_default().insert(proto);
                 }
             }
         }
-        None
+
+        // BTreeMap / BTreeSet 顺带把顺序定死了：PID 升序、协议字母序。
+        found
+            .into_iter()
+            .map(|(pid, protos)| Holder {
+                pid,
+                comm: comm_of(pid),
+                protos: protos.into_iter().collect(),
+            })
+            .collect()
+    }
+
+    /// `socket:[12345]` → 12345。指向别的东西的 fd 返回 None。
+    fn socket_inode(target: &str) -> Option<u64> {
+        target
+            .strip_prefix("socket:[")?
+            .strip_suffix(']')?
+            .parse()
+            .ok()
+    }
+
+    /// 进程名。读不到就给空串——进程可能正好在这一瞬退出了。
+    fn comm_of(pid: i32) -> String {
+        std::fs::read_to_string(format!("/proc/{pid}/comm"))
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default()
     }
 
     #[cfg(test)]
     mod tests {
         use super::*;
-        use std::net::TcpListener;
+        use crate::common::port::{is_taken, listener_pid};
+        use std::net::{TcpListener, UdpSocket};
+
+        fn 我() -> i32 {
+            unsafe { libc::getpid() }
+        }
+
+        /// 只挑出自己那条。TCP 和 UDP 的端口空间是分开的，同一个端口号上可能还压着
+        /// 别人的 socket，断言整张表的长度会偶发地挂。
+        fn 自己那条(port: u16) -> Holder {
+            holders(port)
+                .into_iter()
+                .find(|h| h.pid == 我())
+                .expect("自己持有的 socket 必须能从 /proc 反查到")
+        }
 
         #[test]
         fn 能查到自己监听的端口对应的_pid() {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let port = listener.local_addr().unwrap().port();
-            let me = unsafe { libc::getpid() };
-
-            assert_eq!(
-                listener_pid(port),
-                Some(me),
-                "自己持有的监听 socket 必须能从 /proc 反查到"
-            );
+            assert_eq!(listener_pid(port), Some(我()));
         }
 
         #[test]
-        fn 收集到的_inode_非空且端口匹配() {
+        fn 占用者带着进程名和协议() {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let port = listener.local_addr().unwrap().port();
-            assert!(!listening_inodes(port).is_empty());
+            let h = 自己那条(port);
+            assert_eq!(h.protos, ["tcp"]);
+            // 进程名是 port-kill 列表里唯一能让人认出「这是什么」的一列，
+            // 空着的话这条命令就只剩一串数字。
+            assert!(!h.comm.is_empty(), "进程名不该是空的");
+        }
+
+        #[test]
+        fn udp_绑着也算占了端口() {
+            let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
+            let port = sock.local_addr().unwrap().port();
+            assert_eq!(自己那条(port).protos, ["udp"]);
+            // UDP 没有「监听」一说，listener_pid 不该把它算进来。
+            assert_ne!(listener_pid(port), Some(我()));
         }
 
         #[test]
@@ -198,27 +296,82 @@ mod linux {
                 l.local_addr().unwrap().port()
             };
             assert_eq!(listener_pid(port), None);
+            assert!(holders(port).is_empty());
+            assert!(!is_taken(port));
+        }
+
+        #[test]
+        fn 占着的端口判得出来() {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            assert!(is_taken(port));
+        }
+
+        #[test]
+        fn 只认_socket_类型的_fd() {
+            assert_eq!(socket_inode("socket:[12345]"), Some(12345));
+            assert_eq!(socket_inode("/dev/null"), None);
+            assert_eq!(socket_inode("anon_inode:[eventpoll]"), None);
+            assert_eq!(socket_inode("socket:[不是数字]"), None);
         }
     }
 }
 
 #[cfg(not(target_os = "linux"))]
 mod lsof {
+    use super::*;
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::process::Command;
+
     /// macOS 没有 /proc，退回 lsof。这是唯一还需要外部命令的平台分支。
-    pub fn listener_pid(port: u16) -> Option<i32> {
-        let out = std::process::Command::new("lsof")
-            .args([&format!("-tiTCP:{port}"), "-sTCP:LISTEN", "-n", "-P"])
+    pub fn holders(port: u16) -> Vec<Holder> {
+        let mut found: BTreeMap<i32, (String, BTreeSet<&'static str>)> = BTreeMap::new();
+        scan(
+            &[format!("-iTCP:{port}"), "-sTCP:LISTEN".to_string()],
+            "tcp",
+            &mut found,
+        );
+        scan(&[format!("-iUDP:{port}")], "udp", &mut found);
+        found
+            .into_iter()
+            .map(|(pid, (comm, protos))| Holder {
+                pid,
+                comm,
+                protos: protos.into_iter().collect(),
+            })
+            .collect()
+    }
+
+    /// `-F pc` 让 lsof 一行输出一个字段：`p<pid>`、`c<进程名>`。
+    ///
+    /// 不用 `-t`（那个只给 pid）：进程名得从这儿拿，列表里没有进程名就只剩一串数字。
+    fn scan(
+        args: &[String],
+        proto: &'static str,
+        out: &mut BTreeMap<i32, (String, BTreeSet<&'static str>)>,
+    ) {
+        // 什么都没匹配到时 lsof 的退出码是 1，不能拿它当失败看，读 stdout 就行。
+        let Ok(o) = Command::new("lsof")
+            .args(["-nP", "-Fpc"])
+            .args(args)
             .output()
-            .ok()?;
-        if !out.status.success() {
-            return None;
+        else {
+            return;
+        };
+        let text = String::from_utf8_lossy(&o.stdout);
+        let mut pid = None;
+        for line in text.lines() {
+            if let Some(v) = line.strip_prefix('p') {
+                pid = v.trim().parse::<i32>().ok();
+                if let Some(p) = pid {
+                    out.entry(p).or_default().1.insert(proto);
+                }
+            } else if let Some(v) = line.strip_prefix('c') {
+                if let Some(p) = pid {
+                    out.entry(p).or_default().0 = v.trim().to_string();
+                }
+            }
         }
-        String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .next()?
-            .trim()
-            .parse()
-            .ok()
     }
 }
 

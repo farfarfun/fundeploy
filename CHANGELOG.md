@@ -134,6 +134,34 @@
   装 brew 卡住的那一步。（HomebrewCN 的做法是把 install.sh 下载下来用 `sed` 把
   里面的 GitHub 地址逐条换掉，上游改一行就断一次。）
 
+- **`fundeploy port-kill <端口>…`：腾端口。** 原 `fundeploy port-kill` 工具，
+  提到顶层命令。
+
+  ```bash
+  fundeploy port-kill --list 8080 8081   # 只看谁占着
+  fundeploy port-kill 8080               # 先 SIGTERM，15 秒不退再 SIGKILL
+  fundeploy port-kill -y 8080            # 不问直接停（或设 FUNDEPLOY_PORT_KILL_YES=1）
+  ```
+
+  跟 Bash 版的几处不同：
+
+  - **占用者不再只报一个。** Bash 版拿 `lsof -ti` 的第一行，而 `fork` 出来的
+    worker 继承着同一个监听 fd——gunicorn、nginx 都是这样，只停 master，worker
+    还攥着端口不放，结果就是「说停好了，端口还是占着」。现在同一个端口上的进程
+    全列出来、全停。
+  - **不再把出站连接算成占用。** `lsof -i :8080` 匹配的是本地**或**远端端口，
+    本机一个临时端口恰好是 8080 的出站连接也会被它算进来；照着那个结果去 kill，
+    杀掉的是一个跟这个端口毫无关系的进程。现在只认监听中的 TCP 和已绑定的 UDP。
+  - **复查的是端口，不是 PID。** 非 root 时读不到别人的 `/proc/<pid>/fd`
+    （`ss -p` 同样打不出 pid），「看不见占用者」会被当成「端口空了」报成功。
+    现在停完之后另查一次端口本身，还占着就明确报出来并提示加 `sudo`。
+  - 自己和 1 号进程进保护名单，跳过并说明原因，不会把 init 或 fundeploy 自身停掉。
+  - 确认那一步走统一的 `ui::confirm_destructive`：无人值守下不给
+    `FUNDEPLOY_PORT_KILL_YES=1` 就直接报错退出，而不是默认同意。
+
+  Linux 上不依赖 `lsof`/`ss`（容器镜像里常常两个都没装），直接读
+  `/proc/net/{tcp,tcp6,udp,udp6}`；macOS 退回 `lsof`。
+
 ### 修复
 
 - `airflow`：端口配置从来没生效过。脚本设的是

@@ -3,6 +3,7 @@
 use anyhow::{bail, Result};
 use clap::{CommandFactory, Parser, Subcommand};
 
+use crate::port_kill;
 use crate::service::{self, Service};
 use crate::source;
 use crate::tool::{self, Tool};
@@ -46,6 +47,18 @@ enum Command {
         name: Option<String>,
         #[command(subcommand)]
         action: Option<SourceAction>,
+    },
+    /// 腾端口：查出谁占着，停掉它
+    PortKill {
+        /// 端口号，可以给多个
+        #[arg(required = true, value_name = "PORT")]
+        ports: Vec<u16>,
+        /// 只看占用情况，不动手
+        #[arg(short, long)]
+        list: bool,
+        /// 不问直接停
+        #[arg(short, long)]
+        yes: bool,
     },
     /// 列出能管的东西
     List,
@@ -280,6 +293,13 @@ pub fn cli_main() -> Result<()> {
         Some(Command::Service { name, action }) => service_cmd(name, action),
         Some(Command::Tool { name, action }) => tool_cmd(name, action),
         Some(Command::Source { name, action }) => source_cmd(name, action),
+        Some(Command::PortKill { ports, list, yes }) => {
+            if list {
+                port_kill::list(&ports)
+            } else {
+                port_kill::kill(&ports, yes)
+            }
+        }
         None => no_args(),
     }
 }
@@ -360,9 +380,10 @@ fn no_args() -> Result<()> {
         return Ok(());
     }
     let domains = [
-        "service  服务（装、起、停、查）".to_string(),
-        "tool     工具（装、升、卸、查）".to_string(),
-        "source   换源（pip、npm、brew、cargo、go）".to_string(),
+        "service    服务（装、起、停、查）".to_string(),
+        "tool       工具（装、升、卸、查）".to_string(),
+        "source     换源（pip、npm、brew、cargo、go）".to_string(),
+        "port-kill  腾端口（查出谁占着，停掉它）".to_string(),
     ];
     let picked = ui::select("要管什么", &domains)?.ok_or_else(|| anyhow::anyhow!("已取消。"))?;
     match picked.split_whitespace().next().unwrap_or("") {
@@ -378,6 +399,10 @@ fn no_args() -> Result<()> {
             })?;
             let action = pick_source_action()?;
             source_cmd(Some(s.name().to_string()), Some(action))
+        }
+        "port-kill" => {
+            let line = ui::input("端口号（多个用空格隔开）", "")?;
+            port_kill::kill(&port_kill::parse_ports(&line)?, false)
         }
         _ => {
             let t = pick_one(tool::registry::all(), "选一个工具", |t| {
@@ -740,6 +765,27 @@ mod tests {
         std::env::set_var("NONINTERACTIVE", "1");
         no_args().unwrap();
         std::env::remove_var("NONINTERACTIVE");
+    }
+
+    #[test]
+    fn 解析腾端口() {
+        let cli = Cli::try_parse_from(["fundeploy", "port-kill", "8080", "8081", "-y"]).unwrap();
+        match cli.command {
+            Some(Command::PortKill { ports, list, yes }) => {
+                assert_eq!(ports, [8080, 8081]);
+                assert!(!list);
+                assert!(yes);
+            }
+            _ => panic!("解析成了别的命令"),
+        }
+    }
+
+    #[test]
+    fn 腾端口必须给端口号() {
+        // 不给端口就执行等于「停掉所有端口上的进程」，必须在解析阶段挡住。
+        assert!(Cli::try_parse_from(["fundeploy", "port-kill"]).is_err());
+        // 端口号超出 u16 也该在这儿被拒，而不是跑起来再说。
+        assert!(Cli::try_parse_from(["fundeploy", "port-kill", "70000"]).is_err());
     }
 
     #[test]
