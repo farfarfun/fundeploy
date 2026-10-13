@@ -31,8 +31,17 @@ curl -fsSL https://raw.githubusercontent.com/farfarfun/fundeploy/HEAD/install.sh
 ### Homebrew
 
 ```bash
-brew install farfarfun/tap/fundeploy
+brew tap farfarfun/packages https://github.com/farfarfun/packages
+brew trust farfarfun/packages
+brew install fundeploy
 ```
+
+`tap` 那行要带 URL：`brew tap a/b` 默认去找 `github.com/a/homebrew-b`，而这个仓库还
+兼着 apt 源。`trust` 那行也不能省：Homebrew 6.0 起第三方 tap 默认不可信，不信任的话
+装会被拒。两步都只做一次。
+
+旧的 `farfarfun/tap` 冻在 0.3.1 不再更新，装过的 `brew untap farfarfun/tap` 之后照上面
+重来一次。
 
 ### APT
 

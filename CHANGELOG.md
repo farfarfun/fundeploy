@@ -36,9 +36,32 @@
   ```
 
   旧的 `farfarfun.github.io/fundeploy` 源不再更新，但会留一段时间，不会突然 404。
-  Homebrew 那边用户无需改动（`brew tap` 的仓库名是 brew 的硬约定，`farfarfun/tap`
-  本来就已经是一个源管所有包），只是 formula 改由 `farfarfun/packages` 按同一张
-  清单生成。本仓库的 `packaging/` 相应只剩 `build-deb.sh`。
+
+- **Homebrew tap 也搬到同一个仓库，要重新 tap 一次。** `farfarfun/packages` 现在
+  既是 apt 源也是 brew tap，apt 和 formula 由同一张 `packages.toml` 生成：
+
+  ```bash
+  brew untap farfarfun/tap
+  brew tap farfarfun/packages https://github.com/farfarfun/packages
+  brew trust farfarfun/packages
+  brew install fundeploy
+  ```
+
+  `tap` 那行得带 URL：`brew tap a/b` 只认 `github.com/a/homebrew-b` 这个约定，而这
+  个仓库同时是 apt 源，叫 `homebrew-packages` 的话 apt 地址里会凭空多出几个字。
+
+  `trust` 那行是 Homebrew 6.0 起的新要求：第三方 tap 默认不可信，不信任的话
+  `brew install fundeploy` 直接被拒（`Refusing to load formula ... from untrusted
+  tap`）。写全名 `brew install farfarfun/packages/fundeploy` 能装是因为它顺带只信任
+  了那一个 formula，所以这个坑很容易被误读成「裸名字不好使」。两步都只做一次，之后
+  装卸升级和普通 tap 没区别。
+
+  自动迁移在这儿做不到：`tap_migrations.json` 解析目标 tap 时用的还是上面那条
+  `homebrew-*` 约定，会去找不存在的 `farfarfun/homebrew-packages`。所以旧
+  `farfarfun/tap` 的 formula 留在原地冻住（删了的话老用户 `brew update` 之后会
+  直接「找不到这个包」），挂 `deprecate!` 提示换源。
+
+- 本仓库的 `packaging/` 相应只剩 `build-deb.sh`。
 
 ## [0.3.0] - 2026-10-13
 
