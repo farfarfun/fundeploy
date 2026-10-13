@@ -22,6 +22,7 @@
 
 pub mod cli;
 pub mod common;
+pub mod doctor;
 pub mod port_kill;
 pub mod service;
 pub mod source;

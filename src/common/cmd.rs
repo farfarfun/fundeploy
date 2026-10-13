@@ -10,7 +10,9 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use std::ffi::OsStr;
+use std::io::Read;
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 /// 一次外部命令的结果。
 #[derive(Debug, Clone)]
@@ -181,6 +183,86 @@ where
     })
 }
 
+/// 同 [`try_run`]，但最多等 `timeout`。超时返回 `Ok(None)`，并把进程杀掉。
+///
+/// 探测类的调用必须有这个上限。`git ls-remote` 没有连接超时可配，碰上把包默默
+/// 丢掉而不是拒绝的防火墙（屏蔽端口最常见的做法）就只能耗在内核的 TCP 重传上，
+/// 两分钟起步——而一条诊断命令卡两分钟，表现跟它要诊断的毛病一模一样。
+pub fn try_run_timeout<I, S>(args: I, timeout: Duration) -> Result<Option<Output>>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    try_run_timeout_with(args, &[], timeout)
+}
+
+/// 同 [`try_run_timeout`]，但带环境改动。
+pub fn try_run_timeout_with<I, S>(
+    args: I,
+    env: &[EnvEdit],
+    timeout: Duration,
+) -> Result<Option<Output>>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let argv = to_argv(args);
+    let (prog, rest) = argv
+        .split_first()
+        .ok_or_else(|| anyhow!("try_run_timeout() 收到空命令"))?;
+
+    let mut c = Command::new(prog);
+    c.args(rest)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    apply_env(&mut c, env);
+    let mut child = c
+        .spawn()
+        .with_context(|| format!("起不了进程: {}", render(&argv)))?;
+
+    // 两根管子各派一个线程抽干。留在主线程边轮询边读的话，输出一超过管道缓冲区
+    // （64 KB）子进程就卡在 write 上不退出，而我们正等着它退出。
+    let out = drain(child.stdout.take());
+    let err = drain(child.stderr.take());
+
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(st) = child
+            .try_wait()
+            .with_context(|| format!("等不到结果: {}", render(&argv)))?
+        {
+            return Ok(Some(Output {
+                code: st.code(),
+                stdout: out.join().unwrap_or_default(),
+                stderr: err.join().unwrap_or_default(),
+            }));
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            // 不去 join 那两个线程：被杀的进程若留下了还攥着管道写端的孙子进程，
+            // 读会一直阻塞，而超时这条路本来就不要输出。
+            return Ok(None);
+        }
+        std::thread::sleep(POLL);
+    }
+}
+
+/// 轮询子进程是否退出的间隔。探测命令都是秒级的，这个精度足够，开销可以忽略。
+const POLL: Duration = Duration::from_millis(20);
+
+/// 在后台把一根管子读干，返回取内容的句柄。
+fn drain(pipe: Option<impl Read + Send + 'static>) -> std::thread::JoinHandle<String> {
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut p) = pipe {
+            let _ = p.read_to_end(&mut buf);
+        }
+        String::from_utf8_lossy(&buf).into_owned()
+    })
+}
+
 /// 跑一个命令并取回 stdout（已 trim）。退出码非 0 即报错，错误里带上 stderr。
 pub fn capture<I, S>(args: I) -> Result<String>
 where
@@ -321,5 +403,46 @@ mod tests {
     fn 空命令不会_panic() {
         assert!(run(Vec::<String>::new()).is_err());
         assert!(try_run(Vec::<String>::new()).is_err());
+        assert!(try_run_timeout(Vec::<String>::new(), Duration::from_secs(1)).is_err());
+    }
+
+    #[test]
+    fn 超时的命令被杀掉并返回_none() {
+        let t = Instant::now();
+        let out = try_run_timeout(["sleep", "30"], Duration::from_millis(300)).unwrap();
+        assert!(out.is_none());
+        // 必须是超时那一刻就回来，而不是等 sleep 自己跑完。
+        assert!(
+            t.elapsed() < Duration::from_secs(5),
+            "实际等了 {:?}",
+            t.elapsed()
+        );
+    }
+
+    #[test]
+    fn 没超时的命令照常拿到输出和退出码() {
+        let out = try_run_timeout(
+            ["sh", "-c", "echo hi; echo bad >&2; exit 4"],
+            Duration::from_secs(10),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(out.code, Some(4));
+        assert_eq!(out.stdout.trim(), "hi");
+        assert_eq!(out.stderr.trim(), "bad");
+    }
+
+    #[test]
+    fn 输出撑爆管道缓冲区也不会卡死() {
+        // 这条守的是「另开线程抽管子」那个决定：输出超过 64 KB 时，若主线程
+        // 只轮询不读，子进程会阻塞在 write 上，双方互等，超时之前谁也回不来。
+        let out = try_run_timeout(
+            ["sh", "-c", "yes 0123456789abcdef | head -n 40000"],
+            Duration::from_secs(20),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(out.success());
+        assert_eq!(out.stdout.len(), 40000 * 17);
     }
 }

@@ -162,8 +162,50 @@
   Linux 上不依赖 `lsof`/`ss`（容器镜像里常常两个都没装），直接读
   `/proc/net/{tcp,tcp6,udp,udp6}`；macOS 退回 `lsof`。
 
+- **`fundeploy doctor github`：GitHub 连不上的诊断与修复。** 原
+  `fundeploy github-net`，进 `doctor` 域。
+
+  ```bash
+  fundeploy doctor github                  # 只诊断，不改任何配置
+  fundeploy doctor github --fix            # 按诊断结果自动挑一条改过去
+  fundeploy doctor github --fix ssh443     # 指定通道（ssh22 / ssh443 / https）
+  fundeploy doctor github --undo           # 撤掉写进 git / ssh 的东西
+  ```
+
+  跟 Bash 版的几处不同：
+
+  - **结论从两档变成四档。** Bash 版每条通道只报「通/不通」，于是「22 端口被
+    防火墙丢包」和「SSH key 还没传到 GitHub」长得一模一样——而后者换到哪条通道
+    都一样不行。现在分成「通」「端口通但缺 key」「端口通但本机没有它的主机
+    密钥」「不通」，后两种各给各的下一步。
+  - **`--fix` 换通道时会把上一条的规则清掉。** 见下面「修复」。
+  - **不再写 `IdentitiesOnly yes`。** Bash 版往 `~/.ssh/config` 里写的 443 区块
+    带这一行，而区块里并没有配套的 `IdentityFile`：ssh 于是只认配置里点名的
+    密钥，把 ssh-agent 里的全部忽略掉。用 1Password / YubiKey 托管密钥的人一改
+    完就变成 `Permission denied (publickey)`，且看不出跟这条命令有关。
+  - **主机密钥不再现场抓。** Bash 版 `ssh-keyscan` 抓一份、算指纹、跟写死的值
+    比对、相符才写。现在直接写死那把公钥本身（`github.com:22` 和
+    `ssh.github.com:443` 用的是同一把）——比对指纹和比对公钥是同一件事，而少一次
+    联网就少一个「这条命令只在网络有问题时才跑」的自相矛盾。已经记着另一把
+    密钥时不覆盖，只提示 `ssh-keygen -R`。
+  - **`--undo` 真的会撤销。** Bash 版的 `uninstall` 只是把手工步骤打印出来。
+  - **三条通道并行探，整条命令 12 秒封顶。** Bash 版串行跑，三条都卡住就是
+    三倍等待；`git ls-remote` 还没有连接超时可配，碰上丢包型防火墙能耗两分钟。
+
 ### 修复
 
+- `doctor github`（原 `github-net`）：换通道从来没换干净过。`git config
+  <键> <值>` 对多值键是**替换**而不是追加，而 `url.<base>.insteadOf` 正是多值
+  键——Bash 版连写两条，第二条把第一条顶掉了。后果是 `fix_https` 实际没有改写
+  `git@github.com:`（恰恰是它让人改用的那种写法），`fix_ssh22` 实际没有改写
+  `https://github.com/`（恰恰是这个修复存在的理由）。另外每条 fix 只写自己的
+  规则、不清别人的，于是从 SSH 换回 HTTPS 之后两套规则同时在，谁生效取决于 git
+  匹配到哪条前缀更长。现在写规则一律用 `--add`，写之前先把 fundeploy 管的两个
+  base 底下的规则全清掉。
+- `doctor github --fix ssh22`（原 `fix_ssh22`）：不会再被上一次的 443 配置架空。
+  Bash 版从不删 `~/.ssh/config` 里那个把 `github.com` 指向 `ssh.github.com:443`
+  的区块，于是先 `fix_ssh443` 再 `fix_ssh22`，所有 ssh 流量还是走 443——改了等于
+  没改，而两处配置看起来都是对的。
 - `airflow`：端口配置从来没生效过。脚本设的是
   `AIRFLOW__WEBSERVER__WEB_SERVER_PORT`，而 Airflow 3 整个没有 `[webserver]` 这个
   配置段——API server 读的是 `[api]`。于是 Airflow 一直听在它自己的默认 8080 上，

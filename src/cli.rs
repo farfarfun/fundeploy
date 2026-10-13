@@ -3,6 +3,7 @@
 use anyhow::{bail, Result};
 use clap::{CommandFactory, Parser, Subcommand};
 
+use crate::doctor;
 use crate::port_kill;
 use crate::service::{self, Service};
 use crate::source;
@@ -60,8 +61,26 @@ enum Command {
         #[arg(short, long)]
         yes: bool,
     },
+    /// 诊断：网页打得开、命令行却不动的那类问题
+    Doctor {
+        #[command(subcommand)]
+        what: DoctorWhat,
+    },
     /// 列出能管的东西
     List,
+}
+
+#[derive(Subcommand)]
+enum DoctorWhat {
+    /// GitHub 连不上 / clone 卡住
+    Github {
+        /// 改到某条通道上；只给 --fix 不给通道名就按诊断结果自动挑
+        #[arg(long, value_enum, value_name = "通道", num_args = 0..=1, default_missing_value = "auto")]
+        fix: Option<doctor::github::Fix>,
+        /// 撤掉 fundeploy 写进 git / ssh 配置里的东西
+        #[arg(long, conflicts_with = "fix")]
+        undo: bool,
+    },
 }
 
 #[derive(Subcommand, Clone)]
@@ -300,6 +319,15 @@ pub fn cli_main() -> Result<()> {
                 port_kill::kill(&ports, yes)
             }
         }
+        Some(Command::Doctor { what }) => match what {
+            DoctorWhat::Github { fix, undo } => match (fix, undo) {
+                (_, true) => doctor::github::undo(),
+                (Some(f), _) => doctor::github::fix(f),
+                // 不带动作时只诊断，不改配置：这条命令多半是在「出了问题想看看」
+                // 的时候跑的，默认就动别人的 git 配置太横了。
+                _ => doctor::github::diagnose(),
+            },
+        },
         None => no_args(),
     }
 }
@@ -384,6 +412,7 @@ fn no_args() -> Result<()> {
         "tool       工具（装、升、卸、查）".to_string(),
         "source     换源（pip、npm、brew、cargo、go）".to_string(),
         "port-kill  腾端口（查出谁占着，停掉它）".to_string(),
+        "doctor     诊断（GitHub 连不上）".to_string(),
     ];
     let picked = ui::select("要管什么", &domains)?.ok_or_else(|| anyhow::anyhow!("已取消。"))?;
     match picked.split_whitespace().next().unwrap_or("") {
@@ -404,6 +433,7 @@ fn no_args() -> Result<()> {
             let line = ui::input("端口号（多个用空格隔开）", "")?;
             port_kill::kill(&port_kill::parse_ports(&line)?, false)
         }
+        "doctor" => doctor::github::diagnose(),
         _ => {
             let t = pick_one(tool::registry::all(), "选一个工具", |t| {
                 (t.name().to_string(), t.summary().to_string())
