@@ -110,7 +110,14 @@ jobs:
       # 校验和清单最后生成：它要覆盖上面所有的附件，提前算就漏掉 .deb。
       - name: 生成 SHA256SUMS
         working-directory: dist
-        run: sha256sum ./* | sed 's# \./# #' >SHA256SUMS
+        # 必须是块标量：单行 run 是 YAML 的普通标量，空格后的 # 会被当成注释，
+        # 命令被从那里截断——sed 的分隔符刚好是 #，于是整行只剩半个引号。
+        #
+        # 用 ./* 而不是 *：文件名以 - 开头时后者会被 sha256sum 当成选项。多出来
+        # 的 ./ 前缀要去掉，install.sh 和 Homebrew formula 都是按裸文件名查的。
+        run: |
+          sha256sum ./* | sed 's|\./||' >SHA256SUMS
+          cat SHA256SUMS
 
       - name: 生成 Homebrew formula
         env:
