@@ -93,6 +93,37 @@ pub fn blank() {
     println!();
 }
 
+/// 按终端显示宽度右补空格，用来排表格的列。
+///
+/// `format!("{:<12}")` 补的是**字符数**，而终端里一个汉字占两列。中英混排的表
+/// 格用它排出来是歪的——「清华大学」和 `aliyun` 都算 4 和 6 个字符，实际却是
+/// 8 列和 6 列。
+pub fn pad(s: &str, width: usize) -> String {
+    let used = s.chars().map(char_cols).sum::<usize>();
+    format!("{s}{}", " ".repeat(width.saturating_sub(used)))
+}
+
+/// 一个字符在终端里占几列。
+///
+/// 只认「东亚宽字符」这几段——中日韩文字、全角标点、常见符号。这里不引
+/// unicode-width：要排的只有中文标签，为它多一个依赖不划算。
+fn char_cols(c: char) -> usize {
+    match c as u32 {
+        0x1100..=0x115F        // 朝鲜语字母
+        | 0x2E80..=0x303E      // 部首、中日韩符号
+        | 0x3041..=0x33FF      // 假名、注音、兼容字符
+        | 0x3400..=0x4DBF      // 扩展 A 区汉字
+        | 0x4E00..=0x9FFF      // 基本汉字
+        | 0xA000..=0xA4CF      // 彝文
+        | 0xAC00..=0xD7A3      // 朝鲜语音节
+        | 0xF900..=0xFAFF      // 兼容汉字
+        | 0xFE30..=0xFE6F      // 竖排标点
+        | 0xFF00..=0xFF60      // 全角字母数字标点
+        | 0xFFE0..=0xFFE6 => 2,
+        _ => 1,
+    }
+}
+
 /// `键: 值` 一行，值为 None 时打「未安装」。
 pub fn kv(key: impl AsRef<str>, value: Option<&str>) {
     match value {
@@ -166,6 +197,17 @@ pub fn select<'a>(prompt: &str, options: &'a [String]) -> Result<Option<&'a Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn 补齐按显示宽度算而不是字符数() {
+        // 「清华大学」占 8 列，补到 12 列只该加 4 个空格；按字符数算会加 8 个，
+        // 表格就歪了。
+        assert_eq!(pad("清华大学", 12).len() - "清华大学".len(), 4);
+        assert_eq!(pad("aliyun", 12), "aliyun      ");
+        assert_eq!(pad("官方", 4), "官方");
+        // 超出宽度时不截断也不 panic。
+        assert_eq!(pad("非常非常长的名字", 4), "非常非常长的名字");
+    }
 
     #[test]
     fn 环境变量的真值形式都认() {

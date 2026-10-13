@@ -13,6 +13,7 @@ use super::{uninstall_env_var, Tool};
 use crate::common::cmd::{self, EnvEdit};
 use crate::common::fs::Scratch;
 use crate::common::{download, env};
+use crate::source::brew as source_brew;
 use crate::ui;
 
 const DEFAULT_INSTALL_URL: &str =
@@ -96,7 +97,16 @@ impl Tool for Brew {
             return Ok(());
         }
 
-        self.run_official(&self.install_url, &[], &[])?;
+        // 官方安装器自 2022 年起就认 HOMEBREW_*_GIT_REMOTE / *_DOMAIN，所以配过源
+        // 的机器第一次装就能走镜像。不带的话，它会去 GitHub 克隆几百 MB 的 brew
+        // 仓库——这正是国内装 brew 卡住的那一步。
+        let env = source_brew::install_env();
+        if !env.is_empty() {
+            ui::info("走已配好的 brew 镜像安装。");
+        } else {
+            ui::hint("直连 GitHub 可能很慢。先 fundeploy source brew use 换个源再装会快很多。");
+        }
+        self.run_official(&self.install_url, &[], &env)?;
 
         let Some(brew) = self.find() else {
             bail!(

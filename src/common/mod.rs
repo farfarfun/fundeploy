@@ -2,11 +2,13 @@
 
 pub mod archive;
 pub mod asset;
+pub mod block;
 pub mod cmd;
 pub mod download;
 pub mod env;
 pub mod fs;
 pub mod github;
+pub mod ini;
 pub mod npm;
 pub mod pip;
 pub mod platform;

@@ -23,6 +23,7 @@
 pub mod cli;
 pub mod common;
 pub mod service;
+pub mod source;
 pub mod tool;
 pub mod ui;
 

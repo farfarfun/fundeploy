@@ -4,6 +4,7 @@ use anyhow::{bail, Result};
 use clap::{CommandFactory, Parser, Subcommand};
 
 use crate::service::{self, Service};
+use crate::source;
 use crate::tool::{self, Tool};
 use crate::ui;
 use crate::Extra;
@@ -38,8 +39,49 @@ enum Command {
         #[command(subcommand)]
         action: Option<ToolAction>,
     },
+    /// 换源（pip / npm / brew / cargo / go）
+    #[command(visible_alias = "src")]
+    Source {
+        /// 哪个工具。不给就看全部的当前状态。
+        name: Option<String>,
+        #[command(subcommand)]
+        action: Option<SourceAction>,
+    },
     /// 列出能管的东西
     List,
+}
+
+#[derive(Subcommand, Clone)]
+enum SourceAction {
+    /// 列出可用的源
+    #[command(visible_alias = "ls")]
+    List,
+    /// 看当前配的是哪个
+    Status,
+    /// 测所有源的延迟
+    Test,
+    /// 换源。不给名字就自动选最快的那个。
+    Use {
+        /// 源名，或者直接给一个 http(s) 地址
+        mirror: Option<String>,
+    },
+    /// 恢复官方源
+    Reset,
+    /// 添一个自己的源
+    Add {
+        /// 短名，以后用它点名
+        name: String,
+        /// 地址
+        url: String,
+        /// 备注，列表里显示
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// 删掉自己添的源
+    Rm {
+        /// 短名
+        name: String,
+    },
 }
 
 #[derive(Subcommand, Clone)]
@@ -237,8 +279,74 @@ pub fn cli_main() -> Result<()> {
         }
         Some(Command::Service { name, action }) => service_cmd(name, action),
         Some(Command::Tool { name, action }) => tool_cmd(name, action),
+        Some(Command::Source { name, action }) => source_cmd(name, action),
         None => no_args(),
     }
+}
+
+fn source_cmd(name: Option<String>, action: Option<SourceAction>) -> Result<()> {
+    let Some(name) = name else {
+        // 不点名就把五个的现状一次报全：人想知道的通常是「我这台机器配了什么」，
+        // 而不是「有哪些能配」。
+        for s in source::registry::all() {
+            s.status()?;
+            ui::blank();
+        }
+        ui::hint("换源: fundeploy source <pip|npm|brew|cargo|go> use [源名]");
+        return Ok(());
+    };
+
+    let s = source::registry::find(&name)?;
+    let action = match action {
+        Some(a) => a,
+        None if ui::interactive() => pick_source_action()?,
+        // 无人值守下默认看状态，而不是默默换源——换源会动配置文件。
+        None => SourceAction::Status,
+    };
+
+    match action {
+        SourceAction::List => s.list(),
+        SourceAction::Status => s.status(),
+        SourceAction::Test => s.test(),
+        SourceAction::Use { mirror } => s.switch(mirror.as_deref()),
+        SourceAction::Reset => s.reset(),
+        SourceAction::Add { name, url, label } => {
+            source::store::add(s.name(), &name, &url, label.as_deref())?;
+            ui::ok(format!("已添加 {name} -> {url}"));
+            ui::hint(format!("换过去: fundeploy source {} use {name}", s.name()));
+            Ok(())
+        }
+        SourceAction::Rm { name } => {
+            if source::store::remove(s.name(), &name)? {
+                ui::ok(format!("已删除 {name}"));
+            } else {
+                // 内置源删不掉，但说「没有这个源」会让人以为是打错了名字。
+                ui::warn(format!(
+                    "{} 里没有你自己添的 {name}（内置源删不掉）。",
+                    s.name()
+                ));
+            }
+            Ok(())
+        }
+    }
+}
+
+fn pick_source_action() -> Result<SourceAction> {
+    let menu = [
+        "status  看当前配的是哪个".to_string(),
+        "list    列出可用的源".to_string(),
+        "test    测所有源的延迟".to_string(),
+        "use     自动换到最快的".to_string(),
+        "reset   恢复官方源".to_string(),
+    ];
+    let picked = ui::select("要做什么", &menu)?.ok_or_else(|| anyhow::anyhow!("已取消。"))?;
+    Ok(match picked.split_whitespace().next().unwrap_or("status") {
+        "list" => SourceAction::List,
+        "test" => SourceAction::Test,
+        "use" => SourceAction::Use { mirror: None },
+        "reset" => SourceAction::Reset,
+        _ => SourceAction::Status,
+    })
 }
 
 /// 不带任何参数时。
@@ -254,18 +362,29 @@ fn no_args() -> Result<()> {
     let domains = [
         "service  服务（装、起、停、查）".to_string(),
         "tool     工具（装、升、卸、查）".to_string(),
+        "source   换源（pip、npm、brew、cargo、go）".to_string(),
     ];
     let picked = ui::select("要管什么", &domains)?.ok_or_else(|| anyhow::anyhow!("已取消。"))?;
-    if picked.starts_with("service") {
-        let svc = pick_one(service::registry::all(), "选一个服务", |s| {
-            (s.name().to_string(), s.summary().to_string())
-        })?;
-        pick_and_run(svc.as_ref())
-    } else {
-        let t = pick_one(tool::registry::all(), "选一个工具", |t| {
-            (t.name().to_string(), t.summary().to_string())
-        })?;
-        pick_and_run_tool(t.as_ref())
+    match picked.split_whitespace().next().unwrap_or("") {
+        "service" => {
+            let svc = pick_one(service::registry::all(), "选一个服务", |s| {
+                (s.name().to_string(), s.summary().to_string())
+            })?;
+            pick_and_run(svc.as_ref())
+        }
+        "source" => {
+            let s = pick_one(source::registry::all(), "给哪个换源", |s| {
+                (s.name().to_string(), s.summary().to_string())
+            })?;
+            let action = pick_source_action()?;
+            source_cmd(Some(s.name().to_string()), Some(action))
+        }
+        _ => {
+            let t = pick_one(tool::registry::all(), "选一个工具", |t| {
+                (t.name().to_string(), t.summary().to_string())
+            })?;
+            pick_and_run_tool(t.as_ref())
+        }
     }
 }
 
@@ -284,6 +403,11 @@ fn list_all() {
     ui::heading("工具");
     for t in tool::registry::all() {
         println!("  {:<14} {}", t.name(), t.summary());
+    }
+    ui::blank();
+    ui::heading("可换源");
+    for s in source::registry::all() {
+        println!("  {:<14} {}", s.name(), s.summary());
     }
 }
 

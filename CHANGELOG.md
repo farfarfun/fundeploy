@@ -63,6 +63,77 @@
 - `cockpit-tools install` 现在校验下载下来的 AppImage：上游的清单叫
   `SHA256SUMS.txt`，而此前只认 `checksums.txt` 这一个名字，于是校验一直被跳过。
 
+- **`fundeploy source`：换源域。** 五个包管理器一套命令：
+
+  ```
+  fundeploy source                        # 五个的当前状态一次看全
+  fundeploy source pip list               # 有哪些源
+  fundeploy source pip test               # 并发测延迟，快的在前
+  fundeploy source pip use                # 不给名字＝自动换到实测最快的
+  fundeploy source pip use tuna           # 点名
+  fundeploy source pip use https://内网/simple/   # 直接给地址
+  fundeploy source pip add corp https://nexus.corp/simple/ --label 公司源
+  fundeploy source pip rm corp
+  fundeploy source pip reset              # 恢复官方源
+  ```
+
+  覆盖 `pip`（pip/uv/poetry/pdm 共用的 `pip.conf`）、`npm`（`.npmrc`，
+  pnpm/yarn/bun 共用）、`brew`、`cargo`（`sparse+` 索引）、`go`
+  （`GOPROXY`+`GOSUMDB`）。自己加的源存在
+  `~/.config/fundeploy/sources.toml`，同名时盖掉内置的——镜像站改了路径不必
+  等 fundeploy 发版。`FUNDEPLOY_SOURCE_PROBE_TIMEOUT`（秒，默认 5）和
+  `FUNDEPLOY_SOURCE_PROBE_JOBS`（默认 8）调测速行为。
+
+  几处跟社区常见做法不同、但都是踩过的坑：
+
+  - **brew 换的是三个变量，不是一个。** 网上绝大多数教程只给
+    `HOMEBREW_BOTTLE_DOMAIN`，那只管二进制包下载；配方元数据走
+    `HOMEBREW_API_DOMAIN`，brew 自身更新走 `HOMEBREW_BREW_GIT_REMOTE`。
+    少换一条的症状就是「我明明换了源，`brew install` 开头还是卡住」。
+  - **go 同时写 `GOSUMDB`。** `sum.golang.org` 在国内不通，而它不走 GOPROXY。
+    只换 GOPROXY 的表现是下载飞快、然后卡在
+    `verifying module: … dial tcp: i/o timeout`，看起来像代理没生效。
+  - **写进别人的配置文件时用带首尾标记的区块**（`# >>> fundeploy … >>>`），
+    改是整段替换，删只删自己那段。社区脚本惯用的「追加 export + 按关键字
+    `sed -i /关键字/d`」换三次源就留三份互相覆盖的 export，而按关键字删行会
+    连带删掉任何恰好提到那个词的行（包括注释和别人的配置）。
+  - **改 pip.conf / `.npmrc` / go env 是按行改**，不是整份解析再写回——后者
+    语义等价但人写的注释、分节顺序全没了。
+  - **cargo 发现 `~/.cargo/config.toml` 里已经有 `[source.crates-io]` 就报错
+    停下**，不硬写。TOML 不允许同名表出现两次，写进去的后果是 cargo 连
+    `--version` 都跑不起来。
+  - **brew 只写当前用户的 shell 配置**（zsh → `~/.zprofile`，bash →
+    `~/.bash_profile` 或 `~/.profile`），不碰 `/etc/profile`。
+  - **测速量的是首字节时间**，不下完整个文件——brew 的 `formula.jws.json` 有
+    34 MB，真下一遍会把「测速」变成「下载」。量的也不是站点首页，而是各
+    协议里必定存在的小入口（PyPI 的 `setuptools/` 索引页、npm 的 `npm` 包
+    元数据、cargo 的 `config.json`、go 的 `@v/list`），否则量到的是「404 回得
+    有多快」。
+
+  内置的 30 多个镜像地址都在加进来之前实测过，顺手剔掉了三个 HomebrewCN /
+  旧教程里仍在流传但实际已经不能用的：上海交大的 Homebrew 镜像（全部路径
+  404）、豆瓣的 PyPI 源（已下线）、中科大的 `homebrew-core.git`（Homebrew 4.0
+  起默认走 API 不再克隆这个仓库，站点已下线；所以 `HOMEBREW_CORE_GIT_REMOTE`
+  是**可选**项，只有手动 tap 过的人才用得上）。
+
+  阿里内网的 `http://yum.tbsite.net/pypi/simple` 和
+  `http://pypi.antfin-inc.com/simple` 没有收进内置表——它们只有明文 HTTP，
+  在公网也无法验证。需要的话自己加：
+
+  ```
+  fundeploy source pip add tbsite http://yum.tbsite.net/pypi/simple --label 阿里内网
+  fundeploy source pip add antfin http://pypi.antfin-inc.com/simple --label 蚂蚁内网
+  ```
+
+  换到明文 HTTP 源时会警告一次，并自动补上 pip 要求的 `trusted-host`；换回
+  https 源时那行会被清掉（留着等于对那台主机永久关掉校验）。
+
+- `fundeploy tool brew install` 会带上已配好的 brew 镜像再跑官方安装器。官方
+  `install.sh` 自 2022 年起就认 `HOMEBREW_BREW_GIT_REMOTE` 这组变量，所以第一次
+  装就能走镜像——没配过的话它会去 GitHub 克隆几百 MB 的 brew 仓库，这正是国内
+  装 brew 卡住的那一步。（HomebrewCN 的做法是把 install.sh 下载下来用 `sed` 把
+  里面的 GitHub 地址逐条换掉，上游改一行就断一次。）
+
 ### 修复
 
 - `airflow`：端口配置从来没生效过。脚本设的是
