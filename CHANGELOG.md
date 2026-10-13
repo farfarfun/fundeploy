@@ -89,6 +89,29 @@
 - `nodejs` 不再接受 `NODE_VERSION` 指定版本，改用通用的 `--version`。
   `NODE_VERSION` 是 Node 生态里被 nvm、CI 镜像、Dockerfile 共用的名字，
   在这里额外赋一层意思只会让人在已经设了它的机器上装到意料之外的版本。
+- `ai`（原 `ai-cli`）的装法从位置参数改成选项：`fundeploy ai claude pnpm install`
+  → **`fundeploy ai claude install --method pnpm`**。位置参数那种写法要靠「第一个
+  词是不是已知装法」来猜它到底是装法还是动作，猜错时报的话也是错的（见下面
+  「修复」）。
+- `ai` 的动作别名收敛成一个名字：`update`/`upgrade` → `upgrade`，
+  `remove`/`uninstall` → `uninstall`，`version`/`status` → `status`。
+- `ai list` 没了。`fundeploy ai` 不带参数现在直接列三样工具的状态（装没装、
+  装在哪儿、哪个版本、有哪些装法可走），比一串光秃秃的名字有用。
+- `ai` 的环境变量分两类，各按归属命名：
+
+  | 原名 | 现名 | 谁读它 |
+  |---|---|---|
+  | `CLAUDE_INSTALL_URL` | `FUNDEPLOY_CLAUDE_INSTALL_URL` | fundeploy |
+  | `CODEX_INSTALL_URL` | `FUNDEPLOY_CODEX_INSTALL_URL` | fundeploy |
+  | `CURSOR_INSTALL_URL` | `FUNDEPLOY_CURSOR_INSTALL_URL` | fundeploy |
+  | `FUNDEPLOY_ASSUME_YES` | `FUNDEPLOY_<工具名>_UNINSTALL_YES` | fundeploy |
+  | `CODEX_INSTALL_DIR` | 不变 | **上游安装器** |
+  | `CODEX_HOME` | 不变 | **上游安装器** |
+
+  后两个保持原样不是漏改：卸载时要按跟安装器完全相同的规则算出它把文件放到了
+  哪儿，改了名就算不出来，卸载会静默漏掉东西。原来那个
+  `FUNDEPLOY_ASSUME_YES` 则是全域共用一个开关，设一次等于对所有工具的删除都
+  点了头。
 
 ### 新增
 
@@ -304,6 +327,38 @@
     环境也列出来——版本表是会改的，改完之前建的环境不该从视野里消失，而目录
     还占着地方。
 
+- **`fundeploy ai`：AI 命令行工具域。** `claude`、`codex`、`cursor`：
+
+  ```
+  fundeploy ai                           # 三样的状态一次看全
+  fundeploy ai claude install            # 默认走官方安装器
+  fundeploy ai claude install --method npm
+  fundeploy ai codex upgrade
+  fundeploy ai claude uninstall          # 不点名装法＝四条路都走一遍
+  fundeploy ai all install               # 三样都装上
+  fundeploy ai cursor install -- stable  # -- 之后的原样交给官方安装器
+  ```
+
+  跟 Bash 版的几处不同：
+
+  - **`fundeploy ai` 不带参数是一张总表**，每样报「在 PATH 上的哪儿、哪个版本、
+    有哪些装法可走」。Bash 版的 `ai list` 只打三个名字。
+  - **`ai all` 碰到走不通的那样不会整个停下。** Bash 版 `ai all brew install`
+    走到 cursor 就死了（cursor 只有 official），而前面两样装没装成也不会单独
+    告诉你。现在不支持的跳过、失败的记下来接着走，最后一次报齐。
+  - **官方安装器先下到文件再执行**，不用 `curl … | bash`，理由同 `dev` 域。
+  - **brew 那条路在 Linux 上提前说清楚。** cask 是 macOS 独有的机制，
+    Linuxbrew 上 `brew install --cask` 只会换来一句
+    `Installing casks is supported only on macOS`，看着像 brew 自己坏了。
+  - **npm / pnpm 优先用本域装的 Node。** `fundeploy dev nodejs install
+    --method source` 之后 npm 还不在 PATH 上（PATH 要人自己配），此时报
+    「未找到 npm」是误导。
+  - **额外参数只有 official 认，给别的装法会被拒绝**，不是悄悄丢掉。
+  - **卸载完如果 PATH 上还找得到这个命令，会明说**，并指出那份不是 fundeploy
+    装的——否则「卸了但命令还在」会被当成卸载失败。
+  - `cursor` 的两个命令名（`agent` 和 `cursor-agent`，上游改过名）都认，
+    查状态和卸载都是。
+
 ### 修复
 
 - `skills`（原 `skills-sync`）：装上去的仓库再也删不掉。同步的最后一步会把仓库
@@ -375,6 +430,18 @@
 - `dev nodejs install --method source`：版本号不再写死在脚本里。Bash 版默认装
   `22.14.0`，一个具体的小版本号写进脚本之后就不会再有人去动它，装到的只会越来
   越旧。现在问 `nodejs.org/dist/index.json` 取当前 LTS。
+- `ai`（原 `ai-cli`）：卸载只清默认那条路。Bash 版不点名装法时装法就是
+  `official`，于是 `fundeploy ai claude uninstall` 只去删官方安装器留下的那几个
+  路径——用 npm 装的人跑它会得到一句成功，而 `claude` 还好端端在 PATH 上。现在
+  不点名就四条路（official / brew / npm / pnpm）都走一遍，哪条本来就没装只记
+  一句，不当错误。
+- `ai`：装法写错时报的是装法不对，不是动作不对。Bash 版靠「第一个词是不是已知
+  装法」来区分装法和动作，不是就当动作，于是 `fundeploy ai cursor npm install`
+  报的是「未知动作: npm」——真正的问题是 cursor 只有 official 这一条路，照着那
+  句话去查动作名永远查不出所以然。现在直接说「cursor 没有 npm 这条路，它支持
+  的是: official」。
+- `ai`：卸载只问一次。Bash 版对每个要删的路径各弹一次确认，卸一个 codex 要连
+  按三次 y，而养成闭眼按 y 的习惯之后，确认这道关就形同虚设了。
 
 ## [0.1.18]
 

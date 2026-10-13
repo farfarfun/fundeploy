@@ -20,6 +20,7 @@
 //! 声明。上游特有的坑（某个 CLI 的 stop 必须带参数、某份配置文件上游不会自己生成）
 //! 通过覆盖 trait 的钩子方法表达。
 
+pub mod ai;
 pub mod cli;
 pub mod common;
 pub mod dev;

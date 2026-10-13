@@ -3,6 +3,7 @@
 use anyhow::{bail, Result};
 use clap::{CommandFactory, Parser, Subcommand};
 
+use crate::ai;
 use crate::dev;
 use crate::doctor;
 use crate::port_kill;
@@ -75,6 +76,13 @@ enum Command {
         #[command(subcommand)]
         action: Option<DevAction>,
     },
+    /// AI 命令行工具（claude / codex / cursor）
+    Ai {
+        /// 工具名，或 all 对三样都来一遍。不给就列出全部的当前状态。
+        name: Option<String>,
+        #[command(subcommand)]
+        action: Option<AiAction>,
+    },
     /// 技能仓库同步（Gitee 上的 farfarfun-skills）
     Skills {
         #[command(subcommand)]
@@ -82,6 +90,40 @@ enum Command {
     },
     /// 列出能管的东西
     List,
+}
+
+#[derive(Subcommand, Clone)]
+enum AiAction {
+    /// 装没装、装在哪儿、哪个版本
+    Status,
+    /// 安装
+    Install {
+        #[command(flatten)]
+        how: AiHow,
+        /// `--` 之后的参数原样交给官方安装器
+        #[arg(trailing_var_arg = true, value_name = "参数")]
+        args: Vec<String>,
+    },
+    /// 升到最新版
+    Upgrade {
+        #[command(flatten)]
+        how: AiHow,
+    },
+    /// 卸载。不点名装法就每条路都走一遍。
+    Uninstall {
+        #[command(flatten)]
+        how: AiHow,
+        /// 不问直接卸
+        #[arg(short, long)]
+        yes: bool,
+    },
+}
+
+#[derive(clap::Args, Clone)]
+struct AiHow {
+    /// 装法。不给走 official。
+    #[arg(long, value_enum, value_name = "装法")]
+    method: Option<ai::Method>,
 }
 
 #[derive(Subcommand, Clone)]
@@ -410,6 +452,7 @@ pub fn cli_main() -> Result<()> {
             },
         },
         Some(Command::Dev { name, action }) => dev_cmd(name, action),
+        Some(Command::Ai { name, action }) => ai_cmd(name, action),
         Some(Command::Skills { action }) => skills_cmd(action),
         None => no_args(),
     }
@@ -459,6 +502,37 @@ fn dev_cmd(name: Option<String>, action: Option<DevAction>) -> Result<()> {
         }
         DevAction::Upgrade { how } => dev::upgrade(d.as_ref(), how.method),
         DevAction::Uninstall { how, yes } => dev::uninstall(d.as_ref(), how.method, yes),
+    }
+}
+
+fn ai_cmd(name: Option<String>, action: Option<AiAction>) -> Result<()> {
+    let Some(name) = name else {
+        return ai::list();
+    };
+    if name == "all" {
+        return match action.unwrap_or(AiAction::Status) {
+            AiAction::Status => ai::list(),
+            AiAction::Install { how, args } => {
+                ai::each(how.method, |t| t.install(how.method, &args))
+            }
+            AiAction::Upgrade { how } => ai::each(how.method, |t| t.upgrade(how.method)),
+            AiAction::Uninstall { how, yes } => {
+                ai::each(how.method, |t| t.uninstall(how.method, yes))
+            }
+        };
+    }
+    let t = ai::registry::find(&name).ok_or_else(|| {
+        anyhow::anyhow!(
+            "没有 {name} 这样东西。可选: {}",
+            ai::registry::names().join("、")
+        )
+    })?;
+    // 跟 dev 一样：不给动作时只报状态，不动手。
+    match action.unwrap_or(AiAction::Status) {
+        AiAction::Status => t.status(),
+        AiAction::Install { how, args } => t.install(how.method, &args),
+        AiAction::Upgrade { how } => t.upgrade(how.method),
+        AiAction::Uninstall { how, yes } => t.uninstall(how.method, yes),
     }
 }
 
@@ -554,6 +628,7 @@ fn no_args() -> Result<()> {
         "port-kill  腾端口（查出谁占着，停掉它）".to_string(),
         "doctor     诊断（GitHub 连不上）".to_string(),
         "dev        开发工具链（go、nodejs、pnpm、rust、uv、python）".to_string(),
+        "ai         AI 命令行（claude、codex、cursor）".to_string(),
         "skills     技能仓库（同步 Gitee 上的那批）".to_string(),
     ];
     let picked = ui::select("要管什么", &domains)?.ok_or_else(|| anyhow::anyhow!("已取消。"))?;
@@ -577,6 +652,7 @@ fn no_args() -> Result<()> {
         }
         "doctor" => doctor::github::diagnose(),
         "dev" => dev_cmd(None, None),
+        "ai" => ai::list(),
         "skills" => skills::list(),
         _ => {
             let t = pick_one(tool::registry::all(), "选一个工具", |t| {
