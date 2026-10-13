@@ -12,6 +12,7 @@ pub mod ini;
 pub mod npm;
 pub mod pip;
 pub mod platform;
+pub mod pm;
 pub mod port;
 pub mod proc;
 pub mod version;

@@ -59,6 +59,36 @@
   `list` / `sync` / `install <名字>` / `update <名字>` / `rm <名字>|--all`。
   `sync` 是新的主力动作——一条命令把缺的装上、已有的更到最新，原先得先
   `install` 再 `update` 跑两遍。
+- `python-env` 从工具挪到开发工具链域：`fundeploy tool python-env …` →
+  **`fundeploy dev python …`**。它跟 go/nodejs/rust/uv 一样是「给这台机器准备
+  开发环境」，跟 brew/cockpit-tools 那种装一个应用不是一回事。
+  `reinstall` 换成 `install --force`——两个动作差的只是「先删不先删」，而
+  `reinstall` 这个名字看不出它会把人后来往环境里装的别的包一起扔掉。
+- `dev` 域的装法不再只能靠环境变量：`INSTALL_METHOD` →
+  **`--method pkg|source`**（环境变量仍可用，改名 `FUNDEPLOY_INSTALL_METHOD`，
+  命令行优先）。卸载时不点名仍然是两边都清。
+- `dev` 域各工具的 `version` 子命令并进 `status`。只打一个版本号回答不了真正
+  会出问题的那个局面——机器上同时存在包管理器装的和 `~/opt` 下装的两份，
+  `version` 报的是 PATH 上那份，而 `upgrade` 动的是 `~/opt` 那份，于是「升完
+  版本号没变」。`status` 两份都列，版本对不上时明说该怎么调 PATH。
+- `dev` 域的环境变量统一加 `FUNDEPLOY_` 前缀，跟上游自己的变量分开——
+  `UV_INSTALL_DIR` 这类名字的归属是 uv 的安装器，不是这里：
+
+  | 原名 | 现名 |
+  |---|---|
+  | `INSTALL_METHOD` | `FUNDEPLOY_INSTALL_METHOD` |
+  | `GO_INSTALL_ROOT` | `FUNDEPLOY_GO_ROOT` |
+  | `NODE_INSTALL_ROOT` | `FUNDEPLOY_NODE_ROOT` |
+  | `RUST_INSTALL_ROOT` | `FUNDEPLOY_RUST_ROOT` |
+  | `UV_INSTALL_DIR` | `FUNDEPLOY_UV_ROOT` |
+  | `UV_INSTALL_URL` | `FUNDEPLOY_UV_INSTALL_URL` |
+  | `NPM_GLOBAL_ROOT` | `FUNDEPLOY_NPM_GLOBAL_ROOT` |
+  | `PNPM_USE_NPM_GLOBAL` | `FUNDEPLOY_PNPM_VIA_NPM` |
+  | `PYTHON_VERSION` | `FUNDEPLOY_PYTHON_VERSION` |
+  | `PYTHON_ENV_ASSUME_YES` | `FUNDEPLOY_PYTHON_UNINSTALL_YES` |
+- `nodejs` 不再接受 `NODE_VERSION` 指定版本，改用通用的 `--version`。
+  `NODE_VERSION` 是 Node 生态里被 nvm、CI 镜像、Dockerfile 共用的名字，
+  在这里额外赋一层意思只会让人在已经设了它的机器上装到意料之外的版本。
 
 ### 新增
 
@@ -234,6 +264,46 @@
   - 远端已经没有、本地还留着的仓库会在 `list` 里标成「仅本地」。Bash 版只列
     远端有的，上游改名或删库之后，本地那份就从视野里消失了，但目录还在。
 
+- **`fundeploy dev`：开发工具链域。** `go`、`nodejs`、`pnpm`、`rust`、`uv` 五样
+  工具加上 `python` 虚拟环境，一套命令：
+
+  ```
+  fundeploy dev                          # 六样东西的状态一次看全
+  fundeploy dev go status
+  fundeploy dev go install               # 默认走包管理器
+  fundeploy dev go install --method source --version 1.25.0
+  fundeploy dev rust upgrade --method source
+  fundeploy dev nodejs uninstall         # 不点名装法＝pkg 和 source 两边都清
+  fundeploy dev python install --version 3.13
+  ```
+
+  包管理器那条路认 apt / dnf / yum / pacman / zypper / apk / brew，每家的包名
+  各自声明（Go 在 apt 下叫 `golang-go`、dnf 下叫 `golang`、brew 下叫 `go`）；
+  源里根本没有的（Debian 稳定源里的 uv、多数发行版的 pnpm）直接说没有，不去跑
+  一条注定报「软件包未找到」的命令。
+
+  跟 Bash 版的几处不同：
+
+  - **`fundeploy dev` 不带参数是一张总表**，六样东西各报「`~/opt` 下那份」和
+    「PATH 上那份」两行。Bash 时代每样工具是一个独立脚本，想知道这台机器上
+    到底是个什么局面，得挨个跑一遍 `version`。
+  - **版本号不写死。** Go 问 `go.dev/VERSION?m=text`，Node 读
+    `nodejs.org/dist/index.json` 取最新 **LTS**（不是绝对最新——新的大版本头
+    几个月里原生模块编译失败是常态）。
+  - **上游安装脚本先下到文件再执行**，不用 `curl … | sh`。管道执行是边下边跑
+    的，连接中途断掉时脚本已经执行了前半截，留下一堆既不算装上也不算没装的
+    半成品。
+  - **uv 装在哪儿是找出来的，不是猜的。** 上游安装器在不同版本里把二进制放过
+    `<dir>` 也放过 `<dir>/bin`，猜错了打印出来的 PATH 就是错的，人照着配完会
+    发现命令仍旧找不到。
+  - **pnpm 走 corepack 装完也认得出来。** corepack 的 shim 落在 Node 的 bin
+    里，不在 npm 全局前缀下，两处都查才不会「刚装完就报未安装」。
+  - `FUNDEPLOY_PYTHON_ROOT` 和 `FUNDEPLOY_PYTHON_PACKAGES` 是新的：Bash 版的
+    环境根目录写死 `~/opt`，预装包写死在一个 bash 数组里。
+  - `fundeploy dev python list` 会把不在版本表里、但确实躺在根目录下的 `py*`
+    环境也列出来——版本表是会改的，改完之前建的环境不该从视野里消失，而目录
+    还占着地方。
+
 ### 修复
 
 - `skills`（原 `skills-sync`）：装上去的仓库再也删不掉。同步的最后一步会把仓库
@@ -281,6 +351,30 @@
 - 跑上游脚本（brew 的安装器/卸载器）用的临时目录从 `/tmp` 挪到用户缓存目录下。
   `/tmp` 是所有人都能写的，往里放一个名字可预测的脚本再执行它，等于把「谁先建出
   这个路径谁说了算」交给了别人。
+- `dev python`（原 `tool python-env`）：`PYTHON_VERSION` 这个覆盖办法从来没生效
+  过。脚本第 21 行无条件写了一句 `PYTHON_VERSION=""`，把调用者传进来的值直接
+  抹掉，而下面 `cmd_pyenv_update` / `cmd_pyenv_uninstall` 取的是
+  `${PYTHON_VERSION:-$DEFAULT_VERSION}`——于是无论设成什么，动的永远是 3.12。
+  这两处的注释里还写着「可通过 PYTHON_VERSION 覆盖」。
+- `dev python install`：不再谎报「环境已激活！」。Bash 版在自己的进程里
+  `source` 了一遍 activate，然后拿 `$VIRTUAL_ENV = $ENV_PATH` 判断有没有激活
+  成功——这个判断在脚本自己的进程里永远成立，所以它每次都报激活成功，而调用它
+  的终端什么也没变。真正有用的那段提示（`source …/bin/activate` 怎么敲）写在
+  `else` 分支里，永远执行不到。子进程改不了父 shell 的环境变量，现在只打印
+  命令让人自己执行。
+- `dev pnpm install --method source`：在新版 Node 上不再以一句
+  `corepack: command not found` 收场。Bash 版只检查了 Node ≥ 16.17 就直接
+  `corepack enable`，而 Node 25 起 corepack 不再随发行版打包。现在找不到
+  corepack 就自动改走 npm 全局前缀，`FUNDEPLOY_PNPM_VIA_NPM=1` 可以强制走后者。
+- `dev rust install --method source`：不再往 shell 配置里塞一行卸载后会报错的
+  `source`。Bash 版跑 rustup 安装器时没加 `--no-modify-path`，rustup 便会往
+  `~/.profile`、`~/.bashrc`、`~/.zshenv` 里追加 `. "$CARGO_HOME/env"`——指向的是
+  `~/opt/rust/cargo/env`。等哪天把 `~/opt/rust` 删掉，每开一个新 shell 都报一次
+  「No such file or directory」，而那行藏在 rc 文件末尾，很难联想到是装 Rust 时
+  留下的。卸载时也先让 `rustup self uninstall` 自己收尾，再删目录。
+- `dev nodejs install --method source`：版本号不再写死在脚本里。Bash 版默认装
+  `22.14.0`，一个具体的小版本号写进脚本之后就不会再有人去动它，装到的只会越来
+  越旧。现在问 `nodejs.org/dist/index.json` 取当前 LTS。
 
 ## [0.1.18]
 

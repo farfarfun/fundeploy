@@ -3,6 +3,7 @@
 use anyhow::{bail, Result};
 use clap::{CommandFactory, Parser, Subcommand};
 
+use crate::dev;
 use crate::doctor;
 use crate::port_kill;
 use crate::service::{self, Service};
@@ -67,6 +68,13 @@ enum Command {
         #[command(subcommand)]
         what: DoctorWhat,
     },
+    /// 开发工具链（go / nodejs / pnpm / rust / uv / python）
+    Dev {
+        /// 工具名。不给就列出全部的当前状态。
+        name: Option<String>,
+        #[command(subcommand)]
+        action: Option<DevAction>,
+    },
     /// 技能仓库同步（Gitee 上的 farfarfun-skills）
     Skills {
         #[command(subcommand)]
@@ -74,6 +82,43 @@ enum Command {
     },
     /// 列出能管的东西
     List,
+}
+
+#[derive(Subcommand, Clone)]
+enum DevAction {
+    /// 装没装、装在哪儿、哪个版本
+    Status,
+    /// 安装
+    Install {
+        #[command(flatten)]
+        how: DevHow,
+        /// python：已存在时删掉重建；其余工具无此动作
+        #[arg(long)]
+        force: bool,
+    },
+    /// 升到最新版
+    Upgrade {
+        #[command(flatten)]
+        how: DevHow,
+    },
+    /// 卸载。不点名装法就两边都清。
+    Uninstall {
+        #[command(flatten)]
+        how: DevHow,
+        /// 不问直接卸
+        #[arg(short, long)]
+        yes: bool,
+    },
+}
+
+#[derive(clap::Args, Clone)]
+struct DevHow {
+    /// pkg=系统包管理器，source=官方包装到 ~/opt。不给看 FUNDEPLOY_INSTALL_METHOD，再不给用 pkg。
+    #[arg(long, value_enum, value_name = "装法")]
+    method: Option<dev::Method>,
+    /// 钉版本。go/nodejs/rust 只在 source 装法下有效；python 用它选 Python 版本。
+    #[arg(long, value_name = "版本")]
+    version: Option<String>,
 }
 
 #[derive(Subcommand, Clone)]
@@ -364,8 +409,56 @@ pub fn cli_main() -> Result<()> {
                 _ => doctor::github::diagnose(),
             },
         },
+        Some(Command::Dev { name, action }) => dev_cmd(name, action),
         Some(Command::Skills { action }) => skills_cmd(action),
         None => no_args(),
+    }
+}
+
+fn dev_cmd(name: Option<String>, action: Option<DevAction>) -> Result<()> {
+    let Some(name) = name else {
+        for d in dev::registry::all() {
+            dev::status(d.as_ref())?;
+            ui::blank();
+        }
+        dev::python::list()?;
+        ui::blank();
+        ui::hint("装: fundeploy dev <go|nodejs|pnpm|rust|uv|python> install [--method pkg|source]");
+        return Ok(());
+    };
+
+    // 不给动作时只报状态，不动手：这一域的每个动作都会往机器上写东西。
+    let action = action.unwrap_or(DevAction::Status);
+
+    if name == "python" || name == "python-env" || name == "py" {
+        return match action {
+            DevAction::Status => dev::python::list(),
+            DevAction::Install { how, force } => {
+                dev::python::install(how.version.as_deref(), force)
+            }
+            DevAction::Upgrade { how } => dev::python::update(how.version.as_deref()),
+            DevAction::Uninstall { how, yes } => {
+                dev::python::uninstall(how.version.as_deref(), yes)
+            }
+        };
+    }
+
+    let d = dev::registry::find(&name).ok_or_else(|| {
+        anyhow::anyhow!(
+            "没有 {name} 这样东西。可选: {}、python",
+            dev::registry::names().join("、")
+        )
+    })?;
+    match action {
+        DevAction::Status => dev::status(d.as_ref()),
+        DevAction::Install { how, force } => {
+            if force {
+                bail!("--force 只对 python 有意义。");
+            }
+            dev::install(d.as_ref(), how.method, how.version.as_deref())
+        }
+        DevAction::Upgrade { how } => dev::upgrade(d.as_ref(), how.method),
+        DevAction::Uninstall { how, yes } => dev::uninstall(d.as_ref(), how.method, yes),
     }
 }
 
@@ -460,6 +553,7 @@ fn no_args() -> Result<()> {
         "source     换源（pip、npm、brew、cargo、go）".to_string(),
         "port-kill  腾端口（查出谁占着，停掉它）".to_string(),
         "doctor     诊断（GitHub 连不上）".to_string(),
+        "dev        开发工具链（go、nodejs、pnpm、rust、uv、python）".to_string(),
         "skills     技能仓库（同步 Gitee 上的那批）".to_string(),
     ];
     let picked = ui::select("要管什么", &domains)?.ok_or_else(|| anyhow::anyhow!("已取消。"))?;
@@ -482,6 +576,7 @@ fn no_args() -> Result<()> {
             port_kill::kill(&port_kill::parse_ports(&line)?, false)
         }
         "doctor" => doctor::github::diagnose(),
+        "dev" => dev_cmd(None, None),
         "skills" => skills::list(),
         _ => {
             let t = pick_one(tool::registry::all(), "选一个工具", |t| {
