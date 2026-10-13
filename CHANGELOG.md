@@ -3,6 +3,43 @@
 版本号以 `Cargo.toml` 里的 `version` 为准；发布由推同版本的 `v*` tag 触发（见
 `.github/workflows/release.yml`），因此「有 tag ＝ 已发布」。
 
+## [0.3.1] - 未发布
+
+### 修复
+
+- `upgrade` 不再悄悄覆盖包管理器装的那份。此前只检查目录可不可写，而
+  `~/.cargo/bin` 和 Apple Silicon 上的 `/opt/homebrew/bin` **对当前用户就是可写
+  的**——于是替换会成功，而包管理器那边毫不知情：`brew list --versions` 报的还是
+  它自己装的那一版，下一次 `brew upgrade` 又把我们换上去的盖回去，两边来回覆盖，
+  全程没有一句报错。现在认出 cargo / Homebrew / dpkg 装的二进制就拒绝，并告诉你
+  该敲哪条命令升（`brew upgrade fundeploy` 等），想要一份自己说了算的就装到
+  `~/.local/bin`。
+
+### 新增
+
+- 发到 [crates.io](https://crates.io/crates/fundeploy)，`cargo install fundeploy`
+  可装。这是给手上已经有 Rust 工具链的人的次要渠道——它从源码编，而这个工具本身
+  是用来装工具链的，当主路径顺序就反了。
+
+### 变更
+
+- **APT 换成组织级的单一源。** 原来每个项目各发一个 apt 源，装 n 个包要加 n 次源。
+  现在 farfarfun 所有项目共用
+  [farfarfun/packages](https://github.com/farfarfun/packages)，加一次以后新包直接
+  `apt install`：
+
+  ```bash
+  curl -fsSL https://farfarfun.github.io/packages/farfarfun.gpg \
+    | sudo tee /usr/share/keyrings/farfarfun.gpg >/dev/null
+  echo "deb [signed-by=/usr/share/keyrings/farfarfun.gpg] https://farfarfun.github.io/packages/deb stable main" \
+    | sudo tee /etc/apt/sources.list.d/farfarfun.list
+  ```
+
+  旧的 `farfarfun.github.io/fundeploy` 源不再更新，但会留一段时间，不会突然 404。
+  Homebrew 那边用户无需改动（`brew tap` 的仓库名是 brew 的硬约定，`farfarfun/tap`
+  本来就已经是一个源管所有包），只是 formula 改由 `farfarfun/packages` 按同一张
+  清单生成。本仓库的 `packaging/` 相应只剩 `build-deb.sh`。
+
 ## [0.3.0] - 2026-10-13
 
 整个项目从 Bash 重写为 Rust，发布物从一棵脚本树变成单个静态二进制。原来的
@@ -427,8 +464,8 @@ Bash 保留在 `bak` 分支，`master` 上的 `scripts/` 与 `tests/` 已整体�
   失败，而 `~/.cache` 和 `/usr/local/bin` 经常不在一个盘上）。
 
   认得出自己是 `target/debug/fundeploy` 这种构建产物，这时直接拒绝——换掉它
-  只会让下一次 `cargo build` 把它覆盖回去。brew / apt 装的那份也拒绝，并指出
-  该用哪个包管理器升。
+  只会让下一次 `cargo build` 把它覆盖回去。目录不可写时（apt 装到 `/usr/bin`
+  的那份就是）也拒绝，并说明该照原渠道升。
 
 - **调 GitHub API 时认 `GITHUB_TOKEN` / `GH_TOKEN`。** 匿名限流是每小时 60 次、
   按出口 IP 算，一个办公室共用一个出口的话，装几个服务就撞上限——而症状是

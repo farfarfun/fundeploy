@@ -9,7 +9,8 @@ on:
 permissions:
   contents: read
 
-# 连续推两个 tag 时，Pages 部署与 tap 推送会互相竞争。
+# 按 tag 分组：重推同一个 tag 时不该有两次发布同时在跑。不取消进行中的那次，
+# 它可能已经把一半附件传上去了。
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
@@ -119,13 +120,6 @@ jobs:
           sha256sum ./* | sed 's|\./||' >SHA256SUMS
           cat SHA256SUMS
 
-      - name: 生成 Homebrew formula
-        env:
-          FUNDEPLOY_GITHUB_REPOSITORY: ${{ github.repository }}
-        run: |
-          bash packaging/render-homebrew-formula.sh \
-            "${{ needs.check.outputs.version }}" dist/SHA256SUMS dist/fundeploy.rb
-
       - name: 发 GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -136,12 +130,6 @@ jobs:
           else
             gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes
           fi
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: release-assets
-          path: dist/*
-          retention-days: 7
 
   verify-install:
     name: 装机验证 (${{ matrix.os }})
@@ -180,121 +168,58 @@ jobs:
           "$HOME/.local/bin/fundeploy" list >/dev/null
           "$HOME/.local/bin/fundeploy" upgrade --check
 
-  apt-repository:
-    needs: release
+  # apt 源和 Homebrew formula 都不在这个仓库里生成了：它们按 farfarfun/packages
+  # 的清单重建，那边一次管全组织的包。这儿只负责把附件挂上 Release，然后吱一声。
+  notify-packages:
+    name: 通知包仓库重建
+    needs: verify-install
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    outputs:
-      configured: ${{ steps.config.outputs.apt }}
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-
-      - id: config
-        name: Check APT signing key
+      - name: 打一个 repository_dispatch
         env:
-          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+          # 跨仓库触发用不了默认的 GITHUB_TOKEN，得是一个对 farfarfun/packages
+          # 有写权限的 PAT。
+          GH_TOKEN: ${{ secrets.PACKAGES_DISPATCH_TOKEN }}
         run: |
-          if [[ -n "$APT_GPG_PRIVATE_KEY" ]]; then
-            echo "apt=true" >>"$GITHUB_OUTPUT"
-          else
-            echo "apt=false" >>"$GITHUB_OUTPUT"
-            echo "APT_GPG_PRIVATE_KEY is not configured; skipping APT Pages publication."
-          fi
-
-      - uses: actions/download-artifact@v4
-        if: steps.config.outputs.apt == 'true'
-        with:
-          name: release-assets
-          path: dist
-
-      - name: Install APT repository tools
-        if: steps.config.outputs.apt == 'true'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y apt-utils dpkg-dev
-
-      - id: signing-key
-        name: Import APT signing key
-        if: steps.config.outputs.apt == 'true'
-        env:
-          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
-        run: |
-          set -euo pipefail
-          fingerprint="$(printf '%s' "$APT_GPG_PRIVATE_KEY" | gpg --batch --with-colons --import-options show-only --import 2>/dev/null | awk -F: '$1 == "fpr" {print $10; exit}')"
-          [[ -n "$fingerprint" ]]
-          printf '%s' "$APT_GPG_PRIVATE_KEY" | gpg --batch --import
-          echo "fingerprint=$fingerprint" >>"$GITHUB_OUTPUT"
-
-      - name: Build signed APT repository
-        if: steps.config.outputs.apt == 'true'
-        env:
-          APT_GPG_PASSPHRASE: ${{ secrets.APT_GPG_PASSPHRASE }}
-        run: |
-          bash packaging/build-apt-repo.sh dist public "${{ steps.signing-key.outputs.fingerprint }}"
-
-      - uses: actions/upload-pages-artifact@v3
-        if: steps.config.outputs.apt == 'true'
-        with:
-          path: public
-
-  deploy-apt-pages:
-    needs: apt-repository
-    if: needs.apt-repository.outputs.configured == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
-
-  homebrew-tap:
-    needs: release
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - id: config
-        name: Check Homebrew Tap deploy key
-        env:
-          HOMEBREW_TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
-        run: |
-          if [[ -n "$HOMEBREW_TAP_DEPLOY_KEY" ]]; then
-            echo "tap=true" >>"$GITHUB_OUTPUT"
-          else
-            echo "tap=false" >>"$GITHUB_OUTPUT"
-            echo "HOMEBREW_TAP_DEPLOY_KEY is not configured; skipping Tap update."
-          fi
-
-      - uses: actions/download-artifact@v4
-        if: steps.config.outputs.tap == 'true'
-        with:
-          name: release-assets
-          path: dist
-
-      - uses: actions/checkout@v4
-        if: steps.config.outputs.tap == 'true'
-        with:
-          repository: farfarfun/homebrew-tap
-          ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
-          path: tap
-
-      - name: Update Formula
-        if: steps.config.outputs.tap == 'true'
-        working-directory: tap
-        run: |
-          set -euo pipefail
-          mkdir -p Formula
-          cp ../dist/fundeploy.rb Formula/fundeploy.rb
-          git add Formula/fundeploy.rb
-          if git diff --cached --quiet; then
-            echo "Formula is already current."
+          set -eu
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::warning::没配 PACKAGES_DISPATCH_TOKEN，跳过。包仓库每天会兜底扫一遍。"
             exit 0
           fi
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git commit -m "Update fundeploy to ${GITHUB_REF_NAME}"
-          git push
+          gh api repos/farfarfun/packages/dispatches \
+            -f event_type=package-published \
+            -f "client_payload[repo]=${GITHUB_REPOSITORY}" \
+            -f "client_payload[tag]=${GITHUB_REF_NAME}"
+
+  publish-crate:
+    name: 发到 crates.io
+    needs: [check, verify-install]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - run: rustup toolchain install stable --profile minimal --no-self-update
+
+      # 排在装机验证后面：crates.io 上的版本撤不回来。yank 只是不让新依赖解析到
+      # 它，那个 .crate 本身永远在上面，所以等二进制那条路先验过再发。
+      - name: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          set -eu
+          if [ -z "${CARGO_REGISTRY_TOKEN:-}" ]; then
+            echo "::warning::没配 CARGO_REGISTRY_TOKEN，跳过 crates.io 发布。"
+            exit 0
+          fi
+          # 同一个 tag 重跑时这一版已经在上面了，再 publish 是一个硬错误。先问
+          # 一句，不让重跑整条流水线卡在最后一步。
+          if curl -fsS -A fundeploy-release \
+            "https://crates.io/api/v1/crates/fundeploy/${VERSION}" >/dev/null; then
+            echo "${VERSION} 已经发过了，跳过。"
+            exit 0
+          fi
+          cargo publish --locked
+

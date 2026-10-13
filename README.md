@@ -37,15 +37,30 @@ brew install farfarfun/tap/fundeploy
 ### APT
 
 ```bash
-curl -fsSL https://farfarfun.github.io/fundeploy/fundeploy.gpg | sudo tee /usr/share/keyrings/fundeploy.gpg >/dev/null
-echo "deb [signed-by=/usr/share/keyrings/fundeploy.gpg] https://farfarfun.github.io/fundeploy stable main" | sudo tee /etc/apt/sources.list.d/fundeploy.list
+curl -fsSL https://farfarfun.github.io/packages/farfarfun.gpg \
+  | sudo tee /usr/share/keyrings/farfarfun.gpg >/dev/null
+echo "deb [signed-by=/usr/share/keyrings/farfarfun.gpg] https://farfarfun.github.io/packages/deb stable main" \
+  | sudo tee /etc/apt/sources.list.d/farfarfun.list
 sudo apt update && sudo apt install fundeploy
 ```
+
+这是 farfarfun 所有项目共用的源，加一次以后别的包也直接 `apt install`，见
+[farfarfun/packages](https://github.com/farfarfun/packages)。旧的
+`farfarfun.github.io/fundeploy` 单项目源还在，但不再更新，建议换过来。
 
 ### 直接下二进制
 
 [Releases](https://github.com/farfarfun/fundeploy/releases) 里每个平台一个 `fundeploy-<target>.tar.gz`，
 解开把 `fundeploy` 丢进 PATH 即可。同目录下的 `SHA256SUMS` 可以校验。
+
+### cargo
+
+```bash
+cargo install fundeploy
+```
+
+要本地有 Rust 工具链，而且是从源码编，比上面几种慢得多。手上已经有工具链的话这条最省事，
+否则不建议——用它装工具链反而要求你先有工具链，顺序是反的。
 
 ## 升级与卸载
 
@@ -196,7 +211,7 @@ src/
   ai/        AI 命令行
   doctor/    诊断
   cli.rs     命令行解析与分发
-packaging/   .deb / APT 仓库 / Homebrew formula 的生成脚本
+packaging/   .deb 打包脚本
 install.sh   装机脚本
 ```
 
@@ -204,8 +219,10 @@ install.sh   装机脚本
 声明。加一个 PyPI + npm 的前后端服务通常只需要往 `src/service/registry.rs` 里加十几行。
 装不进这套形状的（Paperclip 要直驱上游 CLI）才单独实现 trait。
 
-发布：改 `Cargo.toml` 里的 `version`，提交，推同版本的 tag（`v0.3.0`）。CI 会核对 tag
-与版本号、构建四个平台、生成校验和与安装包、发 Release，再用装机脚本真装一遍验证。
+发布：改 `Cargo.toml` 里的 `version`，提交，推同版本的 tag（`v0.3.1`）。CI 会核对 tag
+与版本号、构建四个平台、生成校验和与安装包、发 Release，用装机脚本真装一遍验证，然后
+发 crates.io 并通知 [farfarfun/packages](https://github.com/farfarfun/packages) 重建
+apt 索引和 Homebrew formula。
 
 ## 详细文档
 

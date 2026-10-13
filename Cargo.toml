@@ -1,13 +1,24 @@
 [package]
 name = "fundeploy"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 # rustup 之外的渠道（apt / brew 的 rustc）往往落后好几个版本，这里写下真实下限，
 # 让编译在版本不够时直接报清楚，而不是在某个 std API 上报一行看不懂的错。
 rust-version = "1.74"
-description = "开发环境、工具与服务管理"
+# 这条用英文：crates.io 的搜索只索引 description，中文在那儿搜不到。文档和
+# 面向用户的输出保持中文。
+description = "Manage development toolchains, local services and package mirrors from one CLI"
 license = "MIT"
 repository = "https://github.com/farfarfun/fundeploy"
+homepage = "https://github.com/farfarfun/fundeploy"
+readme = "README.md"
+keywords = ["cli", "devops", "service", "mirror", "deploy"]
+categories = ["command-line-utilities", "development-tools"]
+# 发到 crates.io 的包里不该有这些：
+#   rust-toolchain.toml  本仓库开发用的工具链固定，跟着包走只会干扰使用者；
+#   .github/ packaging/  只在发版时用，装的人编译时一行都用不上。
+# install.sh 留着——有个测试会读它，核对附件名两边对得上。
+exclude = ["/.github/", "/packaging/", "/rust-toolchain.toml"]
 
 [[bin]]
 name = "fundeploy"

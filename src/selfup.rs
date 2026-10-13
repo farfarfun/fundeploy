@@ -148,18 +148,120 @@ fn replaceable() -> Result<PathBuf> {
         );
     }
 
+    if let Some(m) = managed_by(&exe) {
+        bail!(
+            "{} 是{}装的，这儿不接手。\n\
+             原地换掉文件那边是不知道的：它记着的还是自己装的那个版本，\
+             下一次 `{}` 会把我们换上去的盖回去。\n\
+             照原渠道升：{}\n\
+             想要一份自己说了算的，装到 ~/.local/bin 下（见 install.sh）。",
+            exe.display(),
+            m.who(),
+            m.clobbers(),
+            m.upgrade_cmd(),
+        );
+    }
+
     let dir = exe.parent().unwrap_or_else(|| Path::new("."));
     if !writable(dir) {
         bail!(
             "{} 不可写，换不掉 {}。\n\
-             用系统包管理器装的就照原渠道升（brew upgrade fundeploy、\
-             sudo apt install --only-upgrade fundeploy）；\n\
-             想要一份自己说了算的，装到 ~/.local/bin 下。",
+             要么用 sudo，要么装一份到 ~/.local/bin 下自己管。",
             dir.display(),
             exe.display()
         );
     }
     Ok(exe)
+}
+
+/// 这份二进制归谁管。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Managed {
+    Cargo,
+    Homebrew,
+    Dpkg,
+}
+
+impl Managed {
+    fn who(self) -> &'static str {
+        match self {
+            Managed::Cargo => "cargo",
+            Managed::Homebrew => "Homebrew",
+            Managed::Dpkg => "apt/dpkg",
+        }
+    }
+
+    /// 那边下一次会把我们换上去的东西盖回去的命令。
+    fn clobbers(self) -> &'static str {
+        match self {
+            Managed::Cargo => "cargo install fundeploy",
+            Managed::Homebrew => "brew upgrade",
+            Managed::Dpkg => "apt upgrade",
+        }
+    }
+
+    fn upgrade_cmd(self) -> &'static str {
+        match self {
+            Managed::Cargo => "cargo install fundeploy --force",
+            Managed::Homebrew => "brew upgrade fundeploy",
+            Managed::Dpkg => "sudo apt update && sudo apt install --only-upgrade fundeploy",
+        }
+    }
+}
+
+/// 认出这份二进制是不是某个包管理器装的。
+///
+/// 光看目录可不可写不够。`~/.cargo/bin` 和 Apple Silicon 上的 `/opt/homebrew/bin`
+/// 都是当前用户可写的——于是 rename 会成功，而包管理器那边毫不知情：
+/// `cargo install --list` / `brew list --versions` 报的还是它自己装的那个版本，
+/// 下一次 `cargo install` 或 `brew upgrade` 又把我们换上去的盖回去。两边来回覆盖，
+/// 全程没有一句报错。这种情况下宁可不升，把该敲的命令告诉人。
+fn managed_by(exe: &Path) -> Option<Managed> {
+    if in_cargo_bin(exe) {
+        return Some(Managed::Cargo);
+    }
+    if in_cellar(exe) {
+        return Some(Managed::Homebrew);
+    }
+    if dpkg_owns(Path::new("/var/lib/dpkg/info/fundeploy.list"), exe) {
+        return Some(Managed::Dpkg);
+    }
+    None
+}
+
+/// 在不在 `$CARGO_HOME/bin`（默认 `~/.cargo/bin`）下。
+fn in_cargo_bin(exe: &Path) -> bool {
+    let home = match crate::common::env::opt("CARGO_HOME") {
+        Some(h) => PathBuf::from(h),
+        None => crate::common::env::home().join(".cargo"),
+    };
+    let bin = home.join("bin");
+    // 两边都 canonicalize：~/.cargo 常常是指向别处的符号链接，比字符串就漏了。
+    let real = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    exe.parent().map(real) == Some(real(&bin))
+}
+
+/// 路径里有没有 `Cellar` 这一段。
+///
+/// brew 装出来的 `<prefix>/bin/fundeploy` 是指向 `<prefix>/Cellar/fundeploy/<版本>/bin/`
+/// 的符号链接，而上面已经 canonicalize 过了，所以这儿看到的是 Cellar 里的真路径。
+/// 认这一段而不是写死 `/opt/homebrew`、`/usr/local`、`/home/linuxbrew/.linuxbrew`：
+/// brew 的前缀是可以自己改的，枚举前缀总会漏。
+fn in_cellar(exe: &Path) -> bool {
+    exe.components().any(|c| c.as_os_str() == "Cellar")
+}
+
+/// dpkg 的文件清单里有没有这个路径。
+///
+/// 问 `dpkg -S` 要起一个进程、还得 dpkg 在 PATH 上；这份清单就是它的数据源，
+/// 直接读更快也更可靠。
+fn dpkg_owns(list: &Path, exe: &Path) -> bool {
+    let Ok(s) = std::fs::read_to_string(list) else {
+        return false;
+    };
+    let real = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let exe = real(exe);
+    s.lines().any(|l| real(Path::new(l.trim())) == exe)
 }
 
 /// 是不是 `target/{debug,release}/` 下的构建产物。
@@ -248,6 +350,70 @@ mod tests {
         assert!(!is_build_artifact(Path::new("/usr/bin/fundeploy")));
         // 名字里带 release 但不在 target 下的不算。
         assert!(!is_build_artifact(Path::new("/opt/release/fundeploy")));
+    }
+
+    #[test]
+    fn brew_装的认得出来() {
+        // Apple Silicon 的 /opt/homebrew/bin 是用户可写的，光靠可写性检查拦不住。
+        assert!(in_cellar(Path::new(
+            "/opt/homebrew/Cellar/fundeploy/0.3.1/bin/fundeploy"
+        )));
+        assert!(in_cellar(Path::new(
+            "/usr/local/Cellar/fundeploy/0.3.1/bin/fundeploy"
+        )));
+        // 改过前缀的也认，因为认的是 Cellar 这一段而不是前缀。
+        assert!(in_cellar(Path::new("/home/me/brew/Cellar/f/1/bin/f")));
+        assert!(!in_cellar(Path::new("/home/me/.local/bin/fundeploy")));
+        // 要整段相等，不是子串。
+        assert!(!in_cellar(Path::new("/opt/CellarX/bin/fundeploy")));
+    }
+
+    #[test]
+    fn cargo_装的认得出来() {
+        let d = tempfile::tempdir().unwrap();
+        let bin = d.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let _锁 = 排队();
+        std::env::set_var("CARGO_HOME", d.path());
+
+        assert!(in_cargo_bin(&bin.join("fundeploy")));
+        assert!(!in_cargo_bin(&d.path().join("fundeploy")));
+        assert!(!in_cargo_bin(Path::new("/home/me/.local/bin/fundeploy")));
+
+        std::env::remove_var("CARGO_HOME");
+    }
+
+    #[test]
+    fn dpkg_清单里的算_dpkg_装的() {
+        let d = tempfile::tempdir().unwrap();
+        let exe = d.path().join("fundeploy");
+        std::fs::write(&exe, "x").unwrap();
+        let list = d.path().join("fundeploy.list");
+        std::fs::write(
+            &list,
+            format!("/usr/share/doc/fundeploy\n{}\n", exe.display()),
+        )
+        .unwrap();
+
+        assert!(dpkg_owns(&list, &exe));
+        assert!(!dpkg_owns(&list, &d.path().join("别的")));
+        // 清单不存在就是没装过，不该当成 dpkg 的。
+        assert!(!dpkg_owns(&d.path().join("没有这个"), &exe));
+    }
+
+    #[test]
+    fn 自己装到_local_bin_的不算谁管() {
+        let d = tempfile::tempdir().unwrap();
+        let _锁 = 排队();
+        std::env::set_var("CARGO_HOME", d.path());
+        assert_eq!(managed_by(&d.path().join("fundeploy")), None);
+        std::env::remove_var("CARGO_HOME");
+    }
+
+    /// 这几个测试要动 CARGO_HOME，而环境变量是进程级的，得排队。
+    fn 排队() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     #[test]
