@@ -39,13 +39,29 @@
   `install` / `upgrade` / `status` / `uninstall` + `install-desktop` /
   `mcp-config`。环境变量 `OPEN_PENCIL_SERVICE_HOME` 随之改名
   `OPEN_PENCIL_HOME`（旧名仍然认，机器上已下载的 `dist/` 不会因此找不到）。
+- `cockpit-tools` 的子命令从 `install` / `update` / `reinstall` / `uninstall` /
+  `run` 收敛为 `install` / `upgrade` / `status` / `uninstall` + `run`。
+  `reinstall` 没了——它做的事就是删掉再 `install`，而 `install` 本来就是覆盖写。
+  `COCKPIT_TOOLS_FALLBACK_TAG` 也没了，理由见下面「修复」。
+- 工具的卸载确认开关统一成 `FUNDEPLOY_<工具名>_UNINSTALL_YES`：
+  `BREW_UNINSTALL_YES` → `FUNDEPLOY_BREW_UNINSTALL_YES`，
+  `COCKPIT_TOOLS_UNINSTALL_YES` → `FUNDEPLOY_COCKPIT_TOOLS_UNINSTALL_YES`，
+  `OPEN_PENCIL_UNINSTALL_YES` → `FUNDEPLOY_OPEN_PENCIL_UNINSTALL_YES`。带前缀是
+  为了跟上游自己的环境变量分开——`BREW_*` 那一串名字的归属是 Homebrew，不是这里。
 
 ### 新增
 
 - 「包 pip 装进独占 venv、进程归 fundeploy 管」的服务（目前是 `airflow`、
   `celery`）统一支持 `start-one` / `run-one` / `stop-one`，不再是 celery 专属。
 - `fundeploy tool`：工具域。跟服务的分界线只有一条——工具没有常驻进程，所以
-  动作只有装、升、卸、查。`fundeploy list` 现在同时列出服务和工具。
+  动作只有装、升、卸、查。`fundeploy list` 现在同时列出服务和工具。目前有
+  `brew`、`cockpit-tools`、`open-pencil`。
+- `cockpit-tools`、`brew` 都多了 `status`：装没装、装在哪儿、哪个版本。Bash 版
+  只有 brew 有个 `version` 子命令，cockpit-tools 则无从查起。
+- `cockpit-tools status` 会指出「桌面入口还在、它指向的 AppImage 没了」这种悬空
+  状态——在应用菜单里点它既不启动也不报错，光看菜单看不出东西已经不在了。
+- `cockpit-tools install` 现在校验下载下来的 AppImage：上游的清单叫
+  `SHA256SUMS.txt`，而此前只认 `checksums.txt` 这一个名字，于是校验一直被跳过。
 
 ### 修复
 
@@ -61,6 +77,18 @@
   就去下一个一年前的版本。挑不到时会把这个 release 实际有哪些附件列出来，
   `OPEN_PENCIL_DESKTOP_ASSET` 仍可点名覆盖。顺带，上游没发 linux/arm64 包这件事
   现在是从附件清单得出的结论，而不是写死在脚本里的一句「不支持」。
+- `brew install`：Bash 版跑官方安装器时多传了一个参数
+  （`/bin/bash install.sh fundeploy`），而 `install.sh` 对认不出来的参数是
+  `Unrecognized option: 'fundeploy'` 然后退出 1——也就是说这条路径根本装不上。
+  那个 `fundeploy` 本来是 `bash -c "<脚本正文>" fundeploy` 里的 `$0`，改成下载到
+  文件再执行之后，它就从「进程名」变成了「第一个参数」。现在不传。
+- `cockpit-tools install`：同 `open-pencil install-desktop`，改为按附件清单挑，
+  并且删掉了兜底 tag `COCKPIT_TOOLS_FALLBACK_TAG`（默认 `v1.0.4`）。那个兜底的
+  实际效果是：GitHub API 一抖，安装器就安安静静地给你装一个 2024 年的版本——
+  上游现在已经发到 1.3.68 了。取不到最新版就直接报错，不猜。
+- 跑上游脚本（brew 的安装器/卸载器）用的临时目录从 `/tmp` 挪到用户缓存目录下。
+  `/tmp` 是所有人都能写的，往里放一个名字可预测的脚本再执行它，等于把「谁先建出
+  这个路径谁说了算」交给了别人。
 
 ## [0.1.18]
 

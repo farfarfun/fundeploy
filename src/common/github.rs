@@ -34,11 +34,16 @@ impl Release {
         self.assets.iter().find(|a| a.name == name)
     }
 
-    /// release 自带的 checksums.txt 的下载地址。
+    /// release 自带的校验和清单的下载地址。
+    ///
+    /// 名字各家不一样：goreleaser 出 `checksums.txt`，Tauri 那边常见
+    /// `SHA256SUMS.txt`。里面的格式倒是一致的（`<sha256>  <文件名>`），所以只是
+    /// 多认几个名字的事——认不出来的后果是白白跳过校验。
     pub fn checksums_url(&self) -> Option<&str> {
+        const NAMES: &[&str] = &["checksums.txt", "sha256sums.txt", "sha256sums", "checksums"];
         self.assets
             .iter()
-            .find(|a| a.name == "checksums.txt")
+            .find(|a| NAMES.contains(&a.name.to_ascii_lowercase().as_str()))
             .map(|a| a.browser_download_url.as_str())
     }
 }
@@ -64,8 +69,11 @@ pub fn latest(repo: &str) -> Result<Release> {
 
 /// 指定 tag 的 release。
 pub fn by_tag(repo: &str, tag: &str) -> Result<Release> {
-    let body = download::get_text(&api(&format!("{repo}/releases/tags/{tag}")))?;
-    serde_json::from_str(&body).with_context(|| format!("{repo} 上没有 {tag}"))
+    // 这里最常见的失败是 404——指定的版本根本不存在。不加这句的话，报出来的
+    // 只有一个 API URL 和 `status code 404`，看不出是「版本写错了」。
+    let body = download::get_text(&api(&format!("{repo}/releases/tags/{tag}")))
+        .with_context(|| format!("{repo} 上取不到 {tag}（多半是没有这个版本）"))?;
+    serde_json::from_str(&body).with_context(|| format!("解析 {repo} 的 {tag} 失败"))
 }
 
 /// 最近若干条 release，新的在前。
@@ -147,6 +155,18 @@ mod tests {
             Some("https://github.com/o/r/d/checksums.txt")
         );
         assert_eq!(release("v1", &["a"]).checksums_url(), None);
+    }
+
+    #[test]
+    fn 校验和清单的几种命名都认() {
+        for n in ["checksums.txt", "SHA256SUMS.txt", "sha256sums"] {
+            assert!(release("v1", &[n]).checksums_url().is_some(), "没认出 {n}");
+        }
+        // 带平台后缀的那种不认：它只覆盖一部分附件，拿来校验别的会落空。
+        assert_eq!(
+            release("v1", &["checksums-linux.txt"]).checksums_url(),
+            None
+        );
     }
 
     #[test]

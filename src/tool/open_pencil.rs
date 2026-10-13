@@ -10,11 +10,11 @@ use anyhow::{bail, Context, Result};
 
 use super::{uninstall_env_var, Extra, Tool};
 use crate::common::env;
-use crate::common::fs::guard_removable;
+use crate::common::fs::{guard_removable, listing};
 use crate::common::github::{self, Asset, Release};
 use crate::common::npm::Npm;
-use crate::common::platform::{Arch, Os, Platform};
-use crate::common::{cmd, download};
+use crate::common::platform::Platform;
+use crate::common::{archive, asset, cmd, download};
 use crate::ui;
 
 const DEFAULT_REPO: &str = "open-pencil/open-pencil";
@@ -142,11 +142,11 @@ impl OpenPencil {
                 anyhow::anyhow!(
                     "{} 上没有附件 {name}。这个 release 有: {}",
                     release.tag_name,
-                    asset_names(release)
+                    asset::names(release)
                 )
             });
         }
-        pick_asset(&release.assets, plat).ok_or_else(|| {
+        asset::pick(&release.assets, plat).ok_or_else(|| {
             anyhow::anyhow!(
                 "{} 里没有适配本机（{} {}）的桌面安装包。\n\
                  这个 release 有: {}\n\
@@ -154,7 +154,7 @@ impl OpenPencil {
                 release.tag_name,
                 plat.os.go(),
                 plat.arch.go(),
-                asset_names(release)
+                asset::names(release)
             )
         })
     }
@@ -288,75 +288,6 @@ impl Tool for OpenPencil {
     }
 }
 
-// -------------------------------------------------------------------- 附件挑选
-
-/// 本平台能用的安装包后缀，按偏好排序。
-///
-/// Linux 上 AppImage 排第一：下下来 chmod +x 就能跑，不需要 root，也不碰系统包
-/// 数据库。deb/rpm 要 sudo，装进去之后再卸是另一件事。
-fn preferred_exts(os: Os) -> &'static [&'static str] {
-    match os {
-        Os::Linux => &[".appimage", ".deb", ".rpm"],
-        Os::MacOs => &[".dmg"],
-    }
-}
-
-/// 这个架构在附件名里可能的几种写法。
-///
-/// 同一个 Tauri 项目在不同版本里换过写法（`amd64` / `x86_64` / `x64` 都见过），
-/// 所以全都认。
-fn arch_tokens(arch: Arch) -> &'static [&'static str] {
-    match arch {
-        Arch::X86_64 => &["amd64", "x86_64", "x64"],
-        Arch::Aarch64 => &["arm64", "aarch64"],
-    }
-}
-
-/// 所有架构写法的并集，用来判断一个附件名里到底提没提架构。
-const ALL_ARCH_TOKENS: &[&str] = &["amd64", "x86_64", "x64", "arm64", "aarch64"];
-
-/// 从 release 的附件里挑一个本机能用的。
-///
-/// 按名字匹配而不是照着模板拼：上游改过附件命名（版本号的位置、架构写法），
-/// 拼出来的名字一旦对不上就是 404，而实际上 release 里躺着一个能用的包。
-/// 顺带也就支持了「某个版本只发了部分平台」——挑不到就明说，并把有哪些列出来。
-fn pick_asset(assets: &[Asset], plat: Platform) -> Option<&Asset> {
-    for ext in preferred_exts(plat.os) {
-        let candidates: Vec<&Asset> = assets
-            .iter()
-            .filter(|a| a.name.to_ascii_lowercase().ends_with(ext))
-            .collect();
-
-        if let Some(a) = candidates.iter().find(|a| {
-            let n = a.name.to_ascii_lowercase();
-            arch_tokens(plat.arch).iter().any(|t| n.contains(t))
-        }) {
-            return Some(a);
-        }
-        // 名字里压根没提架构的，当通用包收下（macOS 的 universal dmg 就是这样）。
-        // 但提了**别的**架构的不行——那是给另一台机器的。
-        if let Some(a) = candidates.iter().find(|a| {
-            let n = a.name.to_ascii_lowercase();
-            !ALL_ARCH_TOKENS.iter().any(|t| n.contains(t))
-        }) {
-            return Some(a);
-        }
-    }
-    None
-}
-
-fn asset_names(release: &Release) -> String {
-    if release.assets.is_empty() {
-        return "（一个附件都没有，多半是 CI 还没传完）".into();
-    }
-    release
-        .assets
-        .iter()
-        .map(|a| a.name.as_str())
-        .collect::<Vec<_>>()
-        .join("、")
-}
-
 /// 下完之后该怎么用它。每种格式不一样，不说的话人还得自己查。
 fn post_download(dest: &Path) -> Result<()> {
     let name = dest.file_name().unwrap_or_default().to_string_lossy();
@@ -366,7 +297,7 @@ fn post_download(dest: &Path) -> Result<()> {
     if lower.ends_with(".appimage") {
         // AppImage 下下来是不可执行的，不 chmod 的话双击和命令行都是一句
         // 「Permission denied」。
-        make_executable(dest)?;
+        archive::make_executable(dest)?;
         ui::ok(format!("已下载，直接执行: {path}"));
     } else if lower.ends_with(".deb") {
         ui::ok(format!("已下载，安装: sudo dpkg -i {path}"));
@@ -378,48 +309,6 @@ fn post_download(dest: &Path) -> Result<()> {
         ui::ok(format!("已下载: {path}"));
     }
     Ok(())
-}
-
-#[cfg(unix)]
-fn make_executable(p: &Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let mut perm = std::fs::metadata(p)?.permissions();
-    perm.set_mode(perm.mode() | 0o111);
-    std::fs::set_permissions(p, perm).with_context(|| format!("改权限失败: {}", p.display()))
-}
-
-#[cfg(not(unix))]
-fn make_executable(_p: &Path) -> Result<()> {
-    Ok(())
-}
-
-/// 目录里有什么，按名字排序。目录不存在返回 None。
-fn listing(dir: &Path) -> Option<Vec<String>> {
-    let mut out: Vec<String> = std::fs::read_dir(dir)
-        .ok()?
-        .flatten()
-        .map(|e| {
-            let size = e.metadata().map(|m| m.len()).unwrap_or(0);
-            format!("{}  {}", e.file_name().to_string_lossy(), human_size(size))
-        })
-        .collect();
-    out.sort();
-    Some(out)
-}
-
-fn human_size(bytes: u64) -> String {
-    const UNITS: [&str; 4] = ["B", "KiB", "MiB", "GiB"];
-    let mut v = bytes as f64;
-    let mut i = 0;
-    while v >= 1024.0 && i < UNITS.len() - 1 {
-        v /= 1024.0;
-        i += 1;
-    }
-    if i == 0 {
-        format!("{bytes} B")
-    } else {
-        format!("{v:.1} {}", UNITS[i])
-    }
 }
 
 const CLAUDE_SNIPPET: &str = r#"  {
@@ -439,158 +328,6 @@ const GENERIC_SNIPPET: &str = r#"  {
 mod tests {
     use super::*;
 
-    fn assets(names: &[&str]) -> Vec<Asset> {
-        names
-            .iter()
-            .map(|n| Asset {
-                name: (*n).into(),
-                browser_download_url: format!("https://example.invalid/{n}"),
-            })
-            .collect()
-    }
-
-    fn plat(os: Os, arch: Arch) -> Platform {
-        Platform { os, arch }
-    }
-
-    #[test]
-    fn linux_优先挑_appimage() {
-        let a = assets(&[
-            "OpenPencil_0.13.2_amd64.deb",
-            "OpenPencil_0.13.2_amd64.AppImage",
-            "OpenPencil_0.13.2_x64.dmg",
-        ]);
-        let got = pick_asset(&a, plat(Os::Linux, Arch::X86_64)).unwrap();
-        assert_eq!(got.name, "OpenPencil_0.13.2_amd64.AppImage");
-    }
-
-    #[test]
-    fn 没有_appimage_时退到_deb() {
-        let a = assets(&["OpenPencil_0.13.2_amd64.deb"]);
-        let got = pick_asset(&a, plat(Os::Linux, Arch::X86_64)).unwrap();
-        assert_eq!(got.name, "OpenPencil_0.13.2_amd64.deb");
-    }
-
-    #[test]
-    fn 架构不对的附件不会被当成本机的() {
-        // 这条最要紧：拿一个 arm64 的包在 x86 机器上跑，报错是「格式不对」，
-        // 跟「上游没发这个平台」看着完全不同。
-        let a = assets(&["OpenPencil_0.13.2_arm64.AppImage"]);
-        assert!(pick_asset(&a, plat(Os::Linux, Arch::X86_64)).is_none());
-    }
-
-    #[test]
-    fn 架构的几种写法都认() {
-        for name in [
-            "OpenPencil_1.0.0_x86_64.AppImage",
-            "OpenPencil_1.0.0_amd64.AppImage",
-            "OpenPencil_1.0.0_x64.AppImage",
-        ] {
-            let a = assets(&[name]);
-            assert!(
-                pick_asset(&a, plat(Os::Linux, Arch::X86_64)).is_some(),
-                "没认出 {name}"
-            );
-        }
-        for name in [
-            "OpenPencil_1.0.0_aarch64.AppImage",
-            "OpenPencil_1.0.0_arm64.AppImage",
-        ] {
-            let a = assets(&[name]);
-            assert!(
-                pick_asset(&a, plat(Os::Linux, Arch::Aarch64)).is_some(),
-                "没认出 {name}"
-            );
-        }
-    }
-
-    #[test]
-    fn 名字里不提架构的当通用包() {
-        // macOS 的 universal dmg 不带架构后缀。
-        let a = assets(&["OpenPencil_1.0.0_universal.dmg"]);
-        assert!(pick_asset(&a, plat(Os::MacOs, Arch::Aarch64)).is_some());
-    }
-
-    #[test]
-    fn macos_按架构区分两份_dmg() {
-        let a = assets(&["OpenPencil_1.0.0_x64.dmg", "OpenPencil_1.0.0_aarch64.dmg"]);
-        assert_eq!(
-            pick_asset(&a, plat(Os::MacOs, Arch::Aarch64)).unwrap().name,
-            "OpenPencil_1.0.0_aarch64.dmg"
-        );
-        assert_eq!(
-            pick_asset(&a, plat(Os::MacOs, Arch::X86_64)).unwrap().name,
-            "OpenPencil_1.0.0_x64.dmg"
-        );
-    }
-
-    #[test]
-    fn 大小写不影响匹配() {
-        let a = assets(&["OpenPencil_1.0.0_AMD64.appimage"]);
-        assert!(pick_asset(&a, plat(Os::Linux, Arch::X86_64)).is_some());
-    }
-
-    /// 上游 v0.15.1 的真实附件清单。
-    ///
-    /// 挑附件这件事唯一会出错的地方就是上游改了命名，所以拿一份真的来钉住：
-    /// 每个 `.sig`、`latest.json`、Windows 的 exe/msi 都在里面，一条规则漏了
-    /// 就会挑中它们中的某一个。
-    const V0_15_1: &[&str] = &[
-        "latest.json",
-        "OpenPencil-0.15.1-1.x86_64.rpm",
-        "OpenPencil-0.15.1-1.x86_64.rpm.sig",
-        "OpenPencil_0.15.1_aarch64.dmg",
-        "OpenPencil_0.15.1_amd64.AppImage",
-        "OpenPencil_0.15.1_amd64.AppImage.sig",
-        "OpenPencil_0.15.1_amd64.deb",
-        "OpenPencil_0.15.1_amd64.deb.sig",
-        "OpenPencil_0.15.1_arm64-setup.exe",
-        "OpenPencil_0.15.1_arm64_en-US.msi",
-        "OpenPencil_0.15.1_x64-setup.exe",
-        "OpenPencil_0.15.1_x64.dmg",
-        "OpenPencil_0.15.1_x64_en-US.msi",
-        "OpenPencil_aarch64.app.tar.gz",
-    ];
-
-    #[test]
-    fn 从真实的_release_里挑对了() {
-        let a = assets(V0_15_1);
-        assert_eq!(
-            pick_asset(&a, plat(Os::Linux, Arch::X86_64)).unwrap().name,
-            "OpenPencil_0.15.1_amd64.AppImage"
-        );
-        assert_eq!(
-            pick_asset(&a, plat(Os::MacOs, Arch::Aarch64)).unwrap().name,
-            "OpenPencil_0.15.1_aarch64.dmg"
-        );
-        assert_eq!(
-            pick_asset(&a, plat(Os::MacOs, Arch::X86_64)).unwrap().name,
-            "OpenPencil_0.15.1_x64.dmg"
-        );
-        // 上游这一版没给 linux/arm64 发任何包。挑不到要明说，不能拿 x86 的凑数。
-        assert!(pick_asset(&a, plat(Os::Linux, Arch::Aarch64)).is_none());
-    }
-
-    #[test]
-    fn 不相干的附件不会被挑中() {
-        // release 里常常还挂着 latest.json、签名文件这些。
-        let a = assets(&["latest.json", "OpenPencil_1.0.0_amd64.AppImage.sig"]);
-        assert!(pick_asset(&a, plat(Os::Linux, Arch::X86_64)).is_none());
-    }
-
-    #[test]
-    fn 没有附件时挑不出东西() {
-        assert!(pick_asset(&[], plat(Os::Linux, Arch::X86_64)).is_none());
-    }
-
-    #[test]
-    fn 字节数转成人看的单位() {
-        assert_eq!(human_size(0), "0 B");
-        assert_eq!(human_size(512), "512 B");
-        assert_eq!(human_size(1024), "1.0 KiB");
-        assert_eq!(human_size(1024 * 1024 * 3 / 2), "1.5 MiB");
-    }
-
     #[test]
     fn 额外动作不收参数() {
         let t = OpenPencil::from_env();
@@ -599,5 +336,28 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("不收参数"), "实际: {err}");
+    }
+
+    #[test]
+    fn 旧的_home_变量名仍然认() {
+        // Bash 时代把 open-pencil 当服务管，机器上已经有的 dist/ 不该因为改了个
+        // 变量名就找不到。
+        std::env::remove_var("OPEN_PENCIL_HOME");
+        std::env::set_var("OPEN_PENCIL_SERVICE_HOME", "/opt/旧地方");
+        assert_eq!(OpenPencil::from_env().home, PathBuf::from("/opt/旧地方"));
+        // 两个都设的时候新名字说了算。
+        std::env::set_var("OPEN_PENCIL_HOME", "/opt/新地方");
+        assert_eq!(OpenPencil::from_env().home, PathBuf::from("/opt/新地方"));
+        std::env::remove_var("OPEN_PENCIL_HOME");
+        std::env::remove_var("OPEN_PENCIL_SERVICE_HOME");
+    }
+
+    #[test]
+    fn 字面量_latest_等同于不钉版本() {
+        std::env::set_var("OPEN_PENCIL_VERSION", "latest");
+        assert_eq!(OpenPencil::from_env().version, None);
+        std::env::set_var("OPEN_PENCIL_VERSION", "0.15.1");
+        assert_eq!(OpenPencil::from_env().version.as_deref(), Some("0.15.1"));
+        std::env::remove_var("OPEN_PENCIL_VERSION");
     }
 }

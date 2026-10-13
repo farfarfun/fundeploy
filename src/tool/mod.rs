@@ -8,6 +8,8 @@
 //! `start` 报成功而什么都没起，`status` 答「已停止」而它压根不是跑的东西。
 //! 少一个 trait 省不下多少代码，却要让每个使用者先学会哪些动作是假的。
 
+pub mod brew;
+pub mod cockpit_tools;
 pub mod open_pencil;
 pub mod registry;
 
