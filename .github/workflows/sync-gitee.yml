@@ -1,11 +1,21 @@
 name: sync-gitee
 
-# 每次提交（任意分支/标签）都触发，将本仓库镜像到 Gitee 的 farfarfun/fundeploy。
-# 参考 farfarfun/daily-action 里的 Mirror to Gitee 方案，但那个 workflow
-# 用 hub-mirror-action 批量镜像整个 org 的 129+ 个仓库；这里只同步单个仓库，
-# 用 git clone --mirror + push 更直接，也不需要能建仓的 GITEE_TOKEN。
+# 镜像到 Gitee 的 farfarfun/fundeploy。
+#
+# 组织级的 action-daily 每两小时会把 farfarfun 下的所有仓库全量镜像一遍，用的
+# 也是这个 action。这儿还单独留一份，是因为那一遍只搬 git refs：对一个靠预编译
+# 二进制分发的工具来说，Gitee 上有 tag 没 release、有 release 没附件，等于没镜像。
+# 顺带把延迟从「最多两小时」压到「push 即跟」。
+
 on:
   push:
+  # 发版那条线得等 release.yml 跑完才有附件。它用默认的 GITHUB_TOKEN 建 release，
+  # 而 token 建出来的东西按 GitHub 的规矩不会再触发 on: release —— 所以这里盯的
+  # 是 release.yml 整个跑完，而不是 release 事件本身。
+  workflow_run:
+    workflows: [release]
+    types: [completed]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -16,30 +26,40 @@ concurrency:
 
 jobs:
   mirror:
+    # workflow_run 连失败的那次也会报 completed，别拿一次没发成的版去同步。
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
-      - name: Mirror push to Gitee
+      # SSH key 管的是 git，建 release、传附件走的是 REST API，要的是另一个凭据。
+      # 缺 token 时只降级掉 release 那一半，git 照搬——但要说出来，否则「Gitee 上
+      # 没有新版本」这种事只能等人来报。
+      - id: creds
+        name: 看看 Gitee 的凭据齐不齐
         env:
           GITEE_RSA_PRIVATE_KEY: ${{ secrets.GITEE_RSA_PRIVATE_KEY }}
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
         run: |
           set -euo pipefail
+          [ -n "${GITEE_RSA_PRIVATE_KEY:-}" ] || {
+            echo "::error::没有 GITEE_RSA_PRIVATE_KEY，没法推到 Gitee。"
+            exit 1
+          }
+          if [ -n "${GITEE_TOKEN:-}" ]; then
+            echo "releases=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "releases=false" >>"$GITHUB_OUTPUT"
+            echo "::warning::没有 GITEE_TOKEN，只镜像 git，release 和附件不搬。"
+          fi
 
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
-          printf '%s\n' "$GITEE_RSA_PRIVATE_KEY" > ~/.ssh/gitee_rsa
-          chmod 600 ~/.ssh/gitee_rsa
-          ssh-keyscan -t rsa gitee.com >> ~/.ssh/known_hosts 2>/dev/null
-          export GIT_SSH_COMMAND="ssh -i ~/.ssh/gitee_rsa -o UserKnownHostsFile=~/.ssh/known_hosts"
-
-          # --mirror 拉取全部分支与标签；不用 actions/checkout 是因为它默认
-          # 只取触发时的那个 ref，镜像会漏掉其他分支/标签。
-          git clone --mirror "https://github.com/${GITHUB_REPOSITORY}.git" repo-mirror
-          cd repo-mirror
-
-          # GitHub 会把每个 PR 暴露成 refs/pull/<n>/head，--mirror clone 会带上它们；
-          # Gitee 把这些当「隐藏 ref」拒绝更新（deny updating a hidden ref），导致
-          # `push --mirror` 整体报错退出 1 —— 即使 heads/tags 那部分其实已经推送成功。
-          # 只推 heads/tags，--prune 保留「删除 Gitee 上已不存在分支/标签」的镜像语义。
-          git push --prune -f git@gitee.com:farfarfun/fundeploy.git \
-            'refs/heads/*:refs/heads/*' 'refs/tags/*:refs/tags/*'
+      - name: 镜像到 Gitee
+        uses: farfarfun-action/mirror-repo@v1
+        with:
+          src: github/${{ github.repository_owner }}
+          dst: gitee/${{ github.repository_owner }}
+          # 公开仓库匿名也读得到，但匿名限流按 runner 的出口 IP 算，是共用的。
+          src_token: ${{ github.token }}
+          dst_key: ${{ secrets.GITEE_RSA_PRIVATE_KEY }}
+          dst_token: ${{ secrets.GITEE_TOKEN }}
+          repo-names: ${{ github.event.repository.name }}
+          sync-releases: ${{ steps.creds.outputs.releases }}
