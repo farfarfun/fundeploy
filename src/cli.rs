@@ -89,9 +89,9 @@ enum Command {
         #[command(subcommand)]
         action: Option<SkillsAction>,
     },
-    /// 升级 fundeploy 自己
+    /// 升级 fundeploy 自己（包管理器装的就调它自己的升级命令）
     Upgrade {
-        /// 装指定版本。比当前旧也照做，这是回退的用法。
+        /// 装指定版本。比当前旧也照做，这是回退的用法。brew / apt 装的点不了版本。
         #[arg(long, value_name = "版本")]
         version: Option<String>,
         /// 只看有没有新版本，不动手

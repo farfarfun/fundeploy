@@ -94,11 +94,29 @@ cargo install fundeploy
 
 ```bash
 fundeploy upgrade            # 升到最新版
-fundeploy upgrade --check    # 只看有没有新版本
+fundeploy upgrade --check    # 只看有没有新版本，什么都不动
 fundeploy upgrade --version 0.2.0   # 装指定版本，比当前旧也照做（这是回退的用法）
 ```
 
-换下来的新二进制会先跑一次 `--version` 确认能起来，再原子替换掉自己；跑不起来就原样不动。
+不管当初是怎么装的，升级都是这一条命令，它会先认出这份二进制归谁管，再走对应的路：
+
+| 装法 | `fundeploy upgrade` 做什么 |
+| --- | --- |
+| 装机脚本 / 直接下二进制 | 从 Release 下对应平台的 tar.gz，原子替换掉自己 |
+| Homebrew | 进 tap 仓库 `git pull --ff-only`，再 `brew upgrade <tap>/fundeploy` |
+| APT | `apt-get update` 后 `apt-get install fundeploy`（按需加 sudo） |
+| cargo | `cargo install fundeploy --force --locked`（从源码编，慢） |
+
+自己管的那条路：换下来的新二进制会先跑一次 `--version` 确认能起来，再原子替换掉自己；
+跑不起来就原样不动。
+
+交给包管理器的那几条路，跑完会再问一次它那边现在装着哪一版再下结论——`brew upgrade`
+和 `apt install` 在「没有更新可升」时也退出 0，光看退出码会把没升上去当成升成功了。
+发版之后这几条渠道要等几分钟（apt 索引和 formula 等 farfarfun/packages 重建，cargo 等
+crates.io 发布），所以刚看到 GitHub 上有新版时这边可能还是旧的，过一会儿再试。
+
+`--version` 只有自己管的安装和 cargo 支持：brew 的 tap 里只有一个跟着最新版走的
+formula，apt 源也只放最新一版，点了版本会直接报错并给出路，不会假装装上了。
 
 卸载就是删掉那个文件。用 Homebrew / APT 装的交给对应包管理器：`brew uninstall fundeploy`、
 `sudo apt remove fundeploy`。

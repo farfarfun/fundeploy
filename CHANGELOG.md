@@ -3,6 +3,45 @@
 版本号以 `Cargo.toml` 里的 `version` 为准；发布由推同版本的 `v*` tag 触发（见
 `.github/workflows/release.yml`），因此「有 tag ＝ 已发布」。
 
+## [0.3.4] - 2026-10-15
+
+### 新增
+
+- **`upgrade` 现在会把升级交回原渠道，不再只是把命令打印出来让人自己敲。** 0.3.1 起
+  包管理器装的那份一律拒绝升级（原地换文件那边不知情，下一次 `brew upgrade` 会盖回
+  去），拒绝的判断没错，但拒绝完撒手不管，等于同一条 `fundeploy upgrade` 在一半的
+  装法下都不干活。现在它先认出这份二进制归谁管，再走对应的路：
+
+  | 装法 | 做什么 |
+  | --- | --- |
+  | 装机脚本 / 直接下二进制 | 照旧：下 tar.gz，原子替换掉自己 |
+  | Homebrew | 进 tap 仓库 `git pull --ff-only`，再 `brew upgrade <tap>/fundeploy` |
+  | APT | `apt-get update` 后 `apt-get install fundeploy`（按需加 sudo） |
+  | cargo | `cargo install fundeploy --force --locked` |
+
+  Homebrew 那条路两步缺一不可：tap 是个普通的 git clone，不刷新的话里面的 formula
+  还写着旧版本，`brew upgrade` 自然「无事可做」而且退出 0——看着像升过了，其实没动。
+  tap 目录从 keg 的 `INSTALL_RECEIPT.json` 里的 `source.tap` 问 `brew --repository`
+  要（自己拼 `Library/Taps/...` 容易拼错），问不出来就退到从 `source.path` 往上找
+  `.git`，再找不到就把刷新交给 brew 自己的 auto-update 并说一声。tap 刷成功了才加
+  `HOMEBREW_NO_AUTO_UPDATE=1`：那一步要去 GitHub 把所有 tap 拉一轮，国内就是干等，
+  而我们要的那个 formula 已经是最新的了。
+
+- **交回渠道之后会核实再下结论。** `brew upgrade` / `apt-get install` 在「没有更新
+  可升」时同样退出 0，所以升完再问一次那边现在装着哪一版（brew 问
+  `brew list --versions`，cargo / apt 问那个文件自己的 `--version`——它俩的路径升级
+  前后不变）：真新了就说新了；还是同一版就明说那边暂时没有更新的，并提醒发版后 apt
+  索引、formula、crates.io 都要等几分钟；装出个更旧的、或者 `--version` 点的和落地的
+  不是一版，都报警告而不是成功。
+
+### 变更
+
+- `upgrade --version` 的边界说清楚了：brew 的 tap 里只有一个跟着最新版走的 formula，
+  apt 源也只放最新一版，这两种安装下点版本直接报错，并给出走得通的路（装一份到
+  `~/.local/bin` 自己管，那条路上点版本一直好使）。cargo 装的照旧支持
+  （`cargo install --version`）。
+- `upgrade --check` 会多报一行安装渠道，顺带说明这种安装下升级背后会跑什么命令。
+
 ## [0.3.3] - 2026-10-14
 
 ### 修复
