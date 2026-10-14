@@ -381,6 +381,7 @@ impl Paperclip {
             return Supervisor {
                 available: None,
                 pid: None,
+                detail: None,
                 message: String::new(),
             };
         };
@@ -392,6 +393,7 @@ impl Paperclip {
                 .as_i64()
                 .and_then(|p| i32::try_from(p).ok())
                 .filter(|p| *p > 0),
+            detail: v["detail"].as_str().map(str::to_string),
             message: v["message"]
                 .as_str()
                 .unwrap_or_default()
@@ -568,16 +570,16 @@ impl Paperclip {
         )
     }
 
-    /// 停掉 fundeploy 托管的进程并清掉 PID 文件。
+    /// 停掉 fundeploy 托管的进程并清掉 PID 文件。返回有没有真停掉一个进程。
     ///
     /// `quiet`：没东西可停时不出声，供官方 stop 之后的收尾调用——那条路径已经有输出了。
-    fn stop_fallback(&self, quiet: bool) -> Result<()> {
+    fn stop_fallback(&self, quiet: bool) -> Result<bool> {
         let Some(pid) = self.fallback_pid() else {
             if !quiet {
                 ui::info("Paperclip 没在运行（没有 fundeploy 托管的进程）。");
             }
             let _ = std::fs::remove_file(self.pid_file());
-            return Ok(());
+            return Ok(false);
         };
         ui::step(format!(
             "停止 fundeploy 托管的 Paperclip（PID {pid}，最长等 {} 秒排空运行中的任务）",
@@ -590,6 +592,37 @@ impl Paperclip {
         if !quiet {
             ui::ok("已停止 fundeploy 托管的 Paperclip。");
         }
+        Ok(true)
+    }
+
+    /// 官方 `service stop` 报错之后，判断这是不是「本来就停着」。
+    ///
+    /// 停着的服务再停一次该是个 no-op，但官方 stop 把服务管理器的原始错误直接升成了
+    /// 失败：launchd 后端的 `stop()` 是一句裸的 `launchctl bootout`，job 没加载时它以
+    /// ESRCH(3) 退出（`Boot-out failed: 3: No such process`），而同一个 bootout 在官方
+    /// 的 install / uninstall 里都带着 `.catch()`，只有 stop 没有；systemd 后端的
+    /// `systemctl --user stop` 对没加载的单元同样非零退出。
+    ///
+    /// 只有核实过才能说「已经停了」——真停不下来（没权限、卡在退出中、job 还加载着会
+    /// 被 KeepAlive 拉回来）必须保留失败语义，否则又是一次假成功。
+    fn confirm_stopped(&self, code: i32, reaped: bool) -> Result<()> {
+        let cfg = self.config();
+        let sup = self.supervisor();
+        let listening = port::is_listening(&cfg.host, cfg.port);
+        if let Some(evidence) = still_running(&sup, listening, cfg.port) {
+            bail!("paperclipai service stop 失败（退出码 {code}）：{evidence}");
+        }
+        ui::ok(if reaped {
+            "已停止 fundeploy 托管的 Paperclip。"
+        } else {
+            "Paperclip 本来就没在跑，不用停。"
+        });
+        ui::hint(format!(
+            "上面官方 service stop 的报错（退出码 {code}）不改变结果：服务管理器里没有在跑的实例，\
+             端口 {} 也没人在听。服务没加载时 launchctl bootout / systemctl stop 报的就是这种错，\
+             官方 stop 没把它当成 no-op。",
+            cfg.port
+        ));
         Ok(())
     }
 
@@ -1099,14 +1132,21 @@ impl Service for Paperclip {
     fn stop(&self) -> Result<()> {
         let sup = self.supervisor();
         if sup.available != Some(false) {
-            self.must(&["service", "stop"])?;
+            let code = self.exec(&["service", "stop"])?;
             // 无条件再收一次 fundeploy 托管的进程：机器从「没有 supervisor」变成「有」
             // 之后，上次 start 留下的那个不归 supervisor 管辖，只能从 PID 文件收尾。
-            return self.stop_fallback(true);
+            // 官方那步失败时也要收——失败的常见原因恰恰是服务管理器里没有这个服务，
+            // 那种机器上真在跑的就是托管的那个。
+            let reaped = self.stop_fallback(true)?;
+            if code != 0 {
+                // 官方 stop 分不清「停不下来」和「本来就停着」，自己核实一遍。
+                return self.confirm_stopped(code, reaped);
+            }
+            return Ok(());
         }
         // 关掉兜底时也不该假成功：官方 stop 在这种机器上什么都不会停。
         self.require_fallback(&sup)?;
-        self.stop_fallback(false)
+        self.stop_fallback(false).map(|_| ())
     }
 
     fn restart(&self) -> Result<()> {
@@ -1208,6 +1248,9 @@ struct Supervisor {
     /// 有没有可用的服务管理器。`None` 表示问不出来——那时候不猜，让官方命令自己报错。
     available: Option<bool>,
     pid: Option<i32>,
+    /// 服务在服务管理器眼里的状态。launchd 给 `running` / `loaded`，job 没加载时
+    /// （`launchctl print` 失败）这个字段根本不存在；systemd 给的是 ActiveState。
+    detail: Option<String>,
     message: String,
 }
 
@@ -1219,6 +1262,44 @@ impl Supervisor {
             self.message.clone()
         }
     }
+}
+
+/// 服务在服务管理器眼里是不是已经彻底停了（没在跑，而且不会被自己拉回来）。
+///
+/// 「没有 pid」不等于「停了」：官方的 LaunchAgent 带 `KeepAlive <true/>`，job 只要还
+/// 加载着，进程死了 launchd 也会在 ThrottleInterval 之后重新拉起来。两种后端给的值
+/// 不一样——launchd 的 `loaded` 表示加载着但此刻没进程，而 job 没加载时它根本不带
+/// detail；systemd 给的是 ActiveState，没加载的单元是 `inactive`。
+fn supervisor_idle(detail: Option<&str>) -> bool {
+    match detail {
+        None => true,
+        Some(d) => matches!(d, "inactive" | "failed" | "dead" | "not-found"),
+    }
+}
+
+/// 官方 `service stop` 报错之后核实服务到底停了没有。返回 `Some(还在跑的证据)` 就是
+/// 真的没停下来。
+fn still_running(sup: &Supervisor, listening: bool, port: u16) -> Option<String> {
+    if let Some(pid) = sup.pid {
+        return Some(format!("服务还在跑（PID {pid}）"));
+    }
+    // 状态问不出来（`service status --json` 没给出能解析的 JSON）时不替它下结论：
+    // 手上只剩一个端口探测，而端口号是从可能已经读坏的 config.json 来的。
+    if sup.available.is_none() {
+        return Some("问不出服务管理器里的状态，核实不了是不是真停了".to_string());
+    }
+    if !supervisor_idle(sup.detail.as_deref()) {
+        return Some(format!(
+            "服务此刻没进程，但在服务管理器里还加载着（状态 {}），会被重新拉起来",
+            sup.detail.as_deref().unwrap_or("未知")
+        ));
+    }
+    if listening {
+        return Some(format!(
+            "端口 {port} 还有人在听（可能是 `fundeploy service paperclip run` 起的前台实例，不归服务管理器管）"
+        ));
+    }
+    None
 }
 
 /// 官方 `update --check --json` 的判读。
@@ -1766,6 +1847,47 @@ mod tests {
         pkgs.dedup();
         assert_eq!(pkgs.len(), n, "插件清单里有重复的包名");
         assert!(CATALOG.iter().all(|p| p.url.starts_with("https://")));
+    }
+
+    #[test]
+    fn 官方_stop_报错之后分得清本来就停着和还没停下来() {
+        let sup = |pid: Option<i32>, detail: Option<&str>| Supervisor {
+            available: Some(true),
+            pid,
+            detail: detail.map(str::to_string),
+            message: String::new(),
+        };
+
+        // launchd 的 job 没加载时 status 既没有 pid 也没有 detail，端口也空着：
+        // bootout 报的那句 No such process 不是故障，stop 该以成功收场。
+        assert_eq!(still_running(&sup(None, None), false, 8804), None);
+        // systemd 那边没加载的单元是 inactive，同理。
+        assert_eq!(
+            still_running(&sup(None, Some("inactive")), false, 8804),
+            None
+        );
+
+        // 有 pid 就是没停下来，必须保留失败语义，不能因为「停过了」就报成功。
+        assert!(
+            still_running(&sup(Some(123), None), false, 8804).is_some_and(|e| e.contains("123"))
+        );
+        // 此刻没进程但 job 还加载着：KeepAlive 会把它拉回来，这不叫停了。
+        for d in ["loaded", "running", "active", "activating", "deactivating"] {
+            assert!(
+                still_running(&sup(None, Some(d)), false, 8804).is_some(),
+                "detail={d}"
+            );
+        }
+        // 服务管理器说没在跑，可端口还有人听——多半是 run 起的前台实例，也不算停了。
+        assert!(still_running(&sup(None, None), true, 8804).is_some_and(|e| e.contains("8804")));
+        // 状态问不出来时宁可报失败：此时端口号也可能是从读坏的配置里来的默认值。
+        let unknown = Supervisor {
+            available: None,
+            pid: None,
+            detail: None,
+            message: String::new(),
+        };
+        assert!(still_running(&unknown, false, 8804).is_some());
     }
 
     #[test]

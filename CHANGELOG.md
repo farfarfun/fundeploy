@@ -3,6 +3,34 @@
 版本号以 `Cargo.toml` 里的 `version` 为准；发布由推同版本的 `v*` tag 触发（见
 `.github/workflows/release.yml`），因此「有 tag ＝ 已发布」。
 
+## [0.3.3] - 2026-10-14
+
+### 修复
+
+- **`service paperclip stop` 不再把「本来就停着」报成失败。** 服务没在跑的时候停一
+  次，得到的是：
+
+  ```
+  Command failed: launchctl bootout gui/501/ing.paperclip.paperclipai
+  Boot-out failed: 3: No such process
+
+  错误: paperclipai service stop 失败（退出码 1）
+  ```
+
+  根子在官方 CLI：它 launchd 后端的 `stop()` 是一句裸的 `launchctl bootout`，job 没
+  加载时 bootout 以 ESRCH(3) 退出。同一个 bootout 在它的 install / uninstall 里都带
+  着 `.catch()` 吞掉，偏偏 stop 这一处没有（systemd 后端的 `systemctl --user stop`
+  对没加载的单元同样非零退出）。于是一个本该是 no-op 的操作成了硬失败。
+
+  现在官方 stop 报错之后自己核实一遍再下结论：服务管理器里没有 pid、job 也不是「加
+  载着、进程没了会被 KeepAlive 拉回来」的状态、端口还没人在听——三条都成立就按已停
+  止收场，并说明那条报错为什么不改变结果。任何一条不成立照旧报失败：真停不下来
+  （没权限、卡在退出中、马上会被拉起来）必须保留失败语义，这种地方的假成功比报错
+  更坏。
+
+  顺带，官方 stop 失败时也会去收 fundeploy 托管的那个后台进程。失败的常见原因恰恰
+  是服务管理器里根本没有这个服务，那种机器上真在跑的就是托管的那一个。
+
 ## [0.3.2] - 2026-10-14
 
 ### 新增
