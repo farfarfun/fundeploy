@@ -53,7 +53,7 @@ jobs:
           fi
 
       - name: 镜像到 Gitee
-        uses: farfarfun-action/mirror-repo@v1
+        uses: farfarfun-action/mirror-repo@v1.1.0
         with:
           src: github/${{ github.repository_owner }}
           dst: gitee/${{ github.repository_owner }}
