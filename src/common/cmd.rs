@@ -93,6 +93,50 @@ where
     S: AsRef<OsStr>,
 {
     let argv = to_argv(args);
+    let status = command(&argv, env, cwd)?
+        .status()
+        .with_context(|| format!("起不了进程: {}", render(&argv)))?;
+    Ok(status.code())
+}
+
+/// 同 [`spawn_status_in`]，但命令跑着的时候每 `tick` 回调一次。
+///
+/// 区别只在于它不阻塞在 `wait` 上。有些上游命令会闷头干很久、期间一个字都不输出
+/// （paperclip 的 managed install 把 npm 的输出整个捕获了），光靠直通 stdio 看不出
+/// 它是在干活还是卡死了；调用方需要一个空隙去别处采集进度。
+///
+/// 回调在主线程上跑，别在里面做慢活——这个循环同时负责发现子进程退出，回调拖多久
+/// 就晚发现多久。真慢的采集自己限频。
+pub fn spawn_status_ticking<I, S>(
+    args: I,
+    env: &[EnvEdit],
+    cwd: Option<&std::path::Path>,
+    tick: Duration,
+    on_tick: &mut dyn FnMut(),
+) -> Result<Option<i32>>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let argv = to_argv(args);
+    let mut child = command(&argv, env, cwd)?
+        .spawn()
+        .with_context(|| format!("起不了进程: {}", render(&argv)))?;
+
+    loop {
+        if let Some(st) = child
+            .try_wait()
+            .with_context(|| format!("等不到结果: {}", render(&argv)))?
+        {
+            return Ok(st.code());
+        }
+        on_tick();
+        std::thread::sleep(tick);
+    }
+}
+
+/// 拼一条待执行的命令：stdio 全部继承。
+fn command(argv: &[String], env: &[EnvEdit], cwd: Option<&std::path::Path>) -> Result<Command> {
     let (prog, rest) = argv
         .split_first()
         .ok_or_else(|| anyhow!("spawn_status() 收到空命令"))?;
@@ -103,10 +147,7 @@ where
     if let Some(dir) = cwd {
         c.current_dir(dir);
     }
-    let status = c
-        .status()
-        .with_context(|| format!("起不了进程: {}", render(&argv)))?;
-    Ok(status.code())
+    Ok(c)
 }
 
 /// 把环境改动套到一条待执行的命令上。
@@ -404,6 +445,69 @@ mod tests {
         assert!(run(Vec::<String>::new()).is_err());
         assert!(try_run(Vec::<String>::new()).is_err());
         assert!(try_run_timeout(Vec::<String>::new(), Duration::from_secs(1)).is_err());
+        assert!(spawn_status_ticking(
+            Vec::<String>::new(),
+            &[],
+            None,
+            Duration::from_millis(10),
+            &mut || {}
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn 命令跑着的时候回调被调到() {
+        let mut n = 0usize;
+        let code = spawn_status_ticking(
+            ["sh", "-c", "sleep 0.5"],
+            &[],
+            None,
+            Duration::from_millis(20),
+            &mut || n += 1,
+        )
+        .unwrap();
+        assert_eq!(code, Some(0));
+        // 20ms 一次、跑半秒，少于 5 次说明轮询根本没转起来。
+        assert!(n >= 5, "回调只被调了 {n} 次");
+    }
+
+    #[test]
+    fn 带回调的那条路退出码照旧原样返回() {
+        let code = spawn_status_ticking(
+            ["sh", "-c", "exit 7"],
+            &[],
+            None,
+            Duration::from_millis(10),
+            &mut || {},
+        )
+        .unwrap();
+        assert_eq!(code, Some(7));
+    }
+
+    #[test]
+    fn 带回调的那条路认环境改动和工作目录() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out");
+        // 删变量和写变量两种改动都要生效；cwd 决定了 out 落在哪儿。
+        std::env::set_var("__FD_TICK_DROP", "存在");
+        let code = spawn_status_ticking(
+            [
+                "sh",
+                "-c",
+                r#"printf '%s/%s' "${__FD_TICK_SET-无}" "${__FD_TICK_DROP-无}" > out"#,
+            ],
+            &[
+                ("__FD_TICK_SET".into(), Some("有".into())),
+                ("__FD_TICK_DROP".into(), None),
+            ],
+            Some(dir.path()),
+            Duration::from_millis(10),
+            &mut || {},
+        )
+        .unwrap();
+        std::env::remove_var("__FD_TICK_DROP");
+        assert_eq!(code, Some(0));
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), "有/无");
     }
 
     #[test]

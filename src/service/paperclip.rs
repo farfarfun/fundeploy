@@ -27,6 +27,7 @@ use std::time::{Duration, Instant};
 
 use super::{Extra, Service};
 use crate::common::cmd::{self, EnvEdit};
+use crate::common::fs::{dir_size, human_size};
 use crate::common::{env, port, proc, version};
 use crate::ui;
 
@@ -314,13 +315,27 @@ impl Paperclip {
 
     /// 跑一条官方命令，输出直通终端，返回退出码。
     fn exec_with(&self, args: &[&str], extra_env: &[EnvEdit]) -> Result<i32> {
+        self.exec_inner(args, extra_env, false)
+    }
+
+    /// 同 [`Self::exec_with`]，另外盯着 managed install 的暂存目录报进度。
+    /// 只用在真会去装 payload 的那几条命令上（见 [`InstallWatch`]）。
+    fn exec_watching(&self, args: &[&str], extra_env: &[EnvEdit]) -> Result<i32> {
+        self.exec_inner(args, extra_env, true)
+    }
+
+    fn exec_inner(&self, args: &[&str], extra_env: &[EnvEdit], watch: bool) -> Result<i32> {
         let bin = self.require_cli()?;
         let mut env = self.cli_env(&self.config());
         env.extend_from_slice(extra_env);
 
         let mut argv = vec![bin.display().to_string()];
         argv.extend(args.iter().map(|s| (*s).to_string()));
-        let code = cmd::spawn_status_in(&argv, &env, None)?;
+        let code = if watch {
+            self.spawn_watching(&argv, &env)?
+        } else {
+            cmd::spawn_status_in(&argv, &env, None)?
+        };
 
         // payload 被删或损坏而 shim 还在时，官方 CLI 抛的是 node 的原始堆栈，看不出
         // 是安装坏了。失败之后补一次探测把它翻译成能照着做的事；正常路径零开销。
@@ -332,6 +347,22 @@ impl Paperclip {
             ));
         }
         Ok(code.unwrap_or(-1))
+    }
+
+    /// 跑一条会装 payload 的命令，中途按暂存目录报进度。
+    ///
+    /// stderr 不是终端就原样退回阻塞那条路：没人看的时候不该为了画一个隐藏的进度条
+    /// 每两秒走一遍七万个文件，非交互环境（CI、重定向到日志）的行为也就跟以前逐字节
+    /// 一致。
+    fn spawn_watching(&self, argv: &[String], env: &[EnvEdit]) -> Result<Option<i32>> {
+        if !std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+            return cmd::spawn_status_in(argv, env, None);
+        }
+        let mut watch = InstallWatch::new(&self.home);
+        let code = cmd::spawn_status_ticking(argv, env, None, WATCH_TICK, &mut || watch.tick());
+        // 子进程被打断时暂存目录可能还在，进度条也就还挂着；收尾不能只写在成功路径上。
+        watch.finish();
+        code
     }
 
     fn must(&self, args: &[&str]) -> Result<()> {
@@ -762,12 +793,22 @@ impl Paperclip {
         if !self.network_hint || self.proxy.is_some() {
             return;
         }
-        ui::warn(
-            "Paperclip 的依赖树实测约 1.4G（@openai/codex 370M、@paperclipai/server 360M、\
-             @anthropic-ai/* 220M）。官方 managed install 把 registry 钉死在 npmjs.org，换镜像\
-             对它无效（刻意的防投毒设计，有上游测试守着），受限网络请走代理：\
-             PAPERCLIP_HTTPS_PROXY=http://127.0.0.1:7890。设 PAPERCLIP_NETWORK_HINT=0 隐藏本行。",
-        );
+        // 体积按本机当前 payload 现量，不写死数字：依赖树一直在长（曾经的 1.4G 现在
+        // 是 2G 上下），而写死的那个数会让人以为升级只要下这么多。
+        let now = dir_size(&self.home.join("cli").join("current"));
+        let size = if now > 0 {
+            format!("本机当前这棵是 {}", human_size(now))
+        } else {
+            "约 2G".to_string()
+        };
+        ui::warn(format!(
+            "Paperclip 的依赖树很大（{size}），而且每次升级都是从零拼一棵新的——上游装到\
+             一个临时目录再原子换过去，换来的是失败不留残骸、回滚只动一个符号链接。重复升级\
+             便宜不便宜，取决于 ~/.npm/_cacache 热不热（tarball 命中就不再下载），所以别清它。\
+             官方 managed install 把 registry 钉死在 npmjs.org，换镜像对它无效（刻意的防投毒\
+             设计，有上游测试守着），受限网络请走代理：\
+             PAPERCLIP_HTTPS_PROXY=http://127.0.0.1:7890。设 PAPERCLIP_NETWORK_HINT=0 隐藏本行。"
+        ));
     }
 
     // ------------------------------------------------------------ 安装与升级
@@ -818,7 +859,9 @@ impl Paperclip {
 
         let mut full = self.cli_env(&self.config());
         full.extend(env);
-        match cmd::spawn_status_in(&argv, &full, None)? {
+        // 走 npx 引导时，npx 自己那份下载是 npm 直接打在终端上的（那会儿暂存目录还不
+        // 存在，进度条不出现），紧接着的 managed install 那段沉默才由 watch 接管。
+        match self.spawn_watching(&argv, &full)? {
             Some(0) => {}
             other => bail!(
                 "managed install 失败（退出码 {}）",
@@ -936,7 +979,8 @@ impl Paperclip {
         let mut argv = vec!["update"];
         argv.extend_from_slice(update_args);
         argv.push("--no-backup");
-        if self.exec_with(&argv, npm)? != 0 {
+        // update 是整条命令里最长的一段沉默：上游从头到尾只在最后 emit 一行。
+        if self.exec_watching(&argv, npm)? != 0 {
             // 尽力把服务拉起来，但保留 update 本身的失败语义。
             if let Err(e) = self.start() {
                 ui::warn(format!("换包失败后想把服务拉起来，也没成功: {e}"));
@@ -1337,6 +1381,248 @@ impl Npmrc {
 impl Drop for Npmrc {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// 两次量大小之间至少隔这么久。
+const MEASURE_EVERY: Duration = Duration::from_secs(2);
+
+/// 轮询子进程是否退出、以及暂存目录在不在的间隔。
+///
+/// 暂存目录 rename 成正式 payload 之后，上游紧接着就打那行结果，所以这一问要跟得紧
+/// ——慢了就会让进度条盖掉它。一次 `read_dir`（store 里只有两三个条目）的代价可以忽略。
+const WATCH_TICK: Duration = Duration::from_millis(500);
+
+/// managed install / update 期间，盯着上游正在写的暂存目录报进度。
+///
+/// 上游把 npm 的输出整个捕获掉了（`installNpmPayload` 用 `execFile` 系的 runCommand
+/// 跑 `npm install --prefix <暂存目录>`，不是继承 stdio），所以从「Installing
+/// paperclipai@x」到装完之间，这条命令一个字都不打。那一段实测要写 2.5 GiB、7 万多个
+/// 文件，几分钟到几十分钟，看起来跟卡死一模一样。
+///
+/// 但它正在写的地方是公开的：`<home>/cli/installs/npm/.<版本>.tmp-<pid>-<毫秒>`，装完
+/// rename 成正式 payload。盯着那个目录长大就能把那段沉默翻译成进度；分母用 `current`
+/// 指向的当前 payload——上游每次都是从零拼一棵新树，新旧两版体积相差一成上下，够估，
+/// 估小了就把分母顶上去（见 [`InstallWatch::tick`]）。
+///
+/// 上游在这一段不打输出，也正好意味着进度条不会和它抢同一片终端：暂存目录在的那段，
+/// 就是它闷着的那段。
+///
+/// 这段沉默里有两件事先后发生，实测 100 秒 + 70 秒，所以分两段报：
+///
+/// 1. **下载**：npm 先把 tarball 收进 `~/.npm/_cacache`，这期间暂存目录建好了但是空的。
+///    只盯暂存目录的话，最难熬的前一半会停在 `0 B` 上——那正是这次要解决的观感。这一段
+///    改看缓存的增量，没有分母（不知道总共要下多少），所以不报 ETA。
+/// 2. **解包**：往暂存目录里铺 7 万多个文件，有分母可报，ETA 这时才有意义。
+struct InstallWatch {
+    /// `<home>/cli/installs/npm`，暂存目录和正式 payload 都在这儿。
+    store: PathBuf,
+    /// `<home>/cli/current`，指向当前 payload，用来估分母。
+    current: PathBuf,
+    /// npm 的内容寻址缓存。不存在（第一次用 npm）就是 None，那时下载段只报时间。
+    cache: Option<PathBuf>,
+    bar: Option<indicatif::ProgressBar>,
+    /// 下次真正去量大小的时刻。
+    next: Instant,
+    /// 暂存目录最后一次量到的字节数。只增不减，见 [`InstallWatch::tick`]。
+    last: u64,
+    /// 开工时缓存的体积，下载段的进度是相对它的增量。
+    cache_base: u64,
+    started: Option<Instant>,
+}
+
+impl InstallWatch {
+    fn new(home: &Path) -> Self {
+        let cli = home.join("cli");
+        // npm 默认 `~/.npm/_cacache`，`npm_config_cache` 能改。刻意不去跑
+        // `npm config get cache`：那是一次几百毫秒的 node 启动，而这里只是为了让
+        // 下载段有个数字可看，猜错的代价仅仅是退回「只报时间」。
+        let cache = env::opt("npm_config_cache")
+            .map(|v| env::expand_tilde(&v).join("_cacache"))
+            .unwrap_or_else(|| env::home().join(".npm").join("_cacache"));
+        Self {
+            store: cli.join("installs").join("npm"),
+            current: cli.join("current"),
+            cache: cache.is_dir().then_some(cache),
+            bar: None,
+            next: Instant::now(),
+            last: 0,
+            cache_base: 0,
+            started: None,
+        }
+    }
+
+    /// 轮询回调，每 [`WATCH_TICK`] 一次。
+    fn tick(&mut self) {
+        let Some(staging) = staging_dir(&self.store) else {
+            // 还没出现（上游在解析版本号），或者已经 rename 走了 / 失败被删了。
+            self.finish();
+            return;
+        };
+        if self.bar.is_none() {
+            self.open(&staging);
+        }
+        if Instant::now() < self.next {
+            return;
+        }
+        let t0 = Instant::now();
+        let now = dir_size(&staging);
+        // 只认涨的那一侧：量到一半目录被 rename 走时这一趟会半途读空，照原样写进去
+        // 就是进度条往回跳，收尾那行也会报一个莫名其妙的小数字。
+        if now > self.last {
+            if self.last == 0 {
+                self.unpacking();
+            }
+            self.last = now;
+            if let Some(bar) = &self.bar {
+                // 分母是按旧版估的，新版更大就把它顶上去——不然最后那几个百分点会
+                // 停在 100% 上，还报着「还要 0s」。
+                if bar.length().is_some_and(|len| now > len) {
+                    bar.set_length(now);
+                }
+                bar.set_position(now);
+            }
+        } else if self.last == 0 {
+            // 还在下载段：暂存目录是空的，看缓存涨了多少。
+            if let (Some(cache), Some(bar)) = (&self.cache, &self.bar) {
+                bar.set_position(dir_size(cache).saturating_sub(self.cache_base));
+            }
+        }
+        // 下一次至少等这一趟实际耗时的 10 倍：依赖树越大走一趟越贵（见 dir_size），
+        // 这条让「看进度」这件事本身始终只占个位数的 I/O，不跟安装抢。
+        self.next = Instant::now() + MEASURE_EVERY.max(t0.elapsed() * 10);
+    }
+
+    fn open(&mut self, staging: &Path) {
+        let name = staging.file_name().unwrap_or_default().to_string_lossy();
+        let label = staging_version(&name).unwrap_or("依赖树").to_string();
+        self.cache_base = self.cache.as_deref().map(dir_size).unwrap_or(0);
+        self.started = Some(Instant::now());
+        ui::hint("上游装 payload 这一段不打任何输出，下面的进度是 fundeploy 在旁边量的。");
+        let bar = progress_bar();
+        bar.set_style(downloading_style(self.cache.is_some()));
+        bar.set_message(format!("{label} 下载依赖"));
+        bar.enable_steady_tick(STEADY_TICK);
+        self.bar = Some(bar);
+    }
+
+    /// 下载段转解包段：换模板、换分母，并把速率和 ETA 的估算从头算。
+    ///
+    /// 不 `reset()` 不行：位置要从「缓存增量」跳到「暂存目录大小」，两个量毫无关系，
+    /// 留着上一段的历史只会算出一个荒唐的 ETA。
+    fn unpacking(&mut self) {
+        let Some(bar) = &self.bar else { return };
+        // 分母只是个估计值（上游每次从零拼一棵新树，新旧两版体积差几个百分点），
+        // 所以说出来它是哪儿来的；没有旧 payload（全新安装）就只报已写入量。
+        let total = dir_size(&self.current);
+        bar.reset();
+        if total > 0 {
+            bar.set_length(total);
+            bar.set_style(unpacking_style());
+            bar.set_message(format!("解包（分母 {} 按当前版本估）", human_size(total)));
+        } else {
+            bar.set_style(downloading_style(true));
+            bar.set_message("解包".to_string());
+        }
+    }
+
+    /// 收尾。进度条还在就清掉，并留一行说明这一步花了多少。
+    fn finish(&mut self) {
+        let Some(bar) = self.bar.take() else { return };
+        bar.finish_and_clear();
+        let used = self.started.take().map(|t| t.elapsed()).unwrap_or_default();
+        if self.last == 0 {
+            // 一个字节都没量到：暂存目录刚建好就没了（上游在下载段就失败了）。
+            return;
+        }
+        // 措辞刻意中性：失败时暂存目录也会被上游的 finally 删掉，这行不该宣布成功。
+        ui::hint(format!(
+            "这一步写了约 {}，用了 {}。",
+            human_size(self.last),
+            human_secs(used)
+        ));
+    }
+}
+
+/// install store 里正在写的那个暂存目录。
+///
+/// 上游的命名是 `.<版本>.tmp-<pid>-<毫秒>`，认 `.` 开头加 `.tmp-` 两个特征——正式
+/// payload（`<版本>`）和那份临时 npmrc（`.npmrc-<pid>-<毫秒>`，是文件不是目录）都
+/// 不会被误认。
+///
+/// 可能有不止一个：上一次被 kill -9 打断时，上游 `finally` 里的清理没来得及跑。按
+/// （mtime, 名字）取最大的那个——名字里带着创建时的毫秒数，两条判据同向，不必依赖
+/// 文件系统的 mtime 精度。
+fn staging_dir(store: &Path) -> Option<PathBuf> {
+    std::fs::read_dir(store)
+        .ok()?
+        .flatten()
+        .filter(|e| {
+            let n = e.file_name().to_string_lossy().into_owned();
+            n.starts_with('.') && n.contains(".tmp-")
+        })
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .max_by_key(|e| {
+            (
+                e.metadata()
+                    .and_then(|m| m.modified())
+                    .unwrap_or(std::time::UNIX_EPOCH),
+                e.file_name(),
+            )
+        })
+        .map(|e| e.path())
+}
+
+/// 从暂存目录名里取出正在装的版本号。
+fn staging_version(name: &str) -> Option<&str> {
+    let v = name.strip_prefix('.')?.rsplit_once(".tmp-")?.0;
+    (!v.is_empty()).then_some(v)
+}
+
+/// 量一次大小要几百毫秒而且限了频，中间这几秒屏幕上得有东西在动，否则看着又像卡住了。
+const STEADY_TICK: Duration = Duration::from_millis(200);
+
+/// 一条待设样式的进度条。非终端环境返回隐藏的那种，省掉所有绘制。
+fn progress_bar() -> indicatif::ProgressBar {
+    if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+        indicatif::ProgressBar::new_spinner()
+    } else {
+        indicatif::ProgressBar::hidden()
+    }
+}
+
+/// 没有分母的那一段：报已经过去多久、攒了多少。
+///
+/// 刻意不摆 `{eta}`：这一段不知道总共要下多少，indicatif 会拿 0 顶上，屏幕上就是
+/// 「还要 0s」——比没有数字更糟。`bytes` 为假时连字节数都不报（猜不到 npm 的缓存在哪）。
+fn downloading_style(bytes: bool) -> indicatif::ProgressStyle {
+    let t = if bytes {
+        "{msg} {spinner} {bytes} {bytes_per_sec} 已过 {elapsed}"
+    } else {
+        "{msg} {spinner} 已过 {elapsed}"
+    };
+    indicatif::ProgressStyle::with_template(t).unwrap()
+}
+
+/// 有分母的那一段。
+///
+/// 模板比 [`crate::common::download`] 那条多一项 ETA：那边是几秒钟的文件下载，这边
+/// 是几分钟到几十分钟，「还要多久」正是这里要回答的问题。
+fn unpacking_style() -> indicatif::ProgressStyle {
+    indicatif::ProgressStyle::with_template(
+        "{msg} [{bar:24.cyan/blue}] {bytes}/{total_bytes} {bytes_per_sec} 还要 {eta}",
+    )
+    .unwrap()
+    .progress_chars("=>-")
+}
+
+/// 时长转成人看的。
+fn human_secs(d: Duration) -> String {
+    let s = d.as_secs();
+    if s < 60 {
+        format!("{s} 秒")
+    } else {
+        format!("{} 分 {} 秒", s / 60, s % 60)
     }
 }
 
@@ -1896,5 +2182,145 @@ mod tests {
         // 给版本号必须明确说「退不到指定版本」，而不是默默退到上一份。
         let err = pc.rollback("2026.1008.0").unwrap_err().to_string();
         assert!(err.contains("退不到指定版本"), "实际: {err}");
+    }
+
+    #[test]
+    fn 暂存目录不会和正式_payload_认错() {
+        let store = tempfile::tempdir().unwrap();
+        // 正式 payload（装完 rename 出来的）和那份临时 npmrc 都不该被当成暂存目录。
+        std::fs::create_dir(store.path().join("2026.1011.0-canary.7")).unwrap();
+        std::fs::write(store.path().join(".npmrc-123-456"), "x").unwrap();
+        assert_eq!(staging_dir(store.path()), None);
+
+        let s = store.path().join(".2026.1012.0-canary.1.tmp-123-456");
+        std::fs::create_dir(&s).unwrap();
+        assert_eq!(staging_dir(store.path()), Some(s));
+    }
+
+    #[test]
+    fn 有多个暂存目录时挑新的那个() {
+        // 上一次被 kill -9 打断的话，上游 finally 里的清理没跑完，残骸会留在 store 里。
+        let store = tempfile::tempdir().unwrap();
+        let old = store.path().join(".1.0.0.tmp-1-100");
+        let new = store.path().join(".2.0.0.tmp-1-200");
+        std::fs::create_dir(&old).unwrap();
+        std::fs::create_dir(&new).unwrap();
+        // mtime 和名字两条判据在这儿同向，不依赖文件系统的 mtime 精度。
+        assert_eq!(staging_dir(store.path()), Some(new));
+    }
+
+    #[test]
+    fn 暂存目录名里认得出版本号() {
+        assert_eq!(
+            staging_version(".2026.1011.0-canary.7.tmp-98765-1760000000000"),
+            Some("2026.1011.0-canary.7")
+        );
+        // 不是暂存目录的名字一个都不认，宁可让进度条显示「依赖树」。
+        assert_eq!(staging_version("2026.1011.0"), None);
+        assert_eq!(staging_version(".npmrc-123-456"), None);
+        assert_eq!(staging_version("..tmp-1-2"), None);
+    }
+
+    /// 造一个只有路径、不碰环境的 watch：cache 固定为 None，免得测试去量本机那个
+    /// 几 GB 的 npm 缓存。
+    fn watch(home: &Path) -> InstallWatch {
+        let cli = home.join("cli");
+        InstallWatch {
+            store: cli.join("installs").join("npm"),
+            current: cli.join("current"),
+            cache: None,
+            bar: None,
+            next: Instant::now(),
+            last: 0,
+            cache_base: 0,
+            started: None,
+        }
+    }
+
+    #[test]
+    fn 暂存目录还空着的时候不摆分母() {
+        let home = tempfile::tempdir().unwrap();
+        let store = home.path().join("cli/installs/npm");
+        std::fs::create_dir_all(&store).unwrap();
+        std::fs::create_dir_all(home.path().join("cli/current")).unwrap();
+        std::fs::write(home.path().join("cli/current/payload"), vec![0u8; 1000]).unwrap();
+
+        let mut w = watch(home.path());
+        // 还没建暂存目录：什么都不该发生。
+        w.tick();
+        assert!(w.bar.is_none(), "上游还在解析版本号，不该先画进度条");
+
+        // 暂存目录建好但是空的——npm 正在往自己的缓存里下东西。这一段没有分母，
+        // 摆上去就会算出「还要 0s」。
+        std::fs::create_dir(store.join(".1.2.3.tmp-1-1")).unwrap();
+        w.tick();
+        let bar = w.bar.as_ref().expect("该画进度条了");
+        assert_eq!(bar.length(), None, "下载段不该有分母");
+        assert_eq!(w.last, 0);
+    }
+
+    #[test]
+    fn 开始解包之后换成有分母的那一段() {
+        let home = tempfile::tempdir().unwrap();
+        let store = home.path().join("cli/installs/npm");
+        let staging = store.join(".1.2.3.tmp-1-1");
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::create_dir_all(home.path().join("cli/current")).unwrap();
+        std::fs::write(home.path().join("cli/current/payload"), vec![0u8; 1000]).unwrap();
+
+        let mut w = watch(home.path());
+        w.tick();
+        std::fs::write(staging.join("a"), vec![0u8; 400]).unwrap();
+        w.next = Instant::now(); // 跳过限频，不然这一跳要等 MEASURE_EVERY
+        w.tick();
+        let bar = w.bar.as_ref().unwrap();
+        assert_eq!(bar.length(), Some(1000), "分母该是当前 payload 的体积");
+        assert_eq!(bar.position(), 400);
+
+        // 新版比旧版大的话分母要跟着顶上去，否则最后几个百分点会停在 100% 还报
+        // 「还要 0s」——实测 2.3 GiB 的估计值对上了 2.5 GiB 的实际值。
+        std::fs::write(staging.join("b"), vec![0u8; 900]).unwrap();
+        w.next = Instant::now();
+        w.tick();
+        let bar = w.bar.as_ref().unwrap();
+        assert_eq!(bar.length(), Some(1300));
+        assert_eq!(bar.position(), 1300);
+
+        // rename 走了（或者失败被删了）：进度条收掉，量到的总量留着报。
+        std::fs::remove_dir_all(&staging).unwrap();
+        w.tick();
+        assert!(
+            w.bar.is_none(),
+            "暂存目录没了，进度条必须立刻让位给上游的输出"
+        );
+        assert_eq!(w.last, 1300);
+    }
+
+    #[test]
+    fn 量到一半被_rename_走不会让进度往回跳() {
+        let home = tempfile::tempdir().unwrap();
+        let staging = home.path().join("cli/installs/npm/.1.2.3.tmp-1-1");
+        std::fs::create_dir_all(&staging).unwrap();
+        let mut w = watch(home.path());
+        w.tick();
+        std::fs::write(staging.join("a"), vec![0u8; 500]).unwrap();
+        w.next = Instant::now();
+        w.tick();
+        assert_eq!(w.last, 500);
+
+        // 模拟「这一趟读到的比上一趟少」：目录被清空了但还在。
+        std::fs::remove_file(staging.join("a")).unwrap();
+        w.next = Instant::now();
+        w.tick();
+        assert_eq!(w.last, 500, "只认涨的那一侧");
+        assert_eq!(w.bar.as_ref().unwrap().position(), 500);
+    }
+
+    #[test]
+    fn 时长说成人话() {
+        assert_eq!(human_secs(Duration::from_secs(0)), "0 秒");
+        assert_eq!(human_secs(Duration::from_secs(48)), "48 秒");
+        assert_eq!(human_secs(Duration::from_secs(60)), "1 分 0 秒");
+        assert_eq!(human_secs(Duration::from_secs(372)), "6 分 12 秒");
     }
 }
