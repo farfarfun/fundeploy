@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 
 use super::{Extra, Service};
 use crate::common::cmd::{self, EnvEdit};
-use crate::common::fs::{dir_size, human_size};
+use crate::common::fs::{dir_size, human_size, Scratch};
 use crate::common::{env, port, proc, version};
 use crate::ui;
 
@@ -38,6 +38,29 @@ const NODE_MIN: &str = "24.11.0";
 /// 官方源。用途只有一个：npx 引导那一跳的 registry。managed install 自己也把它钉死
 /// （见 [`Paperclip::npm_env`]），这里跟着写一遍只是让那一跳落在同一个源上。
 const NPM_REGISTRY: &str = "https://registry.npmjs.org";
+
+/// 下载量与落盘体积的比值。
+///
+/// 实测 2026.1015.0-canary.9 在 linux-x64 上：要单独下的 tarball 431 个、合计
+/// 0.97 GiB（数字来自灌完之后 `_cacache/index-v5` 里每条的 `size`），落盘 2.7 GiB。
+/// 比值上不去是因为树里最大的几项本来就是压过的二进制（codex 那个 155 MiB 的包解开
+/// 是 427 MiB）。
+///
+/// 写成比值而不是绝对值：依赖树一直在长（曾经的 1.4 GiB 现在是 2.7 GiB），而这个
+/// 比值跟着树的构成走，比字节数稳得多。
+///
+/// 另有约 1 GiB 的 packument 元数据会进缓存，但那是解开之后的体积，线上是 gzip 传的
+/// （百来 MiB 量级），而且同样命中缓存，所以不算进这个比值里。
+const TARBALL_RATIO: f64 = 0.36;
+
+/// 还没装过、无从现量时落盘量的垫底值，同上实测。
+const MEASURED_DISK: u64 = 2_700 * 1024 * 1024;
+
+/// 一批塞给 `npm cache add` 的包数。
+///
+/// 一批之内 npm 自己并发取，所以批越大越快；但进度只在批与批之间往前走，批越大
+/// 屏幕上越像卡着。12 个是个折中：既有并发，又不会让人盯着一个数字看好几分钟。
+const PREFETCH_BATCH: usize = 12;
 
 /// 还没 onboard 过时的端口，跟上游的默认值一致。
 const DEFAULT_SERVER_PORT: u16 = 8804;
@@ -54,6 +77,10 @@ const EXTRAS: &[Extra] = &[
     Extra {
         name: "check",
         about: "只查有没有新版，什么都不改 [canary|prod]",
+    },
+    Extra {
+        name: "prefetch",
+        about: "把下一版要下的 tarball 先灌进 npm 缓存 [canary|prod] [--background]",
     },
     Extra {
         name: "backup",
@@ -111,6 +138,18 @@ impl Channel {
         match self {
             Self::Prod => "--latest",
             Self::Canary => "--canary",
+        }
+    }
+
+    /// 通道在 npm 上对应的 dist-tag。
+    ///
+    /// 只给 [`Paperclip::prefetch_target`] 在问不出官方版本时垫底用。它跟官方的通道
+    /// 解析不一定同步——实测 canary 的 dist-tag 是 2026.1015.0-canary.9，而同一时刻
+    /// `update --check --canary` 给的是 2026.1014.0-canary.11。
+    fn dist_tag(self) -> &'static str {
+        match self {
+            Self::Prod => "latest",
+            Self::Canary => "canary",
         }
     }
 
@@ -789,26 +828,56 @@ impl Paperclip {
         e
     }
 
-    fn print_network_hint(&self) {
-        if !self.network_hint || self.proxy.is_some() {
+    /// 装之前把这次要下多少、能省掉多少说清楚。
+    ///
+    /// 下载量和落盘量必须分开报：实测同一棵树是 **1.0 GiB 下载 / 2.7 GiB 落盘**，
+    /// 差了近三倍。这行原来只报落盘量，读起来像是每次升级都得下 2.7 GiB。
+    ///
+    /// 绝对值仍然不写死（依赖树一直在长）：落盘量按本机当前 payload 现量，下载量按
+    /// [`TARBALL_RATIO`] 折算。而真正决定这次要等多久的不是总量，是缓存热不热，所以
+    /// 还要去量一眼 `_cacache`——那是这条提示里唯一能让人当场做点什么的数字。
+    fn print_network_hint(&self, ch: Channel) {
+        if !self.network_hint {
             return;
         }
-        // 体积按本机当前 payload 现量，不写死数字：依赖树一直在长（曾经的 1.4G 现在
-        // 是 2G 上下），而写死的那个数会让人以为升级只要下这么多。
-        let now = dir_size(&self.home.join("cli").join("current"));
-        let size = if now > 0 {
-            format!("本机当前这棵是 {}", human_size(now))
+        let measured = dir_size(&self.home.join("cli").join("current"));
+        let disk = if measured > 0 {
+            measured
         } else {
-            "约 2G".to_string()
+            MEASURED_DISK
         };
+        let download = (disk as f64 * TARBALL_RATIO) as u64;
         ui::warn(format!(
-            "Paperclip 的依赖树很大（{size}），而且每次升级都是从零拼一棵新的——上游装到\
-             一个临时目录再原子换过去，换来的是失败不留残骸、回滚只动一个符号链接。重复升级\
-             便宜不便宜，取决于 ~/.npm/_cacache 热不热（tarball 命中就不再下载），所以别清它。\
-             官方 managed install 把 registry 钉死在 npmjs.org，换镜像对它无效（刻意的防投毒\
-             设计，有上游测试守着），受限网络请走代理：\
-             PAPERCLIP_HTTPS_PROXY=http://127.0.0.1:7890。设 PAPERCLIP_NETWORK_HINT=0 隐藏本行。"
+            "Paperclip 的依赖树很大：全量约 {} 下载 / {} 落盘{}。而且每次升级都是从零拼一棵\
+             新的——上游装到一个临时目录再原子换过去，换来的是失败不留残骸、回滚只动一个\
+             符号链接。",
+            human_size(download),
+            human_size(disk),
+            if measured > 0 {
+                ""
+            } else {
+                "（本机还没装过，按上次实测估）"
+            },
         ));
+        ui::hint(cache_state(download));
+        ui::hint(
+            "下载量的七成是各家 agent CLI 的二进制（codex / claude-agent-sdk / copilot / \
+             opencode，而且每个都有两份：上游的版本范围对不上，同一个工具的两个版本并存），\
+             升级时它们大多不变——缓存热了之后 canary 日更通常只下一两百 MiB。所以别清 \
+             ~/.npm/_cacache。",
+        );
+        ui::hint(format!(
+            "想先把下载跑完再装: fundeploy service paperclip prefetch {} --background",
+            ch.name()
+        ));
+        if self.proxy.is_none() {
+            ui::hint(
+                "官方 managed install 把 registry 钉死在 npmjs.org，换镜像对它无效（刻意的\
+                 防投毒设计，有上游测试守着），受限网络请走代理：\
+                 PAPERCLIP_HTTPS_PROXY=http://127.0.0.1:7890。",
+            );
+        }
+        ui::hint("设 PAPERCLIP_NETWORK_HINT=0 隐藏以上几行。");
     }
 
     // ------------------------------------------------------------ 安装与升级
@@ -816,7 +885,7 @@ impl Paperclip {
     fn install_channel(&self, ch: Channel) -> Result<()> {
         let npmrc = Npmrc::write(NPM_REGISTRY);
         let mut env = self.npm_env(npmrc.as_ref());
-        self.print_network_hint();
+        self.print_network_hint(ch);
 
         // 执行器优先级：本机已装的 CLI > npx。
         //
@@ -887,6 +956,11 @@ impl Paperclip {
                 "结论: 有新版可升，执行: PAPERCLIP_CHANNEL={} fundeploy service paperclip upgrade",
                 ch.name()
             ));
+            ui::hint(format!(
+                "升级最久的一段是下载。想先把它跑完、等到真升级时只剩解包: \
+                 fundeploy service paperclip prefetch {} --background",
+                ch.name()
+            ));
         } else {
             ui::info("结论: 已经是该通道的最新版");
         }
@@ -903,10 +977,309 @@ impl Paperclip {
         })
     }
 
+    // ---------------------------------------------------------------- 预热
+
+    /// 把目标版本要下的 tarball 预先灌进 npm 缓存。
+    ///
+    /// # 为什么这件事做得到
+    ///
+    /// npm 的缓存是内容寻址的，键就是 tarball 的完整 URL（实测
+    /// `make-fetch-happen:request-cache:https://registry.npmjs.org/…tgz`），谁灌进去
+    /// 的都算：`npm cache add` 之后再去装同一个包，npm 在同一个键上命中，一个字节都
+    /// 不再下（实测日志里是 `npm http cache … 0ms (cache hit)`）。
+    ///
+    /// 所以必须跟 install 走同一个 registry——键里带着主机名，换个源灌进去的那份对
+    /// 上游那条命令就是不存在（实测用 npmmirror 灌出来的键是 `cdn.npmmirror.com/…`）。
+    ///
+    /// # 为什么值得做
+    ///
+    /// managed install 是一条前台命令、全程不打输出，而那条命令里最久的一段就是下载
+    /// （冷缓存实测约 1 GiB）。下载这件事可以提前、可以挪后台、断了重来也只是重下没
+    /// 命中的那几个；install 那条命令却必须一口气跑完，中间断了就是整棵树重拼。
+    fn prefetch(&self, args: &[&str]) -> Result<()> {
+        let (ch, background) = prefetch_args(args, self.channel.unwrap_or(Channel::Canary))?;
+        if background {
+            return self.prefetch_background(ch);
+        }
+        let r = self.prefetch_now(ch);
+        // 收掉自己那份 PID 文件，成败都收：PID 会被系统回收，留着它会让下一次
+        // `--background` 把一个毫不相干的新进程当成「还有预热在跑」而拒绝开工。
+        let pid_file = self.run_dir.join("prefetch.pid");
+        if proc::read_pid_file(&pid_file).is_some_and(|p| p == std::process::id() as i32) {
+            let _ = std::fs::remove_file(&pid_file);
+        }
+        r
+    }
+
+    fn prefetch_now(&self, ch: Channel) -> Result<()> {
+        cmd::require("npm", "它随 Node.js 一起装：https://nodejs.org/")?;
+        let npmrc = Npmrc::write(NPM_REGISTRY);
+        let env = self.npm_env(npmrc.as_ref());
+
+        let version = self.prefetch_target(ch, &env)?;
+        let lock = self.resolve_tree(&version, &env)?;
+        let picked = prefetch_specs(&lock, &NpmPlatform::current());
+        if !picked.foreign.is_empty() {
+            // 一个都不该有：这棵树里 539 个 resolved 全在钉死的那个 registry 上。真冒
+            // 出来一个，说明上游改了依赖的写法，那时候该来看一眼而不是默默去下。
+            ui::warn(format!(
+                "有 {} 个包的下载地址不在 {} 上，跳过不灌: {}",
+                picked.foreign.len(),
+                NPM_REGISTRY,
+                picked.foreign.join(" ")
+            ));
+        }
+        if picked.specs.is_empty() {
+            bail!("从 lockfile 里没挑出一个要下的包，解析结果不对（期待几百个）");
+        }
+        ui::step(format!(
+            "{version}: 本机要下 {} 个包（另外 {} 个是别的平台、{} 个装在父包的 tarball 里）",
+            picked.specs.len(),
+            picked.other_platform,
+            picked.bundled
+        ));
+        self.fill_cache(&picked.specs, &env)
+    }
+
+    /// 一批批灌缓存，并把进度报出来。
+    fn fill_cache(&self, specs: &[String], env: &[EnvEdit]) -> Result<()> {
+        let total = specs.len();
+        let cache = npm_cacache();
+        let before = dir_size(&cache);
+
+        let bar = progress_bar();
+        bar.set_style(prefetch_style());
+        bar.set_length(total as u64);
+        // 第一批跑完才有字节数可报，而第一批里只要有个 155 MiB 的 codex 就是好几分钟，
+        // 那几分钟里这行得先说清楚它在干什么。
+        bar.set_message("灌缓存".to_string());
+        bar.enable_steady_tick(STEADY_TICK);
+        let mut next = Instant::now();
+        let mut failed = 0usize;
+        let mut first_err: Option<String> = None;
+
+        for chunk in specs.chunks(PREFETCH_BATCH) {
+            let mut argv = vec![
+                "npm".to_string(),
+                "cache".to_string(),
+                "add".to_string(),
+                "--registry".to_string(),
+                NPM_REGISTRY.to_string(),
+            ];
+            argv.extend(chunk.iter().cloned());
+            // 输出收起来：成功时 `npm cache add` 一个字都不打（实测），失败时要的是
+            // 末尾那几行汇总，而不是 12 个包的 npm 日志盖掉进度条。
+            match cmd::try_run_with(&argv, env) {
+                Ok(o) if o.success() => {}
+                Ok(o) => {
+                    failed += chunk.len();
+                    first_err.get_or_insert_with(|| last_lines(&o.stderr, 3));
+                }
+                Err(e) => {
+                    failed += chunk.len();
+                    first_err.get_or_insert_with(|| e.to_string());
+                }
+            }
+            bar.inc(chunk.len() as u64);
+            // 量缓存跟 InstallWatch 用同一套限频：一趟 dir_size 在几 GiB 的缓存上要
+            // 几百毫秒，而缓存全命中的时候每批几乎是瞬间完事，不限频就全花在量上了。
+            if Instant::now() >= next {
+                let t0 = Instant::now();
+                let added = dir_size(&cache).saturating_sub(before);
+                bar.set_message(format!("已灌 {}", human_size(added)));
+                next = Instant::now() + MEASURE_EVERY.max(t0.elapsed() * 10);
+            }
+            if bar.is_hidden() {
+                // 非终端（后台跑、重定向到日志）那条路上进度条是隐藏的，日志里得留下
+                // 点东西，否则后台那几十分钟在日志里是一片空白。
+                ui::info(format!("已灌 {}/{total} 个包", bar.position()));
+            }
+        }
+        bar.finish_and_clear();
+
+        let added = dir_size(&cache).saturating_sub(before);
+        if let Some(e) = first_err {
+            ui::warn(format!("有没灌上的，第一条失败是:\n{e}"));
+        }
+        if failed == total {
+            bail!("{total} 个包一个都没灌进缓存，预热没起作用");
+        }
+        if added == 0 {
+            ui::ok(format!("{total} 个包缓存里本来就有，这次一个字节都没下。"));
+        } else {
+            ui::ok(format!(
+                "预热完成: {} 个包就绪，缓存涨了 {}{}。",
+                total - failed,
+                human_size(added),
+                if failed > 0 {
+                    format!("，{failed} 个没灌上（装的时候会自己再下）")
+                } else {
+                    String::new()
+                }
+            ));
+        }
+        ui::hint(format!(
+            "接下来 `fundeploy service paperclip {}` 的下载段就只剩没命中的那几个了。",
+            if self.cli_path().is_some() {
+                "upgrade"
+            } else {
+                "install"
+            }
+        ));
+        Ok(())
+    }
+
+    /// 通道当前指向的版本。
+    fn prefetch_target(&self, ch: Channel, env: &[EnvEdit]) -> Result<String> {
+        // 先问官方：`update --check` 给的那个 target，就是 install / upgrade 自己要去
+        // 装的那一个。
+        if let Some(c) = self.update_check(ch) {
+            let v = if c.target.is_empty() {
+                c.current
+            } else {
+                c.target
+            };
+            if !v.is_empty() {
+                ui::step(format!("{} 通道指向 {v}（官方 update --check）", ch.name()));
+                return Ok(v);
+            }
+        }
+        // 问不出来（还没装 CLI，或者离线）就退回 dist-tag。猜错的代价有限：差的那几个
+        // 是 @paperclipai/* 自己那十来个包，大头（各家 agent CLI 的二进制）相邻两版用
+        // 的是同一份，照样命中。
+        let spec = format!("paperclipai@{}", ch.dist_tag());
+        let out = cmd::try_run_with(
+            [
+                "npm",
+                "view",
+                &spec,
+                "version",
+                "--registry",
+                NPM_REGISTRY,
+                "--json",
+            ],
+            env,
+        )?;
+        if !out.success() {
+            bail!(
+                "问不出 {} 通道的版本（paperclipai 没装，npm view 也失败了）:\n{}",
+                ch.name(),
+                last_lines(&out.stderr, 3)
+            );
+        }
+        let v = npm_view_version(&out.stdout).ok_or_else(|| {
+            anyhow!(
+                "认不出 npm view {spec} version 的输出: {}",
+                out.stdout.trim()
+            )
+        })?;
+        ui::step(format!(
+            "{} 通道指向 {v}（npm 的 {} dist-tag；paperclipai 还没装，问不到官方那边）",
+            ch.name(),
+            ch.dist_tag()
+        ));
+        Ok(v)
+    }
+
+    /// 解析出完整依赖图，拿到每个包的下载地址。
+    ///
+    /// `--package-lock-only` 只写一份 lockfile、不装任何东西，但它要把每个包的
+    /// manifest 问一遍（实测 888 个条目约 50 秒）。
+    ///
+    /// # 那个 allow-remote
+    ///
+    /// npm 12 新加了 `--allow-remote`，默认 `none`；而 `@paperclipai/server` 带
+    /// `bundleDependencies`，arborist 为了读出里面捆了哪些包，必须先把它的 tarball
+    /// 取下来解开（`pacote.extract`），于是整条解析被 `EALLOWREMOTE` 顶回来。npm 11
+    /// 没有这条策略，所以这件事只在 npm 12 上发作。
+    ///
+    /// 这里放开它的前提是取回的范围已经被另一道闸门管住：[`prefetch_specs`] 逐条核对
+    /// `resolved` 的主机名，不在钉死的 registry 上的一个都不灌。
+    fn resolve_tree(&self, version: &str, env: &[EnvEdit]) -> Result<serde_json::Value> {
+        let scratch = Scratch::new("paperclip-prefetch")?;
+        let mut env = env.to_vec();
+        env.push((
+            "npm_config_allow_remote".to_string(),
+            Some("all".to_string()),
+        ));
+
+        let bar = progress_bar();
+        bar.set_style(downloading_style(false));
+        bar.set_message("解析依赖图（只问元数据，不装东西）".to_string());
+        bar.enable_steady_tick(STEADY_TICK);
+        let code = cmd::spawn_status_in(
+            [
+                "npm",
+                "install",
+                "--prefix",
+                &scratch.path().display().to_string(),
+                "--package-lock-only",
+                &format!("paperclipai@{version}"),
+                "--registry",
+                NPM_REGISTRY,
+                "--no-audit",
+                "--no-fund",
+                // 自己画进度条，不跟 npm 的抢同一行。
+                "--no-progress",
+                // npm ≥11.19 会在末尾列出被跳过的 install 脚本。那是装的时候才相关的
+                // 事，这一步什么都没装，留着只会让人以为出了问题。
+                "--loglevel",
+                "error",
+            ],
+            &env,
+            None,
+        );
+        bar.finish_and_clear();
+        match code? {
+            Some(0) => {}
+            other => bail!(
+                "解析 paperclipai@{version} 的依赖图失败（退出码 {}）",
+                other.map_or_else(|| "信号终止".to_string(), |c| c.to_string())
+            ),
+        }
+
+        let path = scratch.path().join("package-lock.json");
+        let raw = std::fs::read_to_string(&path)
+            .with_context(|| format!("读不到解析出来的 lockfile: {}", path.display()))?;
+        serde_json::from_str(&raw).with_context(|| format!("解析不了 {}", path.display()))
+    }
+
+    /// 把预热丢到后台去跑。
+    ///
+    /// 预热天然适合后台：它只往 npm 的缓存里写，不碰 payload、不碰服务、不改任何
+    /// 配置，断了重来也只是重下没命中的那几个。
+    fn prefetch_background(&self, ch: Channel) -> Result<()> {
+        let exe = std::env::current_exe().context("取不到 fundeploy 自己的路径")?;
+        let log = self.run_dir.join("prefetch.log");
+        let pid_file = self.run_dir.join("prefetch.pid");
+        if let Some(pid) = proc::read_pid_file(&pid_file).filter(|p| proc::is_alive(*p)) {
+            bail!(
+                "已经有一个预热在后台跑着（PID {pid}）。看进度: tail -f {}",
+                log.display()
+            );
+        }
+        let argv = vec![
+            exe.display().to_string(),
+            "service".to_string(),
+            "paperclip".to_string(),
+            "prefetch".to_string(),
+            ch.name().to_string(),
+        ];
+        let pid = proc::spawn_detached(&argv, &env::home(), &self.cli_env(&self.config()), &log)?;
+        proc::write_pid_file(&pid_file, pid)?;
+        ui::ok(format!(
+            "{} 通道的预热已在后台开始（PID {pid}）。",
+            ch.name()
+        ));
+        ui::hint(format!("看进度: tail -f {}", log.display()));
+        ui::hint(format!("要停掉: kill {pid}"));
+        Ok(())
+    }
+
     fn upgrade_channel(&self, ch: Channel) -> Result<()> {
         let npmrc = Npmrc::write(NPM_REGISTRY);
         let npm = self.npm_env(npmrc.as_ref());
-        self.print_network_hint();
+        self.print_network_hint(ch);
 
         let mut args: Vec<&str> = vec![ch.flag()];
         // 先问官方要不要动，别自己比版本号。问不出来（离线、还没装）就不阻塞，往下走。
@@ -1272,6 +1645,7 @@ impl Service for Paperclip {
                 };
                 self.check(ch)
             }
+            "prefetch" => self.prefetch(&args),
             "backup" => self.backup(&args),
             "channels" => self.must(&prepend(&["channels"], &args)),
             "doctor" => self.must(&prepend(&["doctor"], &args)),
@@ -1434,12 +1808,7 @@ struct InstallWatch {
 impl InstallWatch {
     fn new(home: &Path) -> Self {
         let cli = home.join("cli");
-        // npm 默认 `~/.npm/_cacache`，`npm_config_cache` 能改。刻意不去跑
-        // `npm config get cache`：那是一次几百毫秒的 node 启动，而这里只是为了让
-        // 下载段有个数字可看，猜错的代价仅仅是退回「只报时间」。
-        let cache = env::opt("npm_config_cache")
-            .map(|v| env::expand_tilde(&v).join("_cacache"))
-            .unwrap_or_else(|| env::home().join(".npm").join("_cacache"));
+        let cache = npm_cacache();
         Self {
             store: cli.join("installs").join("npm"),
             current: cli.join("current"),
@@ -1542,6 +1911,246 @@ impl InstallWatch {
             human_secs(used)
         ));
     }
+}
+
+/// npm 的内容寻址缓存目录。
+///
+/// npm 默认 `~/.npm/_cacache`，`npm_config_cache` 能改——上游不在命令行上传
+/// `--cache`，所以这个环境变量对它那条 `npm install` 同样有效（见
+/// [`Paperclip::npm_env`] 里对哪些键透得进去的说明）。
+///
+/// 刻意不去跑 `npm config get cache`：那是一次几百毫秒的 node 启动，而这里只是为了
+/// 量个大小、报个数字，猜错的代价仅仅是少报一行。
+fn npm_cacache() -> PathBuf {
+    env::opt("npm_config_cache")
+        .map(|v| env::expand_tilde(&v).join("_cacache"))
+        .unwrap_or_else(|| env::home().join(".npm").join("_cacache"))
+}
+
+/// npm 缓存的冷热，以及它对这次下载意味着什么。
+///
+/// 判据只能是体积：缓存是内容寻址的，里面有多少属于 paperclip 这棵树，不把几万个
+/// 索引条目逐个解开是问不出来的。但「比整棵树还小」这一条已经够下结论——装不满。
+///
+/// `download` 是这次全量要下的估计值（见 [`Paperclip::print_network_hint`]）。
+fn cache_state(download: u64) -> String {
+    let cache = npm_cacache();
+    cache_state_of(dir_size(&cache), &cache, download)
+}
+
+fn cache_state_of(size: u64, cache: &Path, download: u64) -> String {
+    if size == 0 {
+        return format!("npm 缓存 {} 还是空的，这次是全量下载。", cache.display());
+    }
+    if size < download {
+        return format!(
+            "npm 缓存现有 {}，装不满这棵树，有一部分还得新下。",
+            human_size(size)
+        );
+    }
+    format!(
+        "npm 缓存现有 {}，命中的 tarball 不再下载；PAPERCLIP_NPM_PREFER_OFFLINE=1 \
+         连「问一遍有没有更新」的那些请求也省掉。",
+        human_size(size)
+    )
+}
+
+/// prefetch 的参数：通道和要不要丢后台。顺序不限，都可以省。
+fn prefetch_args(args: &[&str], default: Channel) -> Result<(Channel, bool)> {
+    let mut ch = None;
+    let mut background = false;
+    for a in args {
+        match *a {
+            "--background" | "-b" => background = true,
+            other => ch = Some(Channel::parse(other)?),
+        }
+    }
+    Ok((ch.unwrap_or(default), background))
+}
+
+/// 从 lockfile 里挑出来的预热清单。
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Picked {
+    /// 要灌的 `名字@版本`，已去重排序。
+    specs: Vec<String>,
+    /// 装在父包 tarball 里、不单独下的（`inBundle`）。
+    bundled: usize,
+    /// 平台不符、npm 装的时候也会跳过的。
+    other_platform: usize,
+    /// `resolved` 不在钉死的 registry 上的。正常情况下一个都没有。
+    foreign: Vec<String>,
+}
+
+/// lockfile 里「这台机器真会去下」的那些包。
+///
+/// 三道筛子，少一道都会多下或者下错：
+///
+/// 1. **没有 `resolved` 的跳过**。它们是 `inBundle`——装在父包的 tarball 里，没有自己
+///    的下载地址。实测 888 个条目里有 348 个是这种，全在 `@paperclipai/server` 肚子里。
+/// 2. **`os` / `cpu` / `libc` 不匹配的跳过**。npm 装的时候自己会按这三个字段过滤，
+///    预热不跟着过滤就会把另外一百个平台的二进制也灌进缓存（esbuild 一家 25 个平台）。
+/// 3. **`resolved` 不在钉死的 registry 上的跳过**。npm 的缓存键里带着完整 URL，所以
+///    预热必须跟 install 走同一个源才算命中；顺带也是道闸门，这棵树里本该一个外部
+///    URL 都没有。
+fn prefetch_specs(lock: &serde_json::Value, plat: &NpmPlatform) -> Picked {
+    let mut out = Picked::default();
+    let Some(pkgs) = lock["packages"].as_object() else {
+        return out;
+    };
+    let mut specs = std::collections::BTreeSet::new();
+    for (path, m) in pkgs {
+        // 空路径是根条目，也就是 npm 为这次解析现编的那份 package.json。
+        if path.is_empty() {
+            continue;
+        }
+        let Some(resolved) = m["resolved"].as_str() else {
+            if m["inBundle"].as_bool() == Some(true) {
+                out.bundled += 1;
+            }
+            continue;
+        };
+        if !plat.allows(m) {
+            out.other_platform += 1;
+            continue;
+        }
+        if !on_pinned_registry(resolved) {
+            out.foreign.push(resolved.to_string());
+            continue;
+        }
+        let (Some(name), Some(version)) = (entry_name(path, m), m["version"].as_str()) else {
+            continue;
+        };
+        specs.insert(format!("{name}@{version}"));
+    }
+    out.specs = specs.into_iter().collect();
+    out
+}
+
+/// 一个 lockfile 条目的真名。
+///
+/// 路径上的目录名不一定是包名：别名依赖（`"@openai/codex-linux-x64":
+/// "npm:@openai/codex@0.160.0-linux-x64"`）装在以别名命名的目录里，真名在 `name`
+/// 字段上。实测这棵树里恰好 12 个条目带 `name`，全是别名——而且正是最大的那几个
+/// （codex 一家 141 + 155 MiB），按目录名去灌只会 404。
+fn entry_name<'a>(path: &'a str, m: &'a serde_json::Value) -> Option<&'a str> {
+    if let Some(n) = m["name"].as_str() {
+        return Some(n);
+    }
+    path.rsplit("node_modules/")
+        .next()
+        .filter(|s| !s.is_empty())
+}
+
+/// 这个下载地址是不是落在钉死的那个 registry 上。
+fn on_pinned_registry(url: &str) -> bool {
+    url.strip_prefix(NPM_REGISTRY)
+        .is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// npm 眼里的本机平台：`os` / `cpu` / `libc` 三个字段该拿什么值去比。
+#[derive(Debug, Clone, Copy)]
+struct NpmPlatform {
+    os: &'static str,
+    cpu: &'static str,
+    /// 只有 linux 的包会声明 libc，别的平台上是 `None`（当没约束处理）。
+    libc: Option<&'static str>,
+}
+
+impl NpmPlatform {
+    fn current() -> Self {
+        let os = match std::env::consts::OS {
+            "macos" => "darwin",
+            other => other,
+        };
+        let cpu = match std::env::consts::ARCH {
+            "x86_64" => "x64",
+            "aarch64" => "arm64",
+            other => other,
+        };
+        let libc = (os == "linux").then(|| if musl_system() { "musl" } else { "glibc" });
+        Self { os, cpu, libc }
+    }
+
+    /// 这个条目适用于本机吗。
+    fn allows(&self, m: &serde_json::Value) -> bool {
+        constraint_ok(&m["os"], Some(self.os))
+            && constraint_ok(&m["cpu"], Some(self.cpu))
+            && constraint_ok(&m["libc"], self.libc)
+    }
+}
+
+/// 一个 `os` / `cpu` / `libc` 约束跟本机的取值合不合。
+///
+/// 字段缺失就是没约束。写法有两种而且会混用：允许列表（`["linux"]`）和排除
+/// （`["!win32"]`）。判定跟 npm 自己一致——命中任一排除项就否，有允许列表而没命中
+/// 也否。本机取值未知时（非 linux 机器上的 `libc`）当没约束处理。
+fn constraint_ok(v: &serde_json::Value, value: Option<&str>) -> bool {
+    let Some(list) = v.as_array() else {
+        return true;
+    };
+    let Some(value) = value else {
+        return true;
+    };
+    let mut has_allow = false;
+    let mut matched = false;
+    for item in list.iter().filter_map(|i| i.as_str()) {
+        match item.strip_prefix('!') {
+            Some(neg) => {
+                if neg == value {
+                    return false;
+                }
+            }
+            None => {
+                has_allow = true;
+                matched |= item == value;
+            }
+        }
+    }
+    !has_allow || matched
+}
+
+/// 这台机器的 C 库是不是 musl。
+///
+/// 判据跟 detect-libc 一个意思：musl 的那个动态链接器在不在（Alpine 上是
+/// `/lib/ld-musl-x86_64.so.1`）。刻意不看 fundeploy 自己是怎么编出来的——CI 出的是
+/// musl 静态包，而它跑在 glibc 机器上照样是 glibc 的机器，`cfg!(target_env = "musl")`
+/// 问的是编译机不是这台机器。
+fn musl_system() -> bool {
+    std::fs::read_dir("/lib").is_ok_and(|d| {
+        d.flatten()
+            .any(|e| e.file_name().to_string_lossy().starts_with("ld-musl-"))
+    })
+}
+
+/// `npm view … version --json` 的输出里那个版本号。
+///
+/// 通常是一个 JSON 字符串；spec 命中多个版本时 npm 给的是数组，那种情况取最后一个
+/// （npm 按版本升序排），跟它自己 `npm view` 的习惯一致。
+fn npm_view_version(stdout: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).ok()?;
+    let s = match &v {
+        serde_json::Value::Array(a) => a.last()?.as_str()?,
+        other => other.as_str()?,
+    };
+    (!s.is_empty()).then(|| s.to_string())
+}
+
+/// 一段输出的末尾几行，用来在报错里引上游的原话。
+fn last_lines(s: &str, n: usize) -> String {
+    let lines: Vec<&str> = s.lines().filter(|l| !l.trim().is_empty()).collect();
+    lines[lines.len().saturating_sub(n)..].join("\n")
+}
+
+/// 预热那一段的进度条：分母是包数，顺带报已经灌进去多少字节。
+///
+/// 刻意不摆 `{eta}`：包的大小差三个数量级（几 KiB 的 shim 和 155 MiB 的 codex 都算
+/// 一个），按个数外推出来的「还要多久」没有意义。
+fn prefetch_style() -> indicatif::ProgressStyle {
+    indicatif::ProgressStyle::with_template(
+        "{msg} [{bar:24.cyan/blue}] {pos}/{len} 个包 已过 {elapsed}",
+    )
+    .unwrap()
+    .progress_chars("=>-")
 }
 
 /// install store 里正在写的那个暂存目录。
@@ -2314,6 +2923,183 @@ mod tests {
         w.tick();
         assert_eq!(w.last, 500, "只认涨的那一侧");
         assert_eq!(w.bar.as_ref().unwrap().position(), 500);
+    }
+
+    #[test]
+    fn 缓存冷热三种说法各自说准() {
+        let cache = Path::new("/tmp/不存在的缓存/_cacache");
+        let full = 1_000_000_000;
+        // 空缓存：必须明说这次是全量，并且把路径摆出来（接着那句「别清它」才有着落）。
+        let s = cache_state_of(0, cache, full);
+        assert!(
+            s.contains("空的") && s.contains("全量") && s.contains("_cacache"),
+            "实际: {s}"
+        );
+        // 比整棵树小：只能说「装不满」。说不出更细的——缓存是内容寻址的，里面有多少
+        // 属于这棵树，不把几万个索引条目逐个解开是问不出来的。
+        let s = cache_state_of(full / 2, cache, full);
+        assert!(s.contains("装不满"), "实际: {s}");
+        assert!(!s.contains("全量"), "半热的缓存不该说成全量: {s}");
+        // 够大：这时候才值得提 prefer-offline，冷缓存下它一点用都没有。
+        let s = cache_state_of(full * 2, cache, full);
+        assert!(s.contains("PREFER_OFFLINE"), "实际: {s}");
+    }
+
+    #[test]
+    fn 预热的参数顺序不限也都能省() {
+        // 通道省掉时跟 check 一样默认 canary（装了这个项目的机器基本都在跟开发版）。
+        assert_eq!(
+            prefetch_args(&[], Channel::Canary).unwrap(),
+            (Channel::Canary, false)
+        );
+        assert_eq!(
+            prefetch_args(&["prod"], Channel::Canary).unwrap(),
+            (Channel::Prod, false)
+        );
+        // 两个参数谁先谁后都认：命令行上人怎么顺手怎么打。
+        for args in [
+            vec!["canary", "--background"],
+            vec!["--background", "canary"],
+            vec!["-b", "canary"],
+        ] {
+            assert_eq!(
+                prefetch_args(&args, Channel::Prod).unwrap(),
+                (Channel::Canary, true),
+                "args={args:?}"
+            );
+        }
+        // 拼错的通道必须当场报错，不能默默按默认值去灌另一个通道的包。
+        let err = prefetch_args(&["canry"], Channel::Canary)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("canry"), "实际: {err}");
+    }
+
+    /// 造一份跟实测结构一致的 lockfile 片段。字段取名和取值都照 npm 写的来。
+    fn lock_fixture() -> serde_json::Value {
+        serde_json::json!({
+            "packages": {
+                // 根条目：npm 为这次解析现编的 package.json，没有包可下。
+                "": { "dependencies": { "paperclipai": "^2026.1015.0" } },
+                "node_modules/paperclipai": {
+                    "version": "2026.1015.0-canary.9",
+                    "resolved": "https://registry.npmjs.org/paperclipai/-/paperclipai-2026.1015.0-canary.9.tgz"
+                },
+                // 别名依赖：目录名是别名，真名在 name 字段上。
+                "node_modules/@openai/codex-linux-x64": {
+                    "name": "@openai/codex",
+                    "version": "0.156.1-linux-x64",
+                    "resolved": "https://registry.npmjs.org/@openai/codex/-/codex-0.156.1-linux-x64.tgz",
+                    "optional": true, "os": ["linux"], "cpu": ["x64"]
+                },
+                // 同一个工具的另一个版本，上游版本范围对不上导致两份并存——两份都要下。
+                "node_modules/@paperclipai/server/node_modules/@openai/codex-linux-x64": {
+                    "name": "@openai/codex",
+                    "version": "0.160.0-linux-x64",
+                    "resolved": "https://registry.npmjs.org/@openai/codex/-/codex-0.160.0-linux-x64.tgz",
+                    "optional": true, "os": ["linux"], "cpu": ["x64"]
+                },
+                // 别的平台：npm 装的时候也会跳过。
+                "node_modules/@openai/codex-win32-x64": {
+                    "name": "@openai/codex",
+                    "version": "0.156.1-win32-x64",
+                    "resolved": "https://registry.npmjs.org/@openai/codex/-/codex-0.156.1-win32-x64.tgz",
+                    "optional": true, "os": ["win32"], "cpu": ["x64"]
+                },
+                // 装在父包 tarball 里的，没有自己的下载地址。
+                "node_modules/@paperclipai/server/node_modules/acpx": {
+                    "version": "0.8.1", "inBundle": true
+                },
+                // 外部 URL：这棵树里本该没有，出现就只报不灌。
+                "node_modules/somewhere-else": {
+                    "version": "1.0.0",
+                    "resolved": "https://example.com/somewhere-else-1.0.0.tgz"
+                }
+            }
+        })
+    }
+
+    #[test]
+    fn 预热清单只留本机真会下的那些() {
+        let linux = NpmPlatform {
+            os: "linux",
+            cpu: "x64",
+            libc: Some("glibc"),
+        };
+        let picked = prefetch_specs(&lock_fixture(), &linux);
+        assert_eq!(
+            picked.specs,
+            vec![
+                // 别名条目按真名灌：按目录名（@openai/codex-linux-x64）去灌是 404。
+                "@openai/codex@0.156.1-linux-x64".to_string(),
+                "@openai/codex@0.160.0-linux-x64".to_string(),
+                "paperclipai@2026.1015.0-canary.9".to_string(),
+            ]
+        );
+        assert_eq!(picked.bundled, 1, "inBundle 的不单独下");
+        assert_eq!(picked.other_platform, 1, "win32 那份该跳过");
+        assert_eq!(
+            picked.foreign,
+            vec!["https://example.com/somewhere-else-1.0.0.tgz"]
+        );
+
+        // 换台 mac 就该挑出另一批；这里的 fixture 里 linux 专属的那两个都得让开。
+        let mac = NpmPlatform {
+            os: "darwin",
+            cpu: "arm64",
+            libc: None,
+        };
+        let picked = prefetch_specs(&lock_fixture(), &mac);
+        assert_eq!(
+            picked.specs,
+            vec!["paperclipai@2026.1015.0-canary.9".to_string()]
+        );
+        assert_eq!(picked.other_platform, 3);
+    }
+
+    #[test]
+    fn 平台约束的两种写法都认() {
+        let v = |s: &str| serde_json::from_str::<serde_json::Value>(s).unwrap();
+        // 字段缺失就是没约束。
+        assert!(constraint_ok(&serde_json::Value::Null, Some("linux")));
+        // 允许列表。
+        assert!(constraint_ok(&v(r#"["linux","darwin"]"#), Some("linux")));
+        assert!(!constraint_ok(&v(r#"["darwin"]"#), Some("linux")));
+        // 排除写法：npm 里确实有 ["!win32"] 这种。
+        assert!(constraint_ok(&v(r#"["!win32"]"#), Some("linux")));
+        assert!(!constraint_ok(&v(r#"["!linux"]"#), Some("linux")));
+        // 混用时排除优先。
+        assert!(!constraint_ok(&v(r#"["linux","!linux"]"#), Some("linux")));
+        // 本机取值未知（非 linux 机器上的 libc）当没约束，不能把包全筛掉。
+        assert!(constraint_ok(&v(r#"["glibc"]"#), None));
+    }
+
+    #[test]
+    fn 认得出_npm_view_给的版本号() {
+        assert_eq!(
+            npm_view_version("\"2026.1015.0-canary.9\"\n").as_deref(),
+            Some("2026.1015.0-canary.9")
+        );
+        // spec 命中多个版本时 npm 给数组，按升序，要的是最后那个。
+        assert_eq!(
+            npm_view_version(r#"["2026.1014.0","2026.1015.0"]"#).as_deref(),
+            Some("2026.1015.0")
+        );
+        // 认不出来必须是 None，好让调用方报错而不是拿空字符串去拼 spec。
+        assert_eq!(npm_view_version(""), None);
+        assert_eq!(npm_view_version("npm error code E404"), None);
+        assert_eq!(npm_view_version("\"\""), None);
+    }
+
+    #[test]
+    fn 报错里只引上游输出的末尾几行() {
+        assert_eq!(last_lines("a\nb\nc\nd", 2), "c\nd");
+        // 空行不占配额：npm 的错误输出里空行很多，占着就把有用的那几行挤出去了。
+        assert_eq!(
+            last_lines("npm error 1\n\n\nnpm error 2\n", 2),
+            "npm error 1\nnpm error 2"
+        );
+        assert_eq!(last_lines("", 3), "");
     }
 
     #[test]
