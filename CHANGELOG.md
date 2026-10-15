@@ -3,6 +3,18 @@
 版本号以 `Cargo.toml` 里的 `version` 为准；发布由推同版本的 `v*` tag 触发（见
 `.github/workflows/release.yml`），因此「有 tag ＝ 已发布」。
 
+## [0.3.7] - 2026-10-16
+
+**这一版没有代码变更**，`fundeploy` 的行为和 0.3.6 完全一样，不用急着升。
+
+它存在的唯一原因是发版流程本身换了驱动方式：以前改版本号、同步 `Cargo.lock`、打 tag
+这几步是手工做的，现在交给 [funbuild](https://pypi.org/project/funbuild/) 1.6.101
+新增的 `CargoBuild` ——它会按 128 进制递增 `Cargo.toml` 的版本、用
+`cargo update --workspace` 让 `Cargo.lock` 跟上（已锁定的外部依赖一个都不升级）、
+跑 `cargo fmt --all --check` / `cargo clippy --all-targets -- -D warnings` /
+`cargo test` 三道关卡，全过了才提交、打 `v*` tag 并推送。发布本身仍然全部由这个 tag
+触发的 workflow 完成，`cargo publish` 的位置也没变。这一版就是那条链路的第一次实跑。
+
 ## [0.3.6] - 2026-10-15
 
 ### 变更
