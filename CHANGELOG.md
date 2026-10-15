@@ -3,6 +3,59 @@
 版本号以 `Cargo.toml` 里的 `version` 为准；发布由推同版本的 `v*` tag 触发（见
 `.github/workflows/release.yml`），因此「有 tag ＝ 已发布」。
 
+## [0.3.5] - 2026-10-15
+
+### 新增
+
+- **`service paperclip prefetch`：把那段下载挪到装之前，也可以挪到后台。**
+  managed install 是一条前台命令、不能中断，而它最久的一段是下载——实测冷缓存要下
+  431 个 tarball、合计 0.97 GiB（落盘 2.7 GiB、7 万多个文件）。现在可以先把这些灌进
+  npm 缓存，等真要装的时候只剩解包：
+
+  ```
+  fundeploy service paperclip prefetch canary --background
+  ```
+
+  做得到是因为 npm 的缓存按 tarball 的完整 URL 内容寻址，谁灌进去的都算：`npm cache
+  add` 之后再装同一个包，npm 在同一个键上命中、一个字节都不再下（日志里是
+  `npm http cache … 0ms (cache hit)`）。也正因为键里带着主机名，预热必须跟 install
+  走同一个源，换镜像灌的那份对上游那条命令等于不存在。
+
+  清单从 `npm install --package-lock-only` 解析出来的 lockfile 里挑，三道筛子少一道
+  都会多下或下错：没有 `resolved` 的是捆在父包 tarball 里的（888 个条目里有 348 个，
+  全在 `@paperclipai/server` 肚子里），`os` / `cpu` / `libc` 不匹配的跳过（100 个，
+  esbuild 一家就占 25 个平台），`resolved` 不在钉死的源上的只报不灌。别名依赖按
+  `name` 字段的真名灌——那 12 个条目恰好是最大的几个（codex 一家 141 + 155 MiB），
+  按目录名去灌会 404。
+
+  本机实测：首次 422 个包、缓存涨 908.6 MiB；立刻再跑一次只涨 24 MiB（元数据刷新），
+  下载段已经空了。后台那条路有 PID 文件守着不重复开工、跑完自己收掉，进度每批一行
+  落进 `~/.paperclip/run/<实例>/prefetch.log`。
+
+- **装 / 升那几分钟不再是一片空白。** 上游把 npm 的输出整个捕获掉了，从
+  「Installing paperclipai@x」到装完之间一个字都不打，而那段实测要写 2.5 GiB、7 万多
+  个文件，看起来跟卡死一模一样。现在盯着它正在写的那个暂存目录报进度，并且分两段：
+  先是下载（暂存目录建好但空着，改看 npm 缓存的增量，没有分母所以不报 ETA），再是
+  解包（有分母，这时候 ETA 才有意义，分母按当前 payload 估、估小了就顶上去）。
+  stderr 不是终端就原样退回以前的行为，不为一个没人看的进度条每两秒走一遍七万个文件。
+
+### 变更
+
+- **装 / 升之前那条体积提示，口径改对了。** 它以前只报落盘量（「约 2G」），读起来
+  像是每次升级都要下 2.7 GiB——实际下载和落盘差了近三倍。现在两个数分开报，下载量按
+  实测比值折算（绝对值仍然不写死，依赖树一直在长），并且现场量一眼 `_cacache` 说清楚
+  这次是全量还是增量：缓存空着就直说全量，热了就提一句 `PAPERCLIP_NPM_PREFER_OFFLINE=1`
+  连校验请求也能省。顺带点明下载量的七成是各家 agent CLI 的二进制（codex /
+  claude-agent-sdk / copilot / opencode，而且每个都有两份——上游的版本范围对不上，
+  同一个工具两个版本并存），它们升级时大多不变，所以别清 `~/.npm/_cacache`。
+- `check` 发现有新版时会多指一条路：先 prefetch 把下载跑完，再 upgrade。
+- prefetch 解析依赖图那一步显式放开了 npm 的 `--allow-remote`。npm 12 新增了这条策略
+  且默认 `none`，而 `@paperclipai/server` 带 `bundleDependencies`，arborist 为了读出
+  里面捆了哪些包必须先把它的 tarball 解开，这一跳会被当成 "remote" 取回拒掉
+  （`EALLOWREMOTE`），整条解析挂掉。放开的前提是取回范围另有闸门管着：逐条核对
+  `resolved` 的主机名，不在钉死的源上的一个都不碰。注意同一条策略也会让上游那条
+  `npm install` 在 npm 12 上直接失败，那个还没处理——装不上的时候先看 `npm --version`。
+
 ## [0.3.4] - 2026-10-15
 
 ### 新增
