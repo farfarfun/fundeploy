@@ -675,12 +675,27 @@ impl Paperclip {
     ///
     /// 只有核实过才能说「已经停了」——真停不下来（没权限、卡在退出中、job 还加载着会
     /// 被 KeepAlive 拉回来）必须保留失败语义，否则又是一次假成功。
+    ///
+    /// 不过报失败之前先动一次手：端口上还坐着东西就按端口把它收掉（见
+    /// [`super::force_free_port`]），这跟三族服务的 stop 收尾是同一套做法。
     fn confirm_stopped(&self, code: i32, reaped: bool) -> Result<()> {
         let cfg = self.config();
         let sup = self.supervisor();
         let listening = port::is_listening(&cfg.host, cfg.port);
         if let Some(evidence) = still_running(&sup, listening, cfg.port) {
-            bail!("paperclipai service stop 失败（退出码 {code}）：{evidence}");
+            ui::warn(format!("官方 stop 没把它停下来：{evidence}"));
+            // 只按端口强停，不去碰服务管理器里那个 PID：那条进程有 KeepAlive 守着，
+            // 杀掉只会被立刻拉起来，把「停不下来」变成更难看的「停了又起」。
+            super::force_free_port("Paperclip", &cfg.host, cfg.port);
+
+            // 重新问一遍状态：强停可能已经解决问题，也可能根本没碰到真正的占用者。
+            let sup = self.supervisor();
+            let listening = port::is_listening(&cfg.host, cfg.port);
+            if let Some(evidence) = still_running(&sup, listening, cfg.port) {
+                bail!("paperclipai service stop 失败（退出码 {code}），强停也没解决：{evidence}");
+            }
+            ui::ok("已强制停止 Paperclip（官方 stop 没停下来，按端口收的）。");
+            return Ok(());
         }
         ui::ok(if reaped {
             "已停止 fundeploy 托管的 Paperclip。"

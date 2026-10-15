@@ -9,7 +9,7 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 
-use super::{uninstall_env_var, warn_if_still_listening, Service, START_TIMEOUT};
+use super::{force_free_port, uninstall_env_var, Service, START_TIMEOUT};
 use crate::common::{cmd, npm::Npm, pip, pip::PipPkg, port, proc};
 use crate::service::spec::{Component, Pkg, ServiceSpec};
 use crate::ui;
@@ -543,7 +543,7 @@ pub trait Upstream {
         }
         // 上游的 stop 普遍只发 SIGTERM 不强杀，拒绝退出的进程会让「已停止」变成假话。
         for c in spec.components.iter().rev() {
-            warn_if_still_listening(&c.label, &c.host, c.port);
+            force_free_port(&c.label, &c.host, c.port);
         }
         ui::info("已停止（best effort）。");
         Ok(())

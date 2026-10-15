@@ -154,6 +154,28 @@ pub fn confirm_destructive(prompt: &str, env_yes: &str) -> Result<()> {
     Ok(())
 }
 
+/// 问一句是/否，默认「是」，答「不」不算错。
+///
+/// 和 [`confirm_destructive`] 三处不同，都是为「本来就该发生」的那类动作准备的
+/// ——典型是 `stop` 停不下来时按端口强停：
+///
+/// - **回答「不」返回 false 而不是报错**，调用方自己决定怎么往下走。
+/// - **默认选项是「是」**，常规一次 restart 只需一个回车。
+/// - **无人值守时按「是」办**，不报错退出。`stop` 跑在 cron 和 CI 里是常态，
+///   在那里停下来问等于让 restart 断在半路——而这恰恰是加这道确认要避免的事。
+///
+/// `env_yes` 给「在终端里也别问我」用。
+pub fn confirm_default_yes(prompt: &str, env_yes: &str) -> bool {
+    if truthy_env(env_yes) || !interactive() {
+        return true;
+    }
+    // 读不到回答（Ctrl+C、Esc）当成「不」：那是人主动中断，不是默认路径。
+    inquire::Confirm::new(prompt)
+        .with_default(true)
+        .prompt()
+        .unwrap_or(false)
+}
+
 /// 问一个值。`default` 非空时直接回车就取它。
 pub fn input(prompt: &str, default: &str) -> Result<String> {
     if !interactive() {
@@ -246,5 +268,22 @@ mod tests {
         std::env::set_var("__FD_TEST_YES2", "1");
         confirm_destructive("要删吗", "__FD_TEST_YES2").unwrap();
         std::env::remove_var("__FD_TEST_YES2");
+    }
+
+    #[test]
+    fn 默认同意的那种确认在无人值守下就是同意() {
+        // 跟上面那条正好相反，也必须相反：stop 收尾的强停走的是这条，在 cron 和 CI
+        // 里停下来问（或者报错）等于让 restart 断在半路。
+        std::env::set_var("NONINTERACTIVE", "1");
+        std::env::remove_var("__FD_TEST_YES3");
+        assert!(confirm_default_yes("要停吗", "__FD_TEST_YES3"));
+        std::env::remove_var("NONINTERACTIVE");
+    }
+
+    #[test]
+    fn 默认同意的那种确认也认跳过变量() {
+        std::env::set_var("__FD_TEST_YES4", "1");
+        assert!(confirm_default_yes("要停吗", "__FD_TEST_YES4"));
+        std::env::remove_var("__FD_TEST_YES4");
     }
 }

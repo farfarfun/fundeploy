@@ -19,7 +19,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use std::path::{Path, PathBuf};
 
-use super::{uninstall_env_var, warn_if_still_listening, Service, START_TIMEOUT};
+use super::{force_free_port, uninstall_env_var, Service, START_TIMEOUT};
 use crate::common::fs::guard_removable;
 use crate::common::platform::Platform;
 use crate::common::{archive, cmd, download, github, port, proc};
@@ -464,7 +464,7 @@ pub trait Daemon {
             self.kill(p);
         }
         for p in spec.procs.iter().rev() {
-            warn_if_still_listening(&p.label, &p.host, self.effective_port(p));
+            force_free_port(&p.label, &p.host, self.effective_port(p));
         }
         ui::info("已停止（best effort）。");
         Ok(())
@@ -653,25 +653,18 @@ pub trait Daemon {
             return;
         };
 
-        // 认准二进制再动手。端口是全机共享的，别人的进程完全可能正好坐在这个
-        // 端口上（同一台机器上另装了一份、或者端口号撞了），把它停掉是不可挽回
-        // 的误伤；少停一次只是留个提示。
+        // 只报不动：真要动手是 stop 收尾那一步（[`force_free_port`]）的事，强停要问
+        // 一声，而这一问全流程只该出现一次。这里先把归属交代清楚——那一问只给得出
+        // 进程名，「它跑的是不是本服务的二进制」只有这儿答得上来。
         let bin = spec.app_dir().join(&p.bin);
         match same_binary(pid, &bin) {
-            Some(true) => {
-                ui::info(format!("PID 文件没了，按端口 {port} 找到 PID {pid}"));
-                if let Err(e) = proc::stop_pid(pid, START_TIMEOUT, false) {
-                    ui::warn(format!("{} 停止失败: {e}", p.label));
-                }
-            }
+            Some(true) => ui::info(format!("PID 文件没了，按端口 {port} 找到 PID {pid}")),
             Some(false) => ui::warn(format!(
-                "端口 {port} 被 PID {pid} 占着，但它跑的不是 {}，没有动它。\n\
-                 确认该停的话: kill -TERM {pid}",
+                "端口 {port} 被 PID {pid} 占着，它跑的不是 {}。",
                 bin.display()
             )),
             None => ui::warn(format!(
-                "端口 {port} 被 PID {pid} 占着，但确认不了那是不是 {}（多半不是当前用户起的），没有动它。\n\
-                 确认该停的话: kill -TERM {pid}",
+                "端口 {port} 被 PID {pid} 占着，确认不了那是不是 {}（多半不是当前用户起的）。",
                 p.label
             )),
         }

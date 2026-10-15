@@ -35,7 +35,7 @@ pub mod venv;
 
 use std::time::Duration;
 
-use crate::common::port;
+use crate::common::{port, proc};
 use crate::ui;
 
 /// 等端口监听起来的上限。
@@ -43,6 +43,19 @@ use crate::ui;
 /// 启动命令只要 fork 成功就返回 0，子进程几秒后崩掉它也不报错，所以必须自己等
 /// 端口。这个值要能覆盖「装了一堆依赖的 Python 后端 import 完」的时间。
 const START_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// stop 收尾强停时，SIGTERM 之后等多久再上 SIGKILL。
+///
+/// 比正常停止的宽限短得多：走到这一步，这个进程已经收过一轮停止请求了
+/// （daemon/venv 自己的 TERM→KILL，或者上游 stop 发的那个 TERM），还赖着
+/// 不走就别再陪它等下去。
+const FORCE_GRACE: Duration = Duration::from_secs(5);
+
+/// 在终端里也跳过「要不要按端口强停」这一问的开关。
+///
+/// 无人值守时本来就不问（见 [`ui::confirm_default_yes`]），这个变量是给盯着
+/// 终端、但不想每次 restart 都按一下回车的人用的。
+const ENV_KILL_PORT_YES: &str = "FUNDEPLOY_STOP_KILL_PORT_YES";
 
 pub use crate::Extra;
 
@@ -78,21 +91,71 @@ pub trait Service {
     }
 }
 
-/// 停完之后核对端口是不是真的放开了。
+/// 停完之后核对端口是不是真的放开了，没放开就按端口查出占用者停掉，动手前问一声。
 ///
-/// 残留必须明确报出来：紧接着的 start 会因为端口被占而跳过该组件，于是服务看着
+/// 残留不能只是报出来：紧接着的 start 会因为端口被占而跳过该组件，于是服务看着
 /// 是起的，跑的却是旧进程——而 stop 和 start 都报了成功。
-fn warn_if_still_listening(label: &str, host: &str, port: u16) {
+///
+/// 要问的原因是这个 PID 是从端口反查来的，端口是全机共享的，它完全可能是别人的
+/// 进程（同机另装了一份、或者端口号撞了）。所以把谁要被停报在问题里，让人有机会
+/// 拦住。但这一问不能挡住自动化：无人值守时不问直接停，默认选项也是「停」——
+/// 详见 [`ui::confirm_default_yes`]。
+fn force_free_port(label: &str, host: &str, port: u16) {
     if !port::is_listening(host, port) {
         return;
     }
-    match port::listener_pid(port) {
-        Some(pid) => ui::warn(format!(
-            "{label} 的端口 {port} 仍被 PID {pid} 占着。\n确认要强停: kill -TERM {pid}"
-        )),
-        None => ui::warn(format!(
-            "{label} 的端口 {port} 仍有人监听，但查不到 PID（多半属于别的用户）。"
-        )),
+    let Some(pid) = port::listener_pid(port) else {
+        ui::warn(format!(
+            "{label} 的端口 {port} 仍有人监听，但查不到 PID（多半属于别的用户），强停不了。加 sudo 再跑一次。"
+        ));
+        return;
+    };
+    if let Some(why) = proc::protected(pid) {
+        ui::warn(format!(
+            "{label} 的端口 {port} 被 PID {pid} 占着，但它{why}，没有动它。"
+        ));
+        return;
+    }
+
+    // 占用者一律摆在句末：带进程名时它以全角「）」收尾，后面再接字就得夹个空格，
+    // 中文里看着像漏排版。
+    let who = who(port, pid);
+    ui::warn(format!("{label} 的端口 {port} 停完还占着，占用者是 {who}"));
+    if !ui::confirm_default_yes(
+        &format!("强制停掉它，腾出端口 {port} 吗"),
+        ENV_KILL_PORT_YES,
+    ) {
+        ui::warn(format!(
+            "没有动 {who}；{label} 的端口 {port} 还占着，接下来的 start 会起不来。\
+             要自己停: kill -TERM {pid}"
+        ));
+        return;
+    }
+
+    ui::step(format!("强制停掉 {who}"));
+    // 绝不按进程组发信号：这个 PID 是从端口反查来的，它的进程组里很可能坐着
+    // 调用者自己的 shell。
+    if let Err(e) = proc::stop_pid(pid, FORCE_GRACE, false) {
+        ui::warn(format!("停不下来: {e}"));
+    }
+
+    // 复查端口而不是复查 PID：进程没了不等于端口腾出来了，同一个端口上还可能压着
+    // 别的用户的进程，非 root 时根本看不见它。
+    if port::is_listening(host, port) {
+        ui::warn(format!(
+            "{label} 的端口 {port} 还占着。占用者多半不属于当前用户，加 sudo 再跑一次。"
+        ));
+    } else {
+        ui::ok(format!("{label} 的端口 {port} 已腾出。"));
+    }
+}
+
+/// 把占用者说清楚：有进程名就带上。问人「要不要停掉 PID 12345」，光一个数字
+/// 没法判断；带上 `gunicorn` 才认得出那是不是自己要停的东西。
+fn who(port: u16, pid: i32) -> String {
+    match port::holders(port).into_iter().find(|h| h.pid == pid) {
+        Some(h) if !h.comm.is_empty() => format!("PID {pid}（{}）", h.comm),
+        _ => format!("PID {pid}"),
     }
 }
 
@@ -107,6 +170,45 @@ fn uninstall_env_var(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::TcpListener;
+
+    #[test]
+    fn 没人占的端口不用腾也不报错() {
+        let port = {
+            let l = TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        force_free_port("测试", "127.0.0.1", port);
+    }
+
+    #[test]
+    fn 占用者的提示里带着进程名() {
+        // 问「要停掉 PID 12345 吗」时，光一个数字没法判断该不该答应。
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let me = std::process::id() as i32;
+
+        let s = who(port, me);
+
+        assert!(s.contains(&me.to_string()), "实际: {s}");
+        assert!(s.contains('（'), "没带上进程名: {s}");
+        drop(listener);
+    }
+
+    #[test]
+    fn 自己占的端口不会把自己杀掉() {
+        // 没有 proc::protected 那道闸，这条测试会把测试进程自己干掉。
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        force_free_port("测试", "127.0.0.1", port);
+
+        assert!(
+            port::is_listening("127.0.0.1", port),
+            "端口 {port} 不该被腾掉"
+        );
+        drop(listener);
+    }
 
     #[test]
     fn 卸载确认的环境变量名由服务名推出() {

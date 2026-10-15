@@ -35,7 +35,7 @@ pub fn kill(ports: &[u16], yes: bool) -> Result<()> {
     let mut targets: Vec<(u16, &Holder)> = Vec::new();
     for (&port, hs) in &found {
         for h in hs {
-            match protected(h.pid) {
+            match proc::protected(h.pid) {
                 Some(why) => ui::warn(format!("跳过 {} ({})：{why}。", h.pid, name(h))),
                 None => targets.push((port, h)),
             }
@@ -138,20 +138,6 @@ fn show(found: &BTreeMap<u16, Vec<Holder>>) {
     }
 }
 
-/// 不能动的 PID。
-fn protected(pid: i32) -> Option<&'static str> {
-    if pid <= 1 {
-        // 1 号进程是 init，容器里把它停了整个容器就没了。
-        return Some("是 init");
-    }
-    if pid == std::process::id() as i32 {
-        // fundeploy 自己占着这个端口确实少见，但真撞上时信号发出去，后面几个端口
-        // 就无声无息地没处理了，连「失败了」都报不出来。
-        return Some("就是 fundeploy 自己");
-    }
-    None
-}
-
 fn name(h: &Holder) -> String {
     if h.comm.is_empty() {
         "?".to_string()
@@ -220,10 +206,10 @@ mod tests {
 
     #[test]
     fn init_和自己都在保护名单里() {
-        assert!(protected(1).is_some());
-        assert!(protected(0).is_some());
-        assert!(protected(std::process::id() as i32).is_some());
-        assert!(protected(2).is_none());
+        assert!(proc::protected(1).is_some());
+        assert!(proc::protected(0).is_some());
+        assert!(proc::protected(std::process::id() as i32).is_some());
+        assert!(proc::protected(2).is_none());
     }
 
     #[test]

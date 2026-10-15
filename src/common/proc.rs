@@ -37,6 +37,23 @@ pub fn is_alive(pid: i32) -> bool {
     unsafe { libc::kill(pid, 0) == 0 }
 }
 
+/// 绝不能发信号的 PID，`Some` 里是为什么。
+///
+/// 按端口反查出来的 PID 什么都可能是，动手前先过这道闸：
+///
+/// - **1 号进程**是 init，容器里把它停了整个容器就跟着没了。
+/// - **自己**：fundeploy 占着自己要腾的端口确实少见，但真撞上时信号发出去，
+///   调用方剩下的收尾（复查端口、停下一个进程、把服务起回来）一件都不会发生。
+pub fn protected(pid: i32) -> Option<&'static str> {
+    if pid <= 1 {
+        return Some("是 init");
+    }
+    if pid == std::process::id() as i32 {
+        return Some("就是 fundeploy 自己");
+    }
+    None
+}
+
 /// 取 pid 的进程组 ID。拿不到（进程已退出、/proc 不可读）返回 None。
 fn pgid_of(pid: i32) -> Option<i32> {
     let r = unsafe { libc::getpgid(pid) };

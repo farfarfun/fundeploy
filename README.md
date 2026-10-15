@@ -160,6 +160,19 @@ fundeploy service funread-web status
 一条 `stop` 全停掉。换包前会先停服、装完按原状态起回来——在跑着的进程底下换全局包，
 Node 还开着那棵树里的文件。
 
+`stop` 走完还有人占着端口时，会按端口反查出占用者，问一声再强停（SIGTERM，5 秒不走
+上 SIGKILL）。端口不腾出来，紧接着的 `start` 会跳过那个组件，于是 `stop` 和 `start`
+都报成功、跑的却还是旧进程——`restart` 卡住多半就是这么来的。
+
+```
+警告: new-api 的端口 8801 停完还占着，占用者是 PID 2593874（python3）
+? 强制停掉它，腾出端口 8801 吗 (Y/n)
+```
+
+回车就是停。没有终端时（cron、CI、输出被重定向）不问直接停，`restart` 因此不会断在
+半路；盯着终端但不想每次都按回车的，设 `FUNDEPLOY_STOP_KILL_PORT_YES=1`。
+`init` 和 fundeploy 自己这两个 PID 永远不动。
+
 `paperclip` 额外转发官方 CLI 的动作：`install-canary`、`check`、`backup`、`channels`、
 `doctor`、`health`、`onboard`、`logs`、`plugin`、`service-install`。
 

@@ -19,7 +19,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use super::{uninstall_env_var, warn_if_still_listening, Extra, Service, START_TIMEOUT};
+use super::{force_free_port, uninstall_env_var, Extra, Service, START_TIMEOUT};
 use crate::common::fs::guard_removable;
 use crate::common::{cmd, env, port, proc};
 use crate::ui;
@@ -571,7 +571,7 @@ pub trait Venv {
         }
         for p in spec.procs.iter().rev() {
             if let Some((host, port)) = &p.listen {
-                warn_if_still_listening(&p.label, host, *port);
+                force_free_port(&p.label, host, *port);
             }
         }
         ui::info("已停止（best effort）。");
@@ -705,6 +705,11 @@ pub trait Venv {
 
         if action == "stop-one" {
             self.kill(p);
+            // 跟整体 stop 一样收尾，不然单停一个进程会是唯一一条「端口没腾出来也不
+            // 吭声」的路径，紧接着的 start-one 照样起不来。
+            if let Some((host, port)) = &p.listen {
+                force_free_port(&p.label, host, *port);
+            }
             return Ok(());
         }
 
@@ -929,23 +934,17 @@ pub trait Venv {
             return;
         };
 
-        // 认准是不是这个 venv 里的东西再动手。端口是全机共享的，别人的进程完全可能
-        // 正好坐在这个端口上，把它停掉是不可挽回的误伤；少停一次只是留个提示。
+        // 只报不动：真要动手是 stop 收尾那一步（[`force_free_port`]）的事，强停要问
+        // 一声，而这一问全流程只该出现一次。这里先把归属交代清楚——那一问只给得出
+        // 进程名，「它是不是这个 venv 里的东西」只有这儿答得上来。
         match owned_by(&spec.venv, pid) {
-            Some(true) => {
-                ui::info(format!("PID 文件没了，按端口 {port} 找到 PID {pid}"));
-                if let Err(e) = proc::stop_pid(pid, STOP_TIMEOUT, false) {
-                    ui::warn(format!("{} 停止失败: {e}", p.label));
-                }
-            }
+            Some(true) => ui::info(format!("PID 文件没了，按端口 {port} 找到 PID {pid}")),
             Some(false) => ui::warn(format!(
-                "端口 {port} 被 PID {pid} 占着，但它跑的不是 {} 里的东西，没有动它。\n\
-                 确认该停的话: kill -TERM {pid}",
+                "端口 {port} 被 PID {pid} 占着，它跑的不是 {} 里的东西。",
                 spec.venv.display()
             )),
             None => ui::warn(format!(
-                "端口 {port} 被 PID {pid} 占着，但确认不了那是不是 {}（多半不是当前用户起的），没有动它。\n\
-                 确认该停的话: kill -TERM {pid}",
+                "端口 {port} 被 PID {pid} 占着，确认不了那是不是 {}（多半不是当前用户起的）。",
                 p.label
             )),
         }
