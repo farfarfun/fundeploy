@@ -402,14 +402,13 @@ fn brew_upgrade(exe: &Path, version: Option<&str>) -> Result<()> {
     let argv = vec![brew.clone(), "upgrade".into(), "--formula".into(), formula];
     // 报命令时用 `brew` 这个名字，不用解析出来的绝对路径：前者是人自己也能敲的那一条。
     ui::step(format!("brew {}", argv[1..].join(" ")));
-    if let Err(e) = cmd::run_with(argv, &env) {
-        bail!(
-            "{e}\n\
-             brew 要是嫌 tap 不可信（Homebrew 6.0 起第三方 tap 默认不可信）：brew trust {}",
-            r.tap.as_deref().unwrap_or("farfarfun/packages")
-        );
-    }
-    brew_confirm(&brew)
+    // 失败先收着，不立刻 bail。`brew upgrade` 的退出码盖的事比我们关心的多：它还会
+    // 顺带升别的 formula、去取 API 元数据，那些失败和「fundeploy 升没升上去」是两回
+    // 事。实测过一次：fundeploy 自己那步早就 🍺 完、0.3.8 也清理掉了，brew 接着去下
+    // 另一个 formula 的 .rb 撞上 raw.githubusercontent.com 连不通（国内常事），整条
+    // 命令退出 1，于是升级成功却报了失败。
+    let failed = cmd::run_with(argv, &env).err();
+    brew_confirm(&brew, failed, r.tap.as_deref())
 }
 
 /// 刷新 tap 仓库。返回它现在是不是最新的。
@@ -508,21 +507,60 @@ fn is_git_repo(dir: &Path) -> bool {
     dir.join(".git").exists()
 }
 
-/// brew 那边现在装着哪一版。
+/// brew 那边装着 `got`、当前跑的是 `current` 时，这次升级算不算落地了。
 ///
-/// `brew upgrade` 在「没有更新可升」时也退出 0，所以退出码不能当成升成功了。
-fn brew_confirm(brew: &str) -> Result<()> {
+/// 同版也算：那说明本来就已经是最新的，`brew upgrade` 后面报的错是别的 formula
+/// 的事，不该把它记在这次升级账上。
+fn landed(got: &str, current: &str) -> bool {
+    !version::is_newer(current, got)
+}
+
+/// brew 那边现在装着哪一版，据此下结论。
+///
+/// 退出码两头都不可信：`brew upgrade` 在「没有更新可升」时退出 0，而它顺带升别的
+/// formula 失败时又会退出非零——两种情况下真正的答案都只有一个来源，就是
+/// `brew list --versions`。所以 `failed` 只用来决定「怎么说」，不用来决定「成没成」。
+fn brew_confirm(brew: &str, failed: Option<anyhow::Error>, tap: Option<&str>) -> Result<()> {
     let got = cmd::capture([brew, "list", "--versions", "fundeploy"])
         .ok()
         .and_then(|o| newest_version(&o));
-    let Some(v) = got else {
+
+    match (got, failed) {
+        // 落地了。brew 后面那些抱怨是别的事，说一声就行，不能判成失败。
+        (Some(v), e) if landed(&v, crate::VERSION) => {
+            if let Some(e) = e {
+                ui::warn(format!(
+                    "brew upgrade 最后退出码非零，但 fundeploy 这边已经是 {v} 了——\
+                     那条错是别的 formula 的事（常见的是取 formula 元数据时连不上 GitHub）：\n  {e}"
+                ));
+            }
+            report("Homebrew 里", &v, "Homebrew", None);
+            Ok(())
+        }
+        // brew 失败了，而 fundeploy 也确实没升上去：这才是真失败。
+        (got, Some(e)) => {
+            let now = got
+                .map(|v| format!("，Homebrew 现在装着 {v}"))
+                .unwrap_or_default();
+            bail!(
+                "{e}\n\
+                 fundeploy 没升上去{now}。\n\
+                 brew 要是嫌 tap 不可信（Homebrew 6.0 起第三方 tap 默认不可信）：brew trust {}",
+                tap.unwrap_or("farfarfun/packages")
+            );
+        }
+        // brew 说成功了，版本也问出来了，但比当前还旧——交给 report 说清楚。
+        (Some(v), None) => {
+            report("Homebrew 里", &v, "Homebrew", None);
+            Ok(())
+        }
         // 问不出来就不替它下结论。
-        ui::warn("brew upgrade 跑完了，但问不出 Homebrew 现在装着哪一版，自己核一下：");
-        ui::hint("brew list --versions fundeploy");
-        return Ok(());
-    };
-    report("Homebrew 里", &v, "Homebrew", None);
-    Ok(())
+        (None, None) => {
+            ui::warn("brew upgrade 跑完了，但问不出 Homebrew 现在装着哪一版，自己核一下：");
+            ui::hint("brew list --versions fundeploy");
+            Ok(())
+        }
+    }
 }
 
 /// cargo：`cargo install --force`。
@@ -689,6 +727,18 @@ mod tests {
         (Os::MacOs, Arch::X86_64),
         (Os::MacOs, Arch::Aarch64),
     ];
+
+    #[test]
+    fn brew_升上去了就算成功_哪怕_brew_自己退出非零() {
+        // 实际踩过的一次：fundeploy 已经 🍺 到 0.3.9、0.3.8 也清理掉了，brew 接着去
+        // 下另一个 formula 的 .rb 撞上 raw.githubusercontent.com 连不通，整条命令
+        // 退出 1，于是升级成功却报了失败。判定只能看 brew 装着哪一版。
+        assert!(landed("0.3.9", "0.3.8"), "装上新版就是升上去了");
+        // 同版也算落地：本来就是最新的，brew 后面报的错是别的 formula 的事。
+        assert!(landed("0.3.9", "0.3.9"));
+        // 真没升上去：brew 那边还是旧的。
+        assert!(!landed("0.3.8", "0.3.9"));
+    }
 
     #[test]
     fn 四个平台的附件名各不相同() {
