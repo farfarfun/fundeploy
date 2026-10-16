@@ -840,8 +840,6 @@ fn pick_source_action() -> Result<SourceAction> {
 
 /// 不带任何参数时。
 ///
-/// 无人值守下必须打 help 然后正常退出，不能停在菜单上等输入——这条路径会被
-/// 装机脚本和 CI 走到，卡住的表现是「安装脚本挂死」，比报错难查得多。
 /// 无参数时那张菜单。每行的第一个词必须是一个真实的子命令名。
 ///
 /// 和 clap 的 `Command` 是两份定义，天然会漂移——`upgrade` 和 `list` 就这么漏过
@@ -861,6 +859,10 @@ const MENU: [&str; 11] = [
     "about      这是什么、谁做的",
 ];
 
+/// 不带任何参数时。
+///
+/// 无人值守下必须打 help 然后正常退出，不能停在菜单上等输入——这条路径会被装机
+/// 脚本和 CI 走到，卡住的表现是「安装脚本挂死」，比报错难查得多。
 fn no_args() -> Result<()> {
     if !ui::interactive() {
         Cli::command().print_help()?;
@@ -999,12 +1001,33 @@ fn about() {
     ui::info("专注实用工具库的开源组织，涵盖云存储、数据处理、AI、多媒体与开发工具链。");
     ui::blank();
     ui::Card::new("farfarfun")
-        .row("组织主页", "https://github.com/farfarfun")
+        .section("组织")
+        .row("主页", "https://github.com/farfarfun")
         .row("PyPI", "https://pypi.org/user/niuliangtao/")
         .row("联系", "farfarfun@qq.com")
-        .row("本项目", "https://github.com/farfarfun/fundeploy")
+        // apt 源和 Homebrew tap 是同一个仓库：那边一个源管全组织的包，
+        // fundeploy 发版时只是通知它重建索引。
+        .section("分发")
+        .row("包源", "https://github.com/farfarfun/packages")
+        .row("apt", "https://farfarfun.github.io/packages/deb")
+        .row("brew tap", "farfarfun/packages")
+        .section("本项目")
+        .row("仓库", "https://github.com/farfarfun/fundeploy")
         .row("许可", "MIT")
         .print();
+
+    // 这几条是要被复制去敲的，所以用常色、不省略，也不塞进卡片——它们比框里任何
+    // 字段都长，塞进去只会把框撑到满屏或者被掐成认不出的样子。
+    ui::blank();
+    ui::heading("装一份");
+    ui::info(
+        "  curl -fsSL https://raw.githubusercontent.com/farfarfun/fundeploy/HEAD/install.sh | sh",
+    );
+    ui::blank();
+    ui::info("  brew tap farfarfun/packages https://github.com/farfarfun/packages");
+    ui::info("  brew install farfarfun/packages/fundeploy");
+    ui::hint("Homebrew 6.0 起第三方 tap 默认不可信，装之前先 brew trust farfarfun/packages");
+    ui::hint("GitHub 连不上就把 tap 的地址换成 https://gitee.com/farfarfun/packages");
     ui::blank();
     ui::hint("能管什么: fundeploy list");
 }
