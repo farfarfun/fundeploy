@@ -584,60 +584,94 @@ pub trait Venv {
         self.start()
     }
 
+    /// 一张卡片说完：版本、每个进程的状态、要排查时去哪看。
+    ///
+    /// 这里不用 [`ui::warn`]——「进程在但端口没监听」是状态本身，不是操作中途出
+    /// 的意外。分到 stderr 会让一次 status 的输出一半进文件、一半留在屏幕，顺序
+    /// 还会因为两个流各自缓冲而错乱。
     fn status(&self) -> Result<()> {
         let spec = self.spec();
+        let mut card = ui::Card::new(&spec.name);
 
-        ui::heading("已安装版本");
         match spec.installed_version() {
-            Some(v) => ui::info(format!("{}: {v}（{}）", spec.dist, spec.venv.display())),
-            None => ui::info(format!(
-                "{}: 未安装（fundeploy service {} install）",
-                spec.dist, spec.name
-            )),
+            Some(v) => card = card.row(&spec.dist, format!("{v} · {}", spec.venv.display())),
+            None => {
+                card = card.row_state(&spec.dist, ui::State::Idle, "未安装");
+                card = card.note(format!("装上: fundeploy service {} install", spec.name));
+            }
         }
 
+        let mut up = 0usize;
         for p in &spec.procs {
-            ui::blank();
-            match &p.listen {
-                Some((host, port)) => ui::heading(format!("{}（{host}:{port}）", p.label)),
-                None => ui::heading(p.label.clone()),
-            }
-
             let pid = proc::read_pid_file(&spec.pid_file(p)).filter(|&x| proc::is_alive(x));
-            match (&p.listen, pid) {
-                (None, Some(pid)) => ui::info(format!("在运行（PID {pid}）")),
-                (None, None) => ui::info("没在运行"),
+            let (st, text) = match (&p.listen, pid) {
+                // 没有端口的进程（celery worker、beat）只能看 PID 文件。
+                (None, Some(pid)) => {
+                    up += 1;
+                    (ui::State::Up, format!("在运行 · PID {pid}"))
+                }
+                (None, None) => (ui::State::Idle, "没在运行".to_string()),
                 (Some((host, port)), pid) => {
+                    let at = format!("{host}:{port}");
                     let listening = port::is_listening(host, *port);
                     match (pid, listening) {
-                        (Some(pid), true) => ui::info(format!("在运行（PID {pid}）")),
+                        (Some(pid), true) => {
+                            up += 1;
+                            (ui::State::Up, format!("在运行 · PID {pid} · {at}"))
+                        }
                         // PID 还活着但端口没开：多半是起来之后业务初始化就挂了，
                         // 这跟「没在运行」是两件事，排查方向也不一样。
-                        (Some(pid), false) => ui::warn(format!(
-                            "进程在（PID {pid}）但端口没监听，看日志: {}",
-                            spec.log_file(p).display()
-                        )),
+                        (Some(pid), false) => {
+                            (ui::State::Down, format!("进程在 PID {pid}，但 {at} 没监听"))
+                        }
                         // 端口有人但 PID 文件对不上。是手工起的本服务，还是别的程序
                         // 正好占了这个端口，差别很大。
                         (None, true) => match port::listener_pid(*port) {
                             Some(other) => match owned_by(&spec.venv, other) {
-                                Some(true) => ui::info(format!(
-                                    "在运行（PID {other}，不是 fundeploy 起的）"
-                                )),
-                                Some(false) => ui::warn(format!(
-                                    "端口被 PID {other} 占着，跑的不是这个 venv 里的东西"
-                                )),
-                                None => ui::warn(format!(
-                                    "端口被 PID {other} 占着，确认不了是不是本服务（多半不是当前用户起的）"
-                                )),
+                                Some(true) => {
+                                    up += 1;
+                                    (
+                                        ui::State::Up,
+                                        format!(
+                                            "在运行 · PID {other}（不是 fundeploy 起的）· {at}"
+                                        ),
+                                    )
+                                }
+                                Some(false) => (
+                                    ui::State::Down,
+                                    format!("{at} 被 PID {other} 占着，不是这个 venv 里的东西"),
+                                ),
+                                None => (
+                                    ui::State::Down,
+                                    format!("{at} 被 PID {other} 占着，认不出是不是本服务"),
+                                ),
                             },
-                            None => ui::info("在运行（不是 fundeploy 起的）"),
+                            None => {
+                                up += 1;
+                                (
+                                    ui::State::Up,
+                                    format!("在运行（不是 fundeploy 起的）· {at}"),
+                                )
+                            }
                         },
-                        (None, false) => ui::info("没在运行"),
+                        (None, false) => (ui::State::Idle, format!("没在运行 · {at}")),
                     }
                 }
-            }
-            ui::hint(format!("日志: {}", spec.log_file(p).display()));
+            };
+            card = card.row_state(&p.label, st, text);
+        }
+
+        let (bst, blabel) = match (up, spec.procs.len()) {
+            (_, 0) => (ui::State::Idle, "没有进程".to_string()),
+            (0, _) => (ui::State::Idle, "未运行".to_string()),
+            (u, n) if u == n => (ui::State::Up, "在运行".to_string()),
+            (u, n) => (ui::State::Partial, format!("部分 {u}/{n}")),
+        };
+        card.badge(bst, blabel).print();
+
+        // 日志路径摆框外：它常常比框里所有字段都长。
+        for p in &spec.procs {
+            ui::hint(format!("日志 {} {}", p.label, spec.log_file(p).display()));
         }
 
         self.extra_status()
@@ -875,7 +909,15 @@ pub trait Venv {
 
         match &p.listen {
             Some((host, port)) => {
-                if port::wait_for_listener(host, *port, spec.start_timeout) {
+                let sp = ui::Spinner::new(format!("等 {} 监听 {host}:{port}", p.label));
+                let listening =
+                    port::wait_for_listener_ticking(host, *port, spec.start_timeout, || sp.tick());
+                if listening {
+                    sp.done(format!("{} 起来了，{host}:{port} 在听", p.label));
+                } else {
+                    sp.give_up();
+                }
+                if listening {
                     return Ok(());
                 }
                 let why = if proc::is_alive(pid) {

@@ -4,6 +4,7 @@ use anyhow::{bail, Result};
 use clap::{CommandFactory, Parser, Subcommand};
 
 use crate::ai;
+use crate::common::port;
 use crate::dev;
 use crate::doctor;
 use crate::port_kill;
@@ -100,6 +101,8 @@ enum Command {
     },
     /// 列出能管的东西
     List,
+    /// 这是什么、谁做的
+    About,
 }
 
 #[derive(Subcommand, Clone)]
@@ -437,6 +440,9 @@ fn split_extra<'a>(
 }
 
 pub fn cli_main() -> Result<()> {
+    // 必须在任何交互之前：inquire 不走 ui::color()，默认配色会在重定向时把 ANSI
+    // 码漏进管道。
+    ui::init_theme();
     match Cli::parse().command {
         Some(Command::List) => {
             list_all();
@@ -465,6 +471,10 @@ pub fn cli_main() -> Result<()> {
         Some(Command::Ai { name, action }) => ai_cmd(name, action),
         Some(Command::Skills { action }) => skills_cmd(action),
         Some(Command::Upgrade { version, check }) => selfup::run(version.as_deref(), check),
+        Some(Command::About) => {
+            about();
+            Ok(())
+        }
         None => no_args(),
     }
 }
@@ -626,29 +636,50 @@ fn pick_source_action() -> Result<SourceAction> {
 ///
 /// 无人值守下必须打 help 然后正常退出，不能停在菜单上等输入——这条路径会被
 /// 装机脚本和 CI 走到，卡住的表现是「安装脚本挂死」，比报错难查得多。
+/// 无参数时那张菜单。每行的第一个词必须是一个真实的子命令名。
+///
+/// 和 clap 的 `Command` 是两份定义，天然会漂移——`upgrade` 和 `list` 就这么漏过
+/// 一阵子：菜单里没有，`--help` 里有。所以提成常量，由
+/// [`tests::菜单和命令两边都不许漏`] 双向钉住。
+const MENU: [&str; 11] = [
+    "service    服务（装、起、停、查）",
+    "tool       工具（装、升、卸、查）",
+    "source     换源（pip、npm、brew、cargo、go）",
+    "port-kill  腾端口（查出谁占着，停掉它）",
+    "doctor     诊断（GitHub 连不上）",
+    "dev        开发工具链（go、nodejs、pnpm、rust、uv、python）",
+    "ai         AI 命令行（claude、codex、cursor）",
+    "skills     技能仓库（同步 Gitee 上的那批）",
+    "upgrade    升级 fundeploy 自己",
+    "list       列出能管的东西",
+    "about      这是什么、谁做的",
+];
+
 fn no_args() -> Result<()> {
     if !ui::interactive() {
         Cli::command().print_help()?;
         println!();
         return Ok(());
     }
-    let domains = [
-        "service    服务（装、起、停、查）".to_string(),
-        "tool       工具（装、升、卸、查）".to_string(),
-        "source     换源（pip、npm、brew、cargo、go）".to_string(),
-        "port-kill  腾端口（查出谁占着，停掉它）".to_string(),
-        "doctor     诊断（GitHub 连不上）".to_string(),
-        "dev        开发工具链（go、nodejs、pnpm、rust、uv、python）".to_string(),
-        "ai         AI 命令行（claude、codex、cursor）".to_string(),
-        "skills     技能仓库（同步 Gitee 上的那批）".to_string(),
-    ];
+    // 只有「人主动打开菜单」这一条路径配得上一段 banner。
+    ui::brand();
+    ui::blank();
+    let domains: Vec<String> = MENU.iter().map(|s| s.to_string()).collect();
     let picked = ui::select("要管什么", &domains)?.ok_or_else(|| anyhow::anyhow!("已取消。"))?;
+    // 逐个列全、不留 `_ =>` 兜底: 兜底会把「菜单加了项却忘了加分支」变成「选了
+    // upgrade 却跳出工具列表」, 不报错也查不出来。
     match picked.split_whitespace().next().unwrap_or("") {
         "service" => {
             let svc = pick_one(service::registry::all(), "选一个服务", |s| {
                 (s.name().to_string(), s.summary().to_string())
             })?;
             pick_and_run(svc.as_ref())
+        }
+        "tool" => {
+            let t = pick_one(tool::registry::all(), "选一个工具", |t| {
+                (t.name().to_string(), t.summary().to_string())
+            })?;
+            pick_and_run_tool(t.as_ref())
         }
         "source" => {
             let s = pick_one(source::registry::all(), "给哪个换源", |s| {
@@ -665,49 +696,142 @@ fn no_args() -> Result<()> {
         "dev" => dev_cmd(None, None),
         "ai" => ai::list(),
         "skills" => skills::list(),
-        _ => {
-            let t = pick_one(tool::registry::all(), "选一个工具", |t| {
-                (t.name().to_string(), t.summary().to_string())
-            })?;
-            pick_and_run_tool(t.as_ref())
+        // 只看有没有新版，不直接动手替换自己：菜单是随手点开的，升级该是明确的决定。
+        "upgrade" => selfup::run(None, true),
+        "list" => {
+            list_all();
+            Ok(())
         }
+        "about" => {
+            about();
+            Ok(())
+        }
+        other => bail!("菜单项 {other} 没有对应的处理分支，这是 fundeploy 自己的 bug"),
     }
 }
 
 fn list_all() {
+    // 一律先 ui::pad 再上色: pad 算的是终端显示宽度, 带着 ANSI 转义码进去, 那些
+    // 不可见的字节会被当成列宽, 整张表歪得莫名其妙。
     ui::heading("服务");
     for s in service::registry::all() {
         let ports: Vec<String> = s.ports().iter().map(u16::to_string).collect();
         println!(
-            "  {:<14} {}（端口 {}）",
-            s.name(),
+            "  {}{}{}",
+            ui::strong(ui::pad(s.name(), 16)),
             s.summary(),
-            ports.join("、")
+            ui::muted(format!("（端口 {}）", ports.join("、")))
         );
     }
     ui::blank();
     ui::heading("工具");
     for t in tool::registry::all() {
-        println!("  {:<14} {}", t.name(), t.summary());
+        println!("  {}{}", ui::strong(ui::pad(t.name(), 16)), t.summary());
     }
     ui::blank();
     ui::heading("可换源");
     for s in source::registry::all() {
-        println!("  {:<14} {}", s.name(), s.summary());
+        println!("  {}{}", ui::strong(ui::pad(s.name(), 16)), s.summary());
     }
+}
+
+/// `fundeploy about`：这是什么、谁做的、去哪儿找。
+///
+/// 内容和 README 的「关于 farfarfun」一节对齐。fundeploy 目前基本只在自己人里
+/// 用，这条命令是顺手把组织带出去的地方。
+fn about() {
+    ui::brand();
+    ui::blank();
+    ui::info("专注实用工具库的开源组织，涵盖云存储、数据处理、AI、多媒体与开发工具链。");
+    ui::blank();
+    ui::Card::new("farfarfun")
+        .row("组织主页", "https://github.com/farfarfun")
+        .row("PyPI", "https://pypi.org/user/niuliangtao/")
+        .row("联系", "farfarfun@qq.com")
+        .row("本项目", "https://github.com/farfarfun/fundeploy")
+        .row("许可", "MIT")
+        .print();
+    ui::blank();
+    ui::hint("能管什么: fundeploy list");
 }
 
 fn list_tools() {
     ui::heading("工具");
     for t in tool::registry::all() {
-        println!("  {:<14} {}", t.name(), t.summary());
+        println!("  {}{}", ui::strong(ui::pad(t.name(), 16)), t.summary());
+    }
+}
+
+/// 所有服务的状态总览（`fundeploy service status`）。
+///
+/// 只探端口、不碰 PID 文件：这条命令的用处是「扫一眼这台机器上什么在跑」，得快。
+/// 单个服务的细节（PID、版本、日志路径）归 `fundeploy service <服务> status`。
+///
+/// 端口被占不等于「我们起的那份在跑」——别人的进程也可能正好坐在同一个端口上。
+/// 这里刻意不去分辨：总览回答的是「这个口通不通」，认归属是单服务 status 的事。
+fn status_all() {
+    ui::heading("服务状态");
+    for s in service::registry::all() {
+        let ports = s.ports();
+        let up = ports.iter().filter(|&&p| port::is_taken(p)).count();
+        let (kind, label) = match (up, ports.len()) {
+            (_, 0) => (ui::State::Idle, "没有端口".to_string()),
+            (0, _) => (ui::State::Idle, "没在跑".to_string()),
+            (u, n) if u == n => (ui::State::Up, "在跑".to_string()),
+            (u, n) => (ui::State::Partial, format!("部分 {u}/{n}")),
+        };
+        let list: Vec<String> = ports.iter().map(u16::to_string).collect();
+        println!(
+            "  {}{}{}",
+            ui::strong(ui::pad(s.name(), 16)),
+            ui::muted(ui::pad(&list.join(" "), 22)),
+            ui::state(kind, label)
+        );
+    }
+    ui::blank();
+    ui::hint("细节: fundeploy service <服务> status");
+}
+
+/// 所有工具的状态（`fundeploy tool status`）。
+///
+/// 工具没有端口可探，[`Tool`] 也只给了会自己打印的 `status()`，所以这里逐个调。
+/// 一个工具查不了不该挡住后面的——这条命令是来看全局的。
+///
+/// 不在这儿补标题：每个工具的 `status()` 自己就会打一个，再加一层会变成重复两行。
+fn tool_status_all() {
+    for (i, t) in tool::registry::all().iter().enumerate() {
+        if i > 0 {
+            ui::blank();
+        }
+        if let Err(e) = t.status() {
+            ui::warn(format!("{} 查不了: {e}", t.name()));
+        }
     }
 }
 
 fn service_cmd(name: Option<String>, action: Option<Action>) -> Result<()> {
     let Some(name) = name else {
-        list_all();
-        return Ok(());
+        // 不给服务名时 clap 会把 `fundeploy service status` 里的 status 解析成
+        // action。以前这儿只看 name，解析出来的 action 被整个丢掉——给了动作却
+        // 一声不吭地打出一张清单，退出码还是 0。
+        return match action {
+            Some(Action::Status) => {
+                status_all();
+                Ok(())
+            }
+            // 其余动作一律拒绝而不是对所有服务来一遍：`service stop` 看着像
+            // 「停一下」，真跑起来是把这台机器上十几个服务全停了。
+            Some(_) => bail!(
+                "这个动作要点名服务: fundeploy service <服务> <动作>\n\
+                 可选: {}\n\
+                 不点名只支持 status（所有服务的状态总览）。",
+                service::registry::names().join("、")
+            ),
+            None => {
+                list_all();
+                Ok(())
+            }
+        };
     };
 
     let svc = service::registry::find(&name).ok_or_else(|| {
@@ -725,8 +849,23 @@ fn service_cmd(name: Option<String>, action: Option<Action>) -> Result<()> {
 
 fn tool_cmd(name: Option<String>, action: Option<ToolAction>) -> Result<()> {
     let Some(name) = name else {
-        list_tools();
-        return Ok(());
+        // 同 service_cmd：`fundeploy tool status` 的 status 会被解析成 action。
+        return match action {
+            Some(ToolAction::Status) => {
+                tool_status_all();
+                Ok(())
+            }
+            Some(_) => bail!(
+                "这个动作要点名工具: fundeploy tool <工具> <动作>\n\
+                 可选: {}\n\
+                 不点名只支持 status。",
+                tool::registry::names().join("、")
+            ),
+            None => {
+                list_tools();
+                Ok(())
+            }
+        };
     };
 
     let t = tool::registry::find(&name).ok_or_else(|| {
@@ -823,6 +962,50 @@ mod tests {
         // clap 的参数冲突（重复的长选项、子命令重名）只在运行时才炸，
         // 这条断言把它提到编译测试阶段。
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn 菜单和命令两边都不许漏() {
+        // 无参数菜单是手写的第二份命令清单，和 clap 的定义会漂移。双向断言:
+        // 漏一边就红。`upgrade` 和 `list` 曾经只在 --help 里有、菜单里没有。
+        let commands: Vec<String> = Cli::command()
+            .get_subcommands()
+            // help 是 clap 自动生成的，不该出现在菜单上。
+            .filter(|c| c.get_name() != "help")
+            .map(|c| c.get_name().to_string())
+            .collect();
+
+        for item in MENU {
+            let head = item.split_whitespace().next().unwrap_or("");
+            assert!(
+                commands.contains(&head.to_string()),
+                "菜单项 {head} 不是真实命令；可选: {commands:?}"
+            );
+        }
+        for name in &commands {
+            assert!(
+                MENU.iter().any(|m| m.starts_with(name.as_str())),
+                "命令 {name} 没进无参数菜单"
+            );
+        }
+    }
+
+    #[test]
+    fn 不点名时的_status_是动作而不是服务名() {
+        // 这是 `fundeploy service status` 那个回归的根: clap 把 status 解析成
+        // action、name 留空，而旧代码只看 name，于是把 action 整个丢掉、打了张
+        // 清单还返回 0。
+        let cli = Cli::try_parse_from(["fundeploy", "service", "status"]).unwrap();
+        match cli.command {
+            Some(Command::Service { name, action }) => {
+                assert!(name.is_none(), "status 不该被当成服务名");
+                assert!(
+                    matches!(action, Some(Action::Status)),
+                    "status 没被解析成 Status 动作"
+                );
+            }
+            _ => panic!("fundeploy service status 没被解析成 Service 命令"),
+        }
     }
 
     #[test]

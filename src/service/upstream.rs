@@ -134,7 +134,14 @@ fn start_component(spec: &ServiceSpec, c: &Component) -> Result<()> {
         ),
     }
 
-    if !port::wait_for_listener(&c.host, c.port, START_TIMEOUT) {
+    let sp = ui::Spinner::new(format!("等 {} 监听 {}:{}", c.label, c.host, c.port));
+    let listening = port::wait_for_listener_ticking(&c.host, c.port, START_TIMEOUT, || sp.tick());
+    if listening {
+        sp.done(format!("{} 起来了，{}:{} 在听", c.label, c.host, c.port));
+    } else {
+        sp.give_up();
+    }
+    if !listening {
         bail!(never_listened(spec, c));
     }
     Ok(())
@@ -555,38 +562,77 @@ pub trait Upstream {
         self.start()
     }
 
+    /// 一张卡片装下版本和各组件状态。
+    ///
+    /// 有一处卡片装不下：上游 CLI 自己提供了 `status` 时，那段输出的格式完全由
+    /// 它说了算。这种组件在卡片里只占一行「见下方」，真正的输出紧跟在卡片后面
+    /// 原样转出去——替上游的输出套个框只会把它的排版挤坏。
     fn status(&self) -> Result<()> {
         let spec = self.spec();
+        let mut card = ui::Card::new(&spec.name).section("包");
 
-        ui::heading("已安装版本");
         for c in by_package(spec) {
             let inst = installer(c);
             let version = inst.as_ref().ok().and_then(|i| i.version());
             let name = package_label(spec, c);
-            match (&version, &inst) {
-                (Some(v), Ok(i)) => ui::info(format!("{name}: {v}（{}）", i.source())),
-                (None, Ok(_)) => ui::info(format!("{name}: 未安装")),
-                (_, Err(e)) => ui::info(format!("{name}: 查不到（{e}）")),
-            }
+            card = match (&version, &inst) {
+                (Some(v), Ok(i)) => card.row(&name, format!("{v} · {}", i.source())),
+                (None, Ok(_)) => card.row_state(&name, ui::State::Idle, "未安装"),
+                (_, Err(e)) => card.row_state(&name, ui::State::Down, format!("查不到（{e}）")),
+            };
         }
 
+        // 分节：包名和组件名长得几乎一样（都是「后端 funfluid-api」这种），
+        // 不分节看起来就是同一组东西重复了两遍。
+        card = card.section("运行");
+        let mut up = 0usize;
+        let mut delegated: Vec<&Component> = Vec::new();
         for c in &spec.components {
-            ui::blank();
-            ui::heading(format!("{}（{}:{}）", c.label, c.host, c.port));
-
+            let at = format!("{}:{}", c.host, c.port);
             if !cli_available(c) {
-                ui::info(format!("未安装（fundeploy service {} install）", spec.name));
+                card = card.row_state(&c.label, ui::State::Idle, format!("未安装 · {at}"));
                 continue;
             }
-            if c.cli.status.is_empty() {
-                // 上游没给 status，就报端口实况——这也正是别人关心的那件事。
-                match port::listener_pid(c.port) {
-                    Some(pid) => ui::info(format!("在运行（PID {pid}）")),
-                    None if port::is_listening(&c.host, c.port) => ui::info("在运行"),
-                    None => ui::info("没在运行"),
+            if !c.cli.status.is_empty() {
+                delegated.push(c);
+                card = card.row(&c.label, format!("{at} · 见下方上游输出"));
+                continue;
+            }
+            // 上游没给 status，就报端口实况——这也正是别人关心的那件事。
+            card = match port::listener_pid(c.port) {
+                Some(pid) => {
+                    up += 1;
+                    card.row_state(
+                        &c.label,
+                        ui::State::Up,
+                        format!("在运行 · PID {pid} · {at}"),
+                    )
                 }
-                continue;
-            }
+                None if port::is_listening(&c.host, c.port) => {
+                    up += 1;
+                    card.row_state(&c.label, ui::State::Up, format!("在运行 · {at}"))
+                }
+                None => card.row_state(&c.label, ui::State::Idle, format!("没在运行 · {at}")),
+            };
+        }
+
+        // 一个组件都没装上时才提示怎么装；装了一半的情况留给上面那几行自己说。
+        if spec.components.iter().all(|c| !cli_available(c)) {
+            card = card.note(format!("装上: fundeploy service {} install", spec.name));
+        }
+        // 交给上游的那几个不算进分子分母：它们的状态这会儿还不知道。
+        let judged = spec.components.len() - delegated.len();
+        let (bst, blabel) = match (up, judged) {
+            (_, 0) => (ui::State::Idle, "见下方".to_string()),
+            (0, _) => (ui::State::Idle, "未运行".to_string()),
+            (u, n) if u == n => (ui::State::Up, "在运行".to_string()),
+            (u, n) => (ui::State::Partial, format!("部分 {u}/{n}")),
+        };
+        card.badge(bst, blabel).print();
+
+        for c in delegated {
+            ui::blank();
+            ui::heading(format!("{}（上游 status）", c.label));
             let argv = with_program(c, c.render(&c.cli.status, &spec.components)?);
             // 上游用非零退出码表达「没在运行」，那不是故障。
             let _ = cmd::spawn_status(&argv, &c.env);

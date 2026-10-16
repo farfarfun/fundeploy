@@ -160,28 +160,41 @@ impl Tool for Brew {
     }
 
     fn status(&self) -> Result<()> {
-        ui::heading("brew");
         let Some(brew) = self.find() else {
-            ui::kv("可执行文件", None);
-            ui::hint("安装: fundeploy tool brew install");
+            ui::Card::new("brew")
+                .badge(ui::State::Idle, "未安装")
+                .row_state("可执行文件", ui::State::Idle, "没找到")
+                .note("安装: fundeploy tool brew install")
+                .print();
             return Ok(());
         };
-        ui::kv("可执行文件", Some(&brew.display().to_string()));
-        if cmd::find("brew").is_none() {
-            ui::warn(format!(
-                "装了但不在 PATH 上。加进 shell 配置: eval \"$({} shellenv)\"",
-                brew.display()
-            ));
-        }
+
+        // 装了却不在 PATH 上，brew 等于没法用——这是最该被看见的那个状态。
+        let on_path = cmd::find("brew").is_some();
+        let mut card = ui::Card::new("brew").badge(
+            if on_path {
+                ui::State::Up
+            } else {
+                ui::State::Down
+            },
+            if on_path { "可用" } else { "不在 PATH 上" },
+        );
+        card = card.row("可执行文件", brew.display().to_string());
+
         let brew = brew.display().to_string();
         if let Ok(prefix) = cmd::capture([&brew, "--prefix"]) {
-            ui::kv("prefix", Some(&prefix));
+            card = card.row("prefix", prefix);
         }
         if let Ok(v) = cmd::capture([&brew, "--version"]) {
-            for line in v.lines() {
-                ui::hint(line);
+            // `brew --version` 会打两行（brew 自己 + 它那个 git 仓库的版本）。
+            if let Some(first) = v.lines().next() {
+                card = card.row("版本", first);
             }
         }
+        if !on_path {
+            card = card.note(format!("加进 shell 配置: eval \"$({brew} shellenv)\""));
+        }
+        card.print();
         Ok(())
     }
 }

@@ -711,28 +711,61 @@ impl Paperclip {
         Ok(())
     }
 
-    fn status_fallback(&self, cfg: &Config) {
-        match self.fallback_pid() {
-            Some(pid) => ui::info(format!("fundeploy 托管: 运行中（PID {pid}）")),
-            None if self.pid_file().exists() => ui::info(format!(
-                "fundeploy 托管: 没在运行（PID 文件 {} 已失效）",
-                self.pid_file().display()
-            )),
-            None => ui::info("fundeploy 托管: 没在运行"),
+    fn status_fallback(&self, cfg: &Config, supervisor_unavailable: Option<String>) {
+        let listening = port::is_listening(&cfg.host, cfg.port);
+        let healthy = health_endpoint_ok(cfg);
+        let mut card = ui::Card::new("Paperclip");
+
+        let (pst, ptext) = match self.fallback_pid() {
+            Some(pid) => (ui::State::Up, format!("运行中 · PID {pid}")),
+            // PID 文件还在但进程没了：和「本来就没跑」不是一回事，后者不用清理。
+            None if self.pid_file().exists() => {
+                (ui::State::Down, "没在运行 · PID 文件已失效".to_string())
+            }
+            None => (ui::State::Idle, "没在运行".to_string()),
+        };
+        card = card.row_state("fundeploy 托管", pst, ptext);
+
+        card = match self.installed_version() {
+            Some(v) => card.row("版本", v),
+            None => card.row_state("版本", ui::State::Idle, "未安装"),
+        };
+        card = card.row_state(
+            format!("端口 {}", cfg.port),
+            if listening {
+                ui::State::Up
+            } else {
+                ui::State::Idle
+            },
+            yes_no(listening, "监听中", "没监听"),
+        );
+        // 端口在听但健康检查不过，是「起来了又崩在里面」——这个组合最该被看见，
+        // 所以单独标红，而不是跟「没在跑」一个成色。
+        let hst = match (listening, healthy) {
+            (_, true) => ui::State::Up,
+            (true, false) => ui::State::Down,
+            (false, false) => ui::State::Idle,
+        };
+        card = card.row_state("健康检查", hst, yes_no(healthy, "通过", "不通过"));
+        if let Some(why) = &supervisor_unavailable {
+            card = card
+                .row_state("官方管理器", ui::State::Idle, "不可用")
+                .note(why.clone());
         }
-        ui::kv("版本", self.installed_version().as_deref());
-        ui::info(format!(
-            "端口 {}: {}",
-            cfg.port,
-            yes_no(port::is_listening(&cfg.host, cfg.port), "监听中", "没监听")
+
+        let badge = match (listening, healthy) {
+            (true, true) => (ui::State::Up, "在运行"),
+            (true, false) => (ui::State::Partial, "端口在听，健康检查不过"),
+            _ => (ui::State::Idle, "未运行"),
+        };
+        card.badge(badge.0, badge.1).print();
+
+        // 这两条都比框里任何字段长，摆框外免得把卡片撑到满屏或者被省略成认不出。
+        ui::hint(format!(
+            "健康检查 http://{}:{}/api/health",
+            cfg.host, cfg.port
         ));
-        ui::info(format!(
-            "健康检查 http://{}:{}/api/health: {}",
-            cfg.host,
-            cfg.port,
-            yes_no(health_endpoint_ok(cfg), "通过", "不通过")
-        ));
-        ui::info(format!("日志: {}", self.log_file.display()));
+        ui::hint(format!("日志 {}", self.log_file.display()));
     }
 
     fn logs_fallback(&self, args: &[&str]) -> Result<()> {
@@ -1617,10 +1650,12 @@ impl Service for Paperclip {
                 };
             }
             ui::blank();
-        } else {
-            ui::info(format!("官方服务管理器不可用: {}", sup.reason()));
+            self.status_fallback(&cfg, None);
+            return Ok(());
         }
-        self.status_fallback(&cfg);
+        // 官方管理器不可用的原因是上游给的一长段英文，塞进卡片会把框撑到满屏，
+        // 所以进框外的脚注，原文一个字不动——那是诊断信息。
+        self.status_fallback(&cfg, Some(sup.reason()));
         Ok(())
     }
 

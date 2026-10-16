@@ -476,52 +476,86 @@ pub trait Daemon {
         self.start()
     }
 
+    /// 一张卡片说完：版本、每个进程的状态、要排查时去哪看。
+    ///
+    /// 这里不用 [`ui::warn`]——「进程在但端口没监听」是**状态本身**，不是操作中
+    /// 途出的意外。分到 stderr 会让一次 status 的输出一半进文件、一半留在屏幕，
+    /// 顺序还会因为两个流各自缓冲而错乱。真正的 warn 留给 install / start / stop
+    /// 那些「正在做事，出了点意外」的场合。
     fn status(&self) -> Result<()> {
         let spec = self.spec();
+        let mut card = ui::Card::new(&spec.name);
 
-        ui::heading("已安装版本");
         match spec.installed_version() {
-            Some(v) => ui::info(format!("{}: {v}（{}）", spec.name, spec.home.display())),
-            None => ui::info(format!(
-                "{}: 未安装（fundeploy service {} install）",
-                spec.name, spec.name
-            )),
+            Some(v) => card = card.row("版本", v),
+            None => {
+                card = card.row_state("版本", ui::State::Idle, "未安装");
+                card = card.note(format!("装上: fundeploy service {} install", spec.name));
+            }
         }
 
+        let mut up = 0usize;
         for p in &spec.procs {
             let port = self.effective_port(p);
-            ui::blank();
-            ui::heading(format!("{}（{}:{port}）", p.label, p.host));
-
+            let at = format!("{}:{port}", p.host);
             let pid = proc::read_pid_file(&spec.pid_file(p)).filter(|&x| proc::is_alive(x));
             let listening = port::is_listening(&p.host, port);
-            match (pid, listening) {
-                (Some(pid), true) => ui::info(format!("在运行（PID {pid}）")),
+
+            let (st, text) = match (pid, listening) {
+                (Some(pid), true) => {
+                    up += 1;
+                    (ui::State::Up, format!("在运行 · PID {pid} · {at}"))
+                }
                 // PID 还活着但端口没开：多半是起来之后业务初始化就挂了，
                 // 这跟「没在运行」是两件事，排查方向也不一样。
-                (Some(pid), false) => ui::warn(format!(
-                    "进程在（PID {pid}）但端口没监听，看日志: {}",
-                    spec.log_file(p).display()
-                )),
+                (Some(pid), false) => {
+                    (ui::State::Down, format!("进程在 PID {pid}，但 {at} 没监听"))
+                }
                 // 端口有人但 PID 文件对不上。是手工起的本服务，还是别的程序正好占了
                 // 这个端口，差别很大——后者意味着 start 会起不来、stop 不会去碰它。
                 (None, true) => match port::listener_pid(port) {
                     Some(other) => match same_binary(other, &spec.app_dir().join(&p.bin)) {
                         Some(true) => {
-                            ui::info(format!("在运行（PID {other}，不是 fundeploy 起的）"))
+                            up += 1;
+                            (
+                                ui::State::Up,
+                                format!("在运行 · PID {other}（不是 fundeploy 起的）· {at}"),
+                            )
                         }
-                        Some(false) => {
-                            ui::warn(format!("端口被 PID {other} 占着，跑的不是本服务的二进制"))
-                        }
-                        None => ui::warn(format!(
-                            "端口被 PID {other} 占着，确认不了是不是本服务（多半不是当前用户起的）"
-                        )),
+                        Some(false) => (
+                            ui::State::Down,
+                            format!("{at} 被 PID {other} 占着，跑的不是本服务"),
+                        ),
+                        None => (
+                            ui::State::Down,
+                            format!("{at} 被 PID {other} 占着，认不出是不是本服务"),
+                        ),
                     },
-                    None => ui::info("在运行（不是 fundeploy 起的）"),
+                    None => {
+                        up += 1;
+                        (
+                            ui::State::Up,
+                            format!("在运行（不是 fundeploy 起的）· {at}"),
+                        )
+                    }
                 },
-                (None, false) => ui::info("没在运行"),
-            }
-            ui::hint(format!("日志: {}", spec.log_file(p).display()));
+                (None, false) => (ui::State::Idle, format!("没在运行 · {at}")),
+            };
+            card = card.row_state(&p.label, st, text);
+        }
+
+        let (bst, blabel) = match (up, spec.procs.len()) {
+            (_, 0) => (ui::State::Idle, "没有进程".to_string()),
+            (0, _) => (ui::State::Idle, "未运行".to_string()),
+            (u, n) if u == n => (ui::State::Up, "在运行".to_string()),
+            (u, n) => (ui::State::Partial, format!("部分 {u}/{n}")),
+        };
+        card.badge(bst, blabel).print();
+
+        // 日志路径摆在框外：它常常比框里所有字段都长，塞进去只会把整张卡片
+        // 撑到满屏宽，或者被省略成看不出是哪个文件。
+        for p in &spec.procs {
+            ui::hint(format!("日志 {} {}", p.label, spec.log_file(p).display()));
         }
 
         self.extra_status()
@@ -610,9 +644,13 @@ pub trait Daemon {
         let pid = proc::spawn_detached(&argv, &p.cwd, &p.env, &log)?;
         proc::write_pid_file(&spec.pid_file(p), pid)?;
 
-        if port::wait_for_listener(&p.host, port, START_TIMEOUT) {
+        let sp = ui::Spinner::new(format!("等 {} 监听 {}:{port}", p.label, p.host));
+        let listening = port::wait_for_listener_ticking(&p.host, port, START_TIMEOUT, || sp.tick());
+        if listening {
+            sp.done(format!("{} 起来了，{}:{port} 在听", p.label, p.host));
             return Ok(());
         }
+        sp.give_up();
 
         let why = if proc::is_alive(pid) {
             format!(

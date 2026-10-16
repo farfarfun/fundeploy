@@ -54,6 +54,19 @@ pub fn display_host(host: &str) -> &str {
 /// 服务刚 spawn 出来时端口还没 bind，调用方不能立刻判定失败——这个间隔在装了
 /// 一堆 Python 依赖的后端上能有十几秒（import 时间）。
 pub fn wait_for_listener(host: &str, port: u16, timeout: Duration) -> bool {
+    wait_for_listener_ticking(host, port, timeout, || {})
+}
+
+/// 同上，但每轮询一次就喊一下 `on_tick`。
+///
+/// 这一等最长可以到半分钟（装了一堆依赖的 Python 后端 import 完就要这么久），
+/// 屏幕上一个字都不动的话跟卡死没有区别。调用方拿这个回调去转一个 spinner。
+pub fn wait_for_listener_ticking(
+    host: &str,
+    port: u16,
+    timeout: Duration,
+    mut on_tick: impl FnMut(),
+) -> bool {
     let deadline = Instant::now() + timeout;
     loop {
         if is_listening(host, port) {
@@ -62,6 +75,7 @@ pub fn wait_for_listener(host: &str, port: u16, timeout: Duration) -> bool {
         if Instant::now() >= deadline {
             return false;
         }
+        on_tick();
         std::thread::sleep(Duration::from_millis(300));
     }
 }
@@ -427,5 +441,35 @@ mod tests {
             port,
             Duration::from_millis(600)
         ));
+    }
+
+    #[test]
+    fn 干等的时候会按时招呼调用方() {
+        // 守的是「屏幕上有东西在动」: 这一等最长到半分钟, 回调不被调用就等于
+        // spinner 不转, 跟卡死没有区别。
+        let port = {
+            let l = TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let mut ticks = 0usize;
+        let ok =
+            wait_for_listener_ticking("127.0.0.1", port, Duration::from_millis(700), || ticks += 1);
+        assert!(!ok);
+        assert!(ticks >= 1, "一次都没招呼，spinner 不会转: {ticks}");
+    }
+
+    #[test]
+    fn 端口已经在听就不必招呼() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut ticks = 0usize;
+        assert!(wait_for_listener_ticking(
+            "127.0.0.1",
+            port,
+            Duration::from_secs(5),
+            || ticks += 1
+        ));
+        // 立刻就返回了，没有「等」这回事，也就不该闪一下 spinner。
+        assert_eq!(ticks, 0);
     }
 }

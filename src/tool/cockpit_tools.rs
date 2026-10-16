@@ -246,37 +246,54 @@ impl Tool for CockpitTools {
     }
 
     fn status(&self) -> Result<()> {
-        ui::heading("cockpit-tools");
-        ui::kv("目录", Some(&self.home.display().to_string()));
-        ui::kv("上游仓库", Some(&self.repo));
-        ui::kv("版本", self.installed_version().as_deref());
-
         let app = self.appimage();
-        match std::fs::metadata(&app) {
-            Ok(m) => ui::kv(
-                "AppImage",
-                Some(&format!("{}  {}", app.display(), human_size(m.len()))),
-            ),
-            Err(_) => {
-                ui::kv("AppImage", None);
-                ui::hint("安装: fundeploy tool cockpit-tools install");
-            }
-        }
-
+        let meta = std::fs::metadata(&app).ok();
         let desktop = self.desktop_file();
-        ui::kv(
-            "桌面入口",
-            desktop
-                .exists()
-                .then(|| desktop.display().to_string())
-                .as_deref(),
+        let has_desktop = desktop.exists();
+
+        let mut card = ui::Card::new("cockpit-tools").badge(
+            if meta.is_some() {
+                ui::State::Up
+            } else {
+                ui::State::Idle
+            },
+            if meta.is_some() {
+                "已安装"
+            } else {
+                "未安装"
+            },
         );
-        if desktop.exists() && !app.is_file() {
+        card = match self.installed_version() {
+            Some(v) => card.row("版本", v),
+            None => card.row_state("版本", ui::State::Idle, "未安装"),
+        };
+        card = card.row("上游仓库", &self.repo);
+        card = match &meta {
+            Some(m) => card.row("AppImage", human_size(m.len())),
+            None => card.row_state("AppImage", ui::State::Idle, "没下载"),
+        };
+        card = if has_desktop {
+            card.row_state("桌面入口", ui::State::Up, "已登记")
+        } else {
+            card.row_state("桌面入口", ui::State::Idle, "没有")
+        };
+
+        if meta.is_none() {
+            card = card.note("安装: fundeploy tool cockpit-tools install");
+        }
+        if has_desktop && meta.is_none() {
             // 入口还在、它指向的文件没了：在应用菜单里点它不会有任何反应，
             // 也没有任何报错，光看菜单根本看不出这东西其实已经不在了。
-            ui::warn(
-                "桌面入口指向的 AppImage 不在了，点它不会有反应。装回来，或者执行 uninstall 清掉。",
+            card = card.note(
+                "桌面入口指向的 AppImage 不在了，点它不会有反应。装回来，或者 uninstall 清掉。",
             );
+        }
+        card.print();
+
+        // 两条路径都比框里的字段长得多，摆框外。
+        ui::hint(format!("目录 {}", self.home.display()));
+        if has_desktop {
+            ui::hint(format!("入口 {}", desktop.display()));
         }
         Ok(())
     }

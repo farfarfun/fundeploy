@@ -124,13 +124,20 @@ formula，apt 源也只放最新一版，点了版本会直接报错并给出路
 ## 能管什么
 
 ```bash
-fundeploy list    # 列出所有能管的东西
+fundeploy          # 不带参数：打开菜单（可输入过滤）
+fundeploy list     # 列出所有能管的东西
+fundeploy about    # 这是什么、谁做的
 ```
+
+输出按「一张卡片说完一件事」排：框宽跟着终端走，窄终端下长路径中间省略而不是把框
+撑破；`NO_COLOR=1` 或输出被重定向时自动退回无框的纯文本，不往日志里塞框线和色码。
+等端口监听这种最长半分钟的干等会转一个 spinner（进度画在 stderr，不混进重定向的结果）。
 
 ### 服务 `fundeploy service`
 
 ```bash
-fundeploy service                    # 列出所有服务和当前状态
+fundeploy service                    # 列出所有服务
+fundeploy service status             # 所有服务的状态总览（在跑 / 没在跑 / 部分）
 fundeploy service funread-web install
 fundeploy service funread-web start
 fundeploy service funread-web status
