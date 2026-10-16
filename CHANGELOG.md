@@ -3,6 +3,20 @@
 版本号以 `Cargo.toml` 里的 `version` 为准；发布由推同版本的 `v*` tag 触发（见
 `.github/workflows/release.yml`），因此「有 tag ＝ 已发布」。
 
+## [0.3.11] - 2026-10-16
+
+### 变更
+
+- **`fundeploy about` 带上分发渠道了。** 此前只有组织主页、PyPI 和联系方式，没告诉
+  人怎么装 —— 而那正是 [farfarfun/packages](https://github.com/farfarfun/packages)
+  的用处：那边一个仓库同时是 apt 源和 Homebrew tap，管全组织的包，fundeploy 发版时
+  只是通知它重建索引。现在 `about` 分三节列清组织、分发、本项目，底下再给出可以直接
+  复制的装机命令（装机脚本和 brew 两条），以及 `brew trust` 和 Gitee 备用地址这两个
+  一定会碰上的坑。
+
+  装机命令摆在卡片**外面**：它们比框里任何字段都长，塞进去只会把框撑到满屏，或者在
+  窄终端下被中间省略成认不出的样子 —— 而这是要被复制去敲的东西，掐掉就没用了。
+
 ## [0.3.10] - 2026-10-16
 
 ### 修复
