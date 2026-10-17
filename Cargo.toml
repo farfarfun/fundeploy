@@ -1,10 +1,19 @@
 [package]
 name = "fundeploy"
-version = "0.3.11"
+version = "0.3.12"
 edition = "2021"
 # rustup 之外的渠道（apt / brew 的 rustc）往往落后好几个版本，这里写下真实下限，
 # 让编译在版本不够时直接报清楚，而不是在某个 std API 上报一行看不懂的错。
-rust-version = "1.74"
+#
+# 这个数字由**依赖**定，不是由本仓库的代码定：本仓库自己用到的最新 std API 只到
+# 1.70（`Result::is_ok_and`），而锁住的 icu_*（ureq → url → idna 那条线上的）
+# 要求 1.88。写低了的后果不是编不过，而是编不过时报的是别人的名字——人读了这一行
+# 以为自己够格，装到一半撞上一句跟 fundeploy 无关的错，正是这条注释想避免的那种
+# 体验。这里曾经写着 1.74，而当时真实下限已经是 1.88 了。
+#
+# 动依赖版本时要跟着核这一行。ci.yml 的 msrv job 会读这个数字、装那一版 rustc
+# 真编一遍，所以漂了就会红。
+rust-version = "1.88"
 # 这条用英文：crates.io 的搜索只索引 description，中文在那儿搜不到。文档和
 # 面向用户的输出保持中文。
 description = "Manage development toolchains, local services and package mirrors from one CLI"
@@ -43,17 +52,54 @@ sha2 = "0.10"
 hex = "0.4"
 flate2 = "1"
 tar = "0.4"
-zip = { version = "2", default-features = false, features = ["deflate"] }
+# 要这两个零件，而不是笼统的 `deflate`：后者等于 deflate-flate2 + deflate-zopfli，
+# 而 zopfli 是个**压缩**器（拿时间换压缩率），本仓库只解包，一行都用不到它。
+#   deflate-flate2  打开解 deflate 的开关（它只是个标记，不带依赖）
+#   flate2          启用 zip 那个可选的 flate2 依赖，也就是真正的后端
+# 后端用纯 Rust 那份（flate2 的默认 feature，本仓库自己也直接依赖 flate2），
+# 不是 deflate-zlib 那条——musl 全静态构建不该去链系统 zlib。
+zip = { version = "2", default-features = false, features = [
+    "deflate-flate2",
+    "flate2",
+] }
 # 自带模糊过滤的 Select，交互菜单直接用它，不依赖外部 TUI 工具。
 inquire = "0.7"
 owo-colors = "4"
 indicatif = "0.17"
 dirs = "5"
-which = "6"
 libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+
+# clippy 规则写在这儿，而不是只写在 CI 的命令行参数里：CI 跑的是
+# `clippy -D warnings`，于是同一张表在本机是 warn、在 CI 是 deny——本地
+# `cargo clippy` 看到的东西和 CI 会红的东西是同一份。只写在 CI 参数里的话，
+# 本机永远少一套规则，红了才知道。
+#
+# 收录标准是「存量为零且拦得住真问题」。没有整组打开 pedantic：那组 225 条里
+# 绝大多数是 must_use / doc_markdown 这类噪音，而真要清掉得改三十个文件、换来
+# 的多半是更难读的写法（`map_or_else(默认, 变换)` 把默认值摆到了前面，跟
+# 「取变量，有就展开，没有就用默认」的阅读顺序正好相反）。开一条却留着存量更糟：
+# CI 立刻红，下一个人学到的是加 `#[allow]`，而不是改代码。
+[lints.clippy]
+# 这三条拦的是「没写完的东西发出去了」。fundeploy 是装到别人机器上执行的命令行，
+# `todo!()` 在这里不是占位符，是用户终端里的一次 panic；`dbg!` 是混在正常输出
+# 里的一行乱码。
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+# 现存代码 100% 用的是 `{name}` 内联写法，没有一处 `{}` + 参数。趁存量为零钉住，
+# 免得两种风格在同一个文件里混着。
+uninlined_format_args = "warn"
+# 同理，`let ... else` 的用法目前也是一致的。
+manual_let_else = "warn"
+# 几条便宜的效率/清晰度规则，同样零存量。
+cloned_instead_of_copied = "warn"
+explicit_iter_loop = "warn"
+implicit_clone = "warn"
+mem_forget = "warn"
+needless_pass_by_value = "warn"
 
 [profile.release]
 # 部署工具的分发体积直接影响 install.sh 的下载时间，而它的热点全在等外部进程，

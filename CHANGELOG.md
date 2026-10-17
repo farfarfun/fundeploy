@@ -3,6 +3,95 @@
 版本号以 `Cargo.toml` 里的 `version` 为准；发布由推同版本的 `v*` tag 触发（见
 `.github/workflows/release.yml`），因此「有 tag ＝ 已发布」。
 
+## [0.3.12] - 2026-10-17
+
+### 修复
+
+- **`rust-version` 写的不是真实下限。** manifest 里写着 `1.74`，而锁住的依赖里
+  `icu_*`（`ureq` → `url` → `idna` 那条线上的）要求 1.88 —— 也就是说这一行从写下
+  起就是假的。后果不是编不过，而是**编不过时报的是别人的名字**：拿 1.80 的人读了
+  manifest 以为自己够格，`cargo install` 装到一半收到一句「package `icu_normalizer`
+  requires rustc 1.88」，跟 fundeploy 看着毫无关系。那行注释原本的用意恰恰是「让
+  版本不够时直接报清楚」。
+
+  现在写 `1.88`，并在 CI 里加了一个 `msrv` job：它从 `Cargo.toml` 读这个数字、装
+  那一版 rustc、`cargo check --locked --all-targets` 真编一遍。从 Cargo.toml 读而
+  不是在 workflow 里再写一遍版本号 —— 两处各写一份必然漂移，而漂移的方向总是
+  「CI 还在测老版本，manifest 已经抬上去了」。
+
+  顺带去掉了两个白抬下限的依赖，见下。
+
+### 变更
+
+- **端口查询改成批量的。** `holders()` 和 `is_taken()` 是单端口 API，却一直在端口
+  列表上被循环调用。Linux 上认占用者要走两步：读四张 `/proc/net/*` 表拿 socket
+  inode，再遍历 `/proc/<pid>/fd/*` 反查谁持有它们 —— 第二步是对**全机每个进程的
+  每个 fd** 做一次 readlink。照端口数重复做的话，`port-kill 8080 8081 8082` 就是
+  三遍全盘扫描，`service status` 的总览（十几个服务、二十几个端口）是二十几遍四表
+  解析。
+
+  新增 `holders_many` / `taken_many`，四张表读一遍、`/proc` 走一趟，要问几个端口
+  都一样；单端口那两个现在是它们的特例，两边不会再漂。空闲开发机上实测一遍全盘
+  扫描只要 4 ms（547 个 fd），所以这不是给开发机省时间 —— 这条命令真正要用的地方
+  是跑着十几个服务的机器，那里进程数和 fd 数高一两个数量级。
+
+  `force_free_port` 顺带少一趟：它此前先 `listener_pid()` 再 `who()`，两次 `/proc`
+  全盘扫描紧挨着，第二次问的还是第一次已经看过的东西。
+
+- **不再依赖 `which` 和 `zopfli`。**
+
+  `which` 整个项目只用在两行（`cmd::has` / `cmd::find`），却拖进 `rustix 0.38` +
+  `linux-raw-sys 0.4` —— 依赖树里另有一份 `rustix 1.x`（clap、tar 在用），同一套
+  syscall 封装要编两遍。换成十几行 PATH 遍历：本项目在 `platform.rs` 里就明确只认
+  linux 和 macos，不存在 Windows 的 PATHEXT 问题。它原先保证的语义（带 `/` 的当
+  路径、要有执行位、目录不算、跳过 PATH 里的空项）现在由本仓库自己的六条测试钉住。
+
+  `zopfli` 来自 `zip` 的 `deflate` feature，而那个 feature 等于
+  `deflate-flate2 + deflate-zopfli` —— zopfli 是个**压缩**器（拿时间换压缩率），
+  本仓库只解包，一行都用不到它。改成精确的 `["deflate-flate2", "flate2"]`，用纯
+  Rust 后端（不是 `deflate-zlib`：musl 全静态构建不该去链系统 zlib）。
+
+  合计：依赖从 199 个降到 192 个，`rustix` 和 `linux-raw-sys` 两组重复版本消失。
+  **二进制反而大了 15 KiB**（3267 → 3282 KiB），所以这条换的是编译时间和依赖面，
+  不是分发体积。
+
+- **拆开 `paperclip.rs`。** 3163 行一个文件，其中 `impl Paperclip` 一个块就 1284
+  行、近五十个方法。按「跟 Paperclip 的生命周期是不是同一件事」切成四块：
+  `prefetch`（npm 预取与安装期进度测量 —— 上游把 npm 的输出吞了，只能从外面观察）、
+  `progress`（进度条样式，没有任何 Paperclip 语义）、`plugin`（会随上游生态增补的
+  静态表）、`log`（托管那条路的日志）。方法跟着自己那摊事走，测试跟着它测的东西走。
+  主文件 3163 → 1640 行，`impl Paperclip` 1284 → 796 行。纯搬运，没有行为改动。
+
+- **`cli.rs` 里抄了十四遍的那条链收成一处。** `ui::select(...)?
+  .ok_or_else(|| anyhow!("已取消。"))?` 出现十四次，「取选中行的第一个词」出现九次
+  且默认值各不相同（`"status"` / `"list"` / `"诊断"` / `""`，其实都取不到）。现在是
+  `choose` / `choose_head` / `choose_index` 三个小函数，顺带去掉了两处
+  `position(...).unwrap()`。
+
+- **`uninstall_env_var` 的两份实现并成一份。** service 和 tool 两域各写了一遍，连
+  测试都抄了两遍。那个变量名是对外承诺 —— 无人值守脚本里写着它们，两份实现漂开
+  一点，脚本就会静默卡在确认上。
+
+- **测速不再为每个源重建一次 HTTP agent。** `source test` 此前每个 URL 新建一个
+  `ureq::Agent`，等于把 rustls 的 ClientConfig（含根证书集）重新装配十几遍，而量到
+  的数字里就掺进了这部分本机开销 —— 这条命令的全部意义恰恰是比较各个源之间的差别。
+
+### 工程
+
+- **clippy 规则写进 `Cargo.toml` 的 `[lints.clippy]`。** 此前规则只活在 CI 的
+  `-D warnings` 参数里，本机 `cargo clippy` 拿到的是另一套。现在同一张表在本机是
+  warn、在 CI 是 deny。
+
+  收录标准是「存量为零且拦得住真问题」，一共十条，其中 `dbg_macro` / `todo` /
+  `unimplemented` 拦的是「没写完的东西发出去了」—— fundeploy 是装到别人机器上执行
+  的命令行，`todo!()` 在这里不是占位符，是用户终端里的一次 panic。没有整组打开
+  pedantic：那组 225 条里绝大多数是 `must_use` / `doc_markdown` 这类噪音，真要清掉
+  得改三十个文件，换来的多半是更难读的写法。
+
+- **CI 的 cache key 带上 rustc 版本了**，`restore-keys` 也带。stable 是滚动的，只按
+  `Cargo.lock` 做 key 的话，`restore-keys` 会把上一个 rustc 编出来的 `target/` 捞
+  回来 —— 升级那周的表现是莫名其妙的重编，或者更难查的链接错误。
+
 ## [0.3.11] - 2026-10-16
 
 ### 变更

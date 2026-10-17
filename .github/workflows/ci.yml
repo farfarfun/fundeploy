@@ -27,17 +27,60 @@ jobs:
       - name: 装工具链
         run: rustup toolchain install stable --profile minimal --component rustfmt,clippy --no-self-update
 
+      - id: rust
+        run: echo "ver=$(rustc --version | tr ' /' '--')" >>"$GITHUB_OUTPUT"
+
       - uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: cargo-lint-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-lint-
+          key: cargo-lint-${{ steps.rust.outputs.ver }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-lint-${{ steps.rust.outputs.ver }}-
 
+      # clippy 规则来自 Cargo.toml 的 [lints.clippy]（本机 warn），`-D warnings`
+      # 只负责在 CI 把它们变成硬失败。规则本身不写在这儿：写在这儿本机就看不到。
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets -- -D warnings
+
+  msrv:
+    name: msrv
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      # Cargo.toml 的 rust-version 不验证就是一句空话：它曾经写着 1.74，而锁住的
+      # clap 要求 1.85。写低了编不过时报的是依赖的名字，人读了 manifest 以为自己
+      # 够格，装到一半才撞上一句跟 fundeploy 无关的错。
+      #
+      # 从 Cargo.toml 里读，而不是在这儿再写一遍版本号：两处各写一份必然漂移，
+      # 而漂移的方向恰好是「CI 还在测老版本，manifest 已经抬上去了」。
+      - id: msrv
+        run: |
+          set -eu
+          v="$(grep -m1 '^rust-version = ' Cargo.toml | cut -d'"' -f2)"
+          echo "要测的最低版本: $v"
+          echo "version=$v" >>"$GITHUB_OUTPUT"
+
+      - name: 装工具链
+        run: rustup toolchain install ${{ steps.msrv.outputs.version }} --profile minimal --no-self-update
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-msrv-${{ steps.msrv.outputs.version }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-msrv-${{ steps.msrv.outputs.version }}-
+
+      # --locked：发布出去的就是这份锁文件，要测的也正是它。不加的话 cargo 会
+      # 另解一套依赖，测出来的下限跟使用者实际装到的东西没关系。
+      # check 而不是 build：要答的问题是「这个版本的 rustc 认不认这些代码和依赖」，
+      # 不需要走到链接。
+      - run: cargo +${{ steps.msrv.outputs.version }} check --locked --all-targets
 
   test:
     name: test (${{ matrix.os }})
@@ -55,14 +98,20 @@ jobs:
       - name: 装工具链
         run: rustup toolchain install stable --profile minimal --no-self-update
 
+      # rustc 版本必须进 cache key，而且 restore-keys 也得带上它。stable 是滚动的，
+      # 只按 Cargo.lock 做 key 的话，restore-keys 会把上一个 rustc 编出来的 target/
+      # 捞回来——升级那周的表现是莫名其妙的重编，或者更难查的链接错误。
+      - id: rust
+        run: echo "ver=$(rustc --version | tr ' /' '--')" >>"$GITHUB_OUTPUT"
+
       - uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: cargo-test-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-test-${{ runner.os }}-
+          key: cargo-test-${{ runner.os }}-${{ steps.rust.outputs.ver }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-test-${{ runner.os }}-${{ steps.rust.outputs.ver }}-
 
       - run: cargo test
 
@@ -93,14 +142,17 @@ jobs:
           rustup toolchain install stable --profile minimal --no-self-update
           rustup target add ${{ matrix.target }}
 
+      - id: rust
+        run: echo "ver=$(rustc --version | tr ' /' '--')" >>"$GITHUB_OUTPUT"
+
       - uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: cargo-build-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-build-${{ matrix.target }}-
+          key: cargo-build-${{ matrix.target }}-${{ steps.rust.outputs.ver }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-build-${{ matrix.target }}-${{ steps.rust.outputs.ver }}-
 
       - run: cargo build --release --target ${{ matrix.target }}
 

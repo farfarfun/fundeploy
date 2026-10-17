@@ -641,8 +641,7 @@ fn pick_overview(overview: &str) -> Result<bool> {
         format!("status  {overview}"),
         "挑一个  装、起、停、查…".to_string(),
     ];
-    let picked = ui::select("要做什么", &menu)?.ok_or_else(|| anyhow::anyhow!("已取消。"))?;
-    Ok(picked.starts_with("status"))
+    Ok(choose("要做什么", &menu)?.starts_with("status"))
 }
 
 // 下面这几张表是各域动作菜单的**唯一出处**: 菜单由它生成, 测试也拿它和 clap 的
@@ -694,6 +693,48 @@ fn action_menu(items: &[(&str, &str)]) -> Vec<String> {
         .collect()
 }
 
+/// 弹一张菜单，返回选中的那一行。
+///
+/// 存在的理由只有一条：把「选完了判有没有取消」收到一处。这条链此前在本文件里
+/// 抄了十四遍，而每一遍都要原样写出同一句「已取消。」——抄漏一个 `?` 或者把那
+/// 句话写成别的措辞，都不会有任何东西发现。
+fn choose<'a>(prompt: &str, menu: &'a [String]) -> Result<&'a String> {
+    ui::select(prompt, menu)?.ok_or_else(|| anyhow::anyhow!("已取消。"))
+}
+
+/// 同 [`choose`]，但只要选中那行的**第一个词**。
+///
+/// 菜单行一律是「命令名 + 若干空格 + 一句说明」，而分发只认命令名。取第一个词
+/// 这件事原先在九处各写一遍，默认值还各不相同（`"status"` / `"list"` / `"诊断"`
+/// / `""`）——那些默认值其实永远取不到（菜单行不可能是空串），却让人每次读到都
+/// 要停下来想一下它什么时候生效。这里不留默认值：选不出词就是菜单行写错了，
+/// 那是本仓库自己的 bug，报出来比静默走进某个分支强。
+fn choose_head(prompt: &str, menu: &[String]) -> Result<String> {
+    let picked = choose(prompt, menu)?;
+    picked
+        .split_whitespace()
+        .next()
+        .map(ToString::to_string)
+        .ok_or_else(|| anyhow::anyhow!("菜单项 {picked:?} 是空的，这是 fundeploy 自己的 bug"))
+}
+
+/// 把动作表弹成菜单，返回选中的命令名。
+fn pick_action(items: &[(&str, &str)]) -> Result<String> {
+    choose_head("要做什么", &action_menu(items))
+}
+
+/// 同 [`choose`]，但返回的是选中那行在菜单里的下标。
+///
+/// 按下标分发的地方（服务和工具的动作菜单把标准动作和 extras 拼成一张表，再用
+/// 下标切回去）此前写的是 `position(...).unwrap()`。选中的行一定在表里，那个
+/// unwrap 确实打不到，但每次读到都要重新确认一遍这件事。
+fn choose_index(prompt: &str, menu: &[String]) -> Result<usize> {
+    let picked = choose(prompt, menu)?;
+    menu.iter()
+        .position(|l| l == picked)
+        .ok_or_else(|| anyhow::anyhow!("认不出选中的那一项，这是 fundeploy 自己的 bug"))
+}
+
 /// 先问「看全部，还是挑一个」。挑了就返回那个名字。
 ///
 /// `overview` 是「不点名」那条路的说明——每一域都有这条路，而菜单从前要么直接
@@ -701,7 +742,7 @@ fn action_menu(items: &[(&str, &str)]) -> Vec<String> {
 fn pick_name(names: Vec<String>, prompt: &str, overview: &str) -> Result<Option<String>> {
     let mut menu = vec![format!("（全部）  {overview}")];
     menu.extend(names);
-    let picked = ui::select(prompt, &menu)?.ok_or_else(|| anyhow::anyhow!("已取消。"))?;
+    let picked = choose(prompt, &menu)?;
     if picked.starts_with("（全部）") {
         return Ok(None);
     }
@@ -711,11 +752,9 @@ fn pick_name(names: Vec<String>, prompt: &str, overview: &str) -> Result<Option<
 }
 
 fn pick_ai_action() -> Result<AiAction> {
-    let menu = action_menu(&AI_MENU);
-    let picked = ui::select("要做什么", &menu)?.ok_or_else(|| anyhow::anyhow!("已取消。"))?;
     // 装法不在交互里问：不给就是 official，要点名装法命令行上 `--method` 更顺手。
     let how = AiHow { method: None };
-    Ok(match picked.split_whitespace().next().unwrap_or("status") {
+    Ok(match pick_action(&AI_MENU)?.as_str() {
         "install" => AiAction::Install {
             how,
             args: Vec::new(),
@@ -727,13 +766,11 @@ fn pick_ai_action() -> Result<AiAction> {
 }
 
 fn pick_dev_action() -> Result<DevAction> {
-    let menu = action_menu(&DEV_MENU);
-    let picked = ui::select("要做什么", &menu)?.ok_or_else(|| anyhow::anyhow!("已取消。"))?;
     let how = DevHow {
         method: None,
         version: None,
     };
-    Ok(match picked.split_whitespace().next().unwrap_or("status") {
+    Ok(match pick_action(&DEV_MENU)?.as_str() {
         "install" => DevAction::Install { how, force: false },
         "upgrade" => DevAction::Upgrade { how },
         "uninstall" => DevAction::Uninstall {
@@ -748,11 +785,9 @@ fn pick_dev_action() -> Result<DevAction> {
 }
 
 fn pick_skills_action() -> Result<SkillsAction> {
-    let menu = action_menu(&SKILLS_MENU);
-    let picked = ui::select("要做什么", &menu)?.ok_or_else(|| anyhow::anyhow!("已取消。"))?;
-    let head = picked.split_whitespace().next().unwrap_or("list");
+    let head = pick_action(&SKILLS_MENU)?;
     // 这三个都要点名仓库，选中之后才问。
-    let name = match head {
+    let name = match head.as_str() {
         "install" | "update" | "rm" => {
             let n = ui::input("仓库名", "")?;
             if n.is_empty() {
@@ -762,7 +797,7 @@ fn pick_skills_action() -> Result<SkillsAction> {
         }
         _ => None,
     };
-    Ok(match head {
+    Ok(match head.as_str() {
         "sync" => SkillsAction::Sync,
         "install" => SkillsAction::Install {
             name: name.unwrap(),
@@ -786,8 +821,7 @@ fn pick_doctor_action() -> Result<()> {
         "修    按诊断结果自己挑一条改法".to_string(),
         "撤销  把之前改过的配置还回去".to_string(),
     ];
-    let picked = ui::select("要做什么", &menu)?.ok_or_else(|| anyhow::anyhow!("已取消。"))?;
-    match picked.split_whitespace().next().unwrap_or("诊断") {
+    match choose_head("要做什么", &menu)?.as_str() {
         "修" => doctor::github::fix(doctor::github::Fix::Auto),
         "撤销" => doctor::github::undo(),
         _ => doctor::github::diagnose(),
@@ -800,15 +834,12 @@ fn pick_upgrade_action() -> Result<()> {
         "check    只看有没有新版，不动手".to_string(),
         "upgrade  升上去".to_string(),
     ];
-    let picked = ui::select("要做什么", &menu)?.ok_or_else(|| anyhow::anyhow!("已取消。"))?;
-    let check = !picked.starts_with("upgrade");
+    let check = !choose("要做什么", &menu)?.starts_with("upgrade");
     selfup::run(None, check)
 }
 
 fn pick_source_action() -> Result<SourceAction> {
-    let menu = action_menu(&SOURCE_MENU);
-    let picked = ui::select("要做什么", &menu)?.ok_or_else(|| anyhow::anyhow!("已取消。"))?;
-    Ok(match picked.split_whitespace().next().unwrap_or("status") {
+    Ok(match pick_action(&SOURCE_MENU)?.as_str() {
         "list" => SourceAction::List,
         "test" => SourceAction::Test,
         "use" => SourceAction::Use { mirror: None },
@@ -873,10 +904,9 @@ fn no_args() -> Result<()> {
     ui::brand();
     ui::blank();
     let domains: Vec<String> = MENU.iter().map(|s| s.to_string()).collect();
-    let picked = ui::select("要管什么", &domains)?.ok_or_else(|| anyhow::anyhow!("已取消。"))?;
     // 逐个列全、不留 `_ =>` 兜底: 兜底会把「菜单加了项却忘了加分支」变成「选了
     // upgrade 却跳出工具列表」, 不报错也查不出来。
-    match picked.split_whitespace().next().unwrap_or("") {
+    match choose_head("要管什么", &domains)?.as_str() {
         // 先问「看全部」还是「挑一个」：不点名服务的 status（所有服务的状态总览）
         // 只有这条路能走到，否则它在交互里等于不存在。
         "service" => match pick_overview("所有服务的状态总览")? {
@@ -916,7 +946,7 @@ fn no_args() -> Result<()> {
                 "kill  查出谁占着，停掉它".to_string(),
                 "list  只看谁占着，不动手".to_string(),
             ];
-            let how = ui::select("要做什么", &menu)?.ok_or_else(|| anyhow::anyhow!("已取消。"))?;
+            let how = choose("要做什么", &menu)?;
             let line = ui::input("端口号（多个用空格隔开）", "")?;
             let ports = port_kill::parse_ports(&line)?;
             if how.starts_with("list") {
@@ -1048,9 +1078,14 @@ fn list_tools() {
 /// 这里刻意不去分辨：总览回答的是「这个口通不通」，认归属是单服务 status 的事。
 fn status_all() {
     ui::heading("服务状态");
-    for s in service::registry::all() {
+    let all = service::registry::all();
+    // 先把所有服务的端口汇总成一张清单问一次。此前是逐个端口问，而每一问都要把
+    // 四张 /proc/net 表重读重解一遍——十几个服务二十几个端口就是二十几遍。
+    let every: Vec<u16> = all.iter().flat_map(|s| s.ports()).collect();
+    let taken = port::taken_many(&every);
+    for s in all {
         let ports = s.ports();
-        let up = ports.iter().filter(|&&p| port::is_taken(p)).count();
+        let up = ports.iter().filter(|p| taken.contains(p)).count();
         let (kind, label) = match (up, ports.len()) {
             (_, 0) => (ui::State::Idle, "没有端口".to_string()),
             (0, _) => (ui::State::Idle, "没在跑".to_string()),
@@ -1167,12 +1202,9 @@ fn pick_one<T>(all: Vec<T>, prompt: &str, describe: impl Fn(&T) -> (String, Stri
             format!("{name:<14} {about}")
         })
         .collect();
-    let picked = ui::select(prompt, &labels)?.ok_or_else(|| anyhow::anyhow!("已取消。"))?;
-    let idx = labels
-        .iter()
-        .position(|l| l == picked)
-        .ok_or_else(|| anyhow::anyhow!("已取消。"))?;
-    Ok(all.into_iter().nth(idx).unwrap())
+    let idx = choose_index(prompt, &labels)?;
+    // 下标来自 labels，而 labels 和 all 一一对应、等长，所以 nth 必有值。
+    Ok(all.into_iter().nth(idx).expect("labels 与 all 等长"))
 }
 
 /// 没给动作时的提示。额外动作不在 `--help` 里（clap 不认识它们），不在这儿说
@@ -1203,9 +1235,7 @@ fn pick_and_run(svc: &dyn Service) -> Result<()> {
     let actions = Action::menu();
     let labels = action_labels(actions.iter().map(Action::label).collect(), svc.extras());
 
-    let picked = ui::select(&format!("{} 要做什么", svc.name()), &labels)?
-        .ok_or_else(|| anyhow::anyhow!("已取消。"))?;
-    let idx = labels.iter().position(|l| l == picked).unwrap();
+    let idx = choose_index(&format!("{} 要做什么", svc.name()), &labels)?;
     match actions.get(idx) {
         // 带必填参数的动作，菜单里只占了个位，这会儿才问。
         Some(a) if a.needs_input() => {
@@ -1229,9 +1259,7 @@ fn pick_and_run_tool(t: &dyn Tool) -> Result<()> {
     let actions = ToolAction::menu();
     let labels = action_labels(actions.iter().map(ToolAction::label).collect(), t.extras());
 
-    let picked = ui::select(&format!("{} 要做什么", t.name()), &labels)?
-        .ok_or_else(|| anyhow::anyhow!("已取消。"))?;
-    let idx = labels.iter().position(|l| l == picked).unwrap();
+    let idx = choose_index(&format!("{} 要做什么", t.name()), &labels)?;
     match actions.get(idx) {
         Some(a) => a.apply(t),
         None => t.extra(t.extras()[idx - actions.len()].name, &[]),

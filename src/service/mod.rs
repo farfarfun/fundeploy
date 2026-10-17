@@ -104,12 +104,16 @@ fn force_free_port(label: &str, host: &str, port: u16) {
     if !port::is_listening(host, port) {
         return;
     }
-    let Some(pid) = port::listener_pid(port) else {
+    // 一次拿全占用者，而不是先 listener_pid 再 who —— 那是对 /proc 的两趟全盘
+    // 扫描挨在一起，第二趟问的还是第一趟已经看过的东西。
+    let hs = port::holders(port);
+    let Some(h) = hs.iter().find(|h| h.protos.contains(&"tcp")) else {
         ui::warn(format!(
             "{label} 的端口 {port} 仍有人监听，但查不到 PID（多半属于别的用户），强停不了。加 sudo 再跑一次。"
         ));
         return;
     };
+    let pid = h.pid;
     if let Some(why) = proc::protected(pid) {
         ui::warn(format!(
             "{label} 的端口 {port} 被 PID {pid} 占着，但它{why}，没有动它。"
@@ -119,7 +123,7 @@ fn force_free_port(label: &str, host: &str, port: u16) {
 
     // 占用者一律摆在句末：带进程名时它以全角「）」收尾，后面再接字就得夹个空格，
     // 中文里看着像漏排版。
-    let who = who(port, pid);
+    let who = describe(h);
     ui::warn(format!("{label} 的端口 {port} 停完还占着，占用者是 {who}"));
     if !ui::confirm_default_yes(
         &format!("强制停掉它，腾出端口 {port} 吗"),
@@ -152,20 +156,18 @@ fn force_free_port(label: &str, host: &str, port: u16) {
 
 /// 把占用者说清楚：有进程名就带上。问人「要不要停掉 PID 12345」，光一个数字
 /// 没法判断；带上 `gunicorn` 才认得出那是不是自己要停的东西。
-fn who(port: u16, pid: i32) -> String {
-    match port::holders(port).into_iter().find(|h| h.pid == pid) {
-        Some(h) if !h.comm.is_empty() => format!("PID {pid}（{}）", h.comm),
-        _ => format!("PID {pid}"),
+fn describe(h: &port::Holder) -> String {
+    if h.comm.is_empty() {
+        format!("PID {}", h.pid)
+    } else {
+        format!("PID {}（{}）", h.pid, h.comm)
     }
 }
 
-/// 卸载确认的跳过开关。
-fn uninstall_env_var(name: &str) -> String {
-    format!(
-        "FUNDEPLOY_{}_UNINSTALL_YES",
-        name.to_ascii_uppercase().replace(['-', '.'], "_")
-    )
-}
+/// 卸载确认的跳过开关。实现和 tool 那边共用一份（见
+/// [`crate::common::env::uninstall_yes_var`]）：变量名是对外承诺，两份实现漂开
+/// 一点，无人值守脚本就会静默卡在确认上。
+pub(crate) use crate::common::env::uninstall_yes_var as uninstall_env_var;
 
 #[cfg(test)]
 mod tests {
@@ -188,7 +190,11 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         let me = std::process::id() as i32;
 
-        let s = who(port, me);
+        let h = port::holders(port)
+            .into_iter()
+            .find(|h| h.pid == me)
+            .expect("自己持有的 socket 必须能反查到");
+        let s = describe(&h);
 
         assert!(s.contains(&me.to_string()), "实际: {s}");
         assert!(s.contains('（'), "没带上进程名: {s}");
@@ -208,18 +214,6 @@ mod tests {
             "端口 {port} 不该被腾掉"
         );
         drop(listener);
-    }
-
-    #[test]
-    fn 卸载确认的环境变量名由服务名推出() {
-        assert_eq!(
-            uninstall_env_var("funread-web"),
-            "FUNDEPLOY_FUNREAD_WEB_UNINSTALL_YES"
-        );
-        assert_eq!(
-            uninstall_env_var("airflow"),
-            "FUNDEPLOY_AIRFLOW_UNINSTALL_YES"
-        );
     }
 
     #[test]

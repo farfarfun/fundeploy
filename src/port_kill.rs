@@ -57,11 +57,8 @@ pub fn kill(ports: &[u16], yes: bool) -> Result<()> {
 
     // 复查端口而不是复查 PID：进程没了不等于端口腾出来了。同一个端口上还可能压着
     // 别的用户的进程，非 root 时上面那张表根本看不见它。
-    let stuck: Vec<String> = found
-        .keys()
-        .filter(|&&p| port::is_taken(p))
-        .map(u16::to_string)
-        .collect();
+    let all: Vec<u16> = found.keys().copied().collect();
+    let stuck: Vec<String> = port::taken_many(&all).iter().map(u16::to_string).collect();
     if !stuck.is_empty() {
         bail!(
             "端口 {} 还占着。占用者多半不属于当前用户，加 sudo 再跑一次。",
@@ -98,11 +95,26 @@ pub fn parse_ports(line: &str) -> Result<Vec<u16>> {
 ///
 /// 用 BTreeMap 顺带把 `port-kill 8080 8080` 这种重复参数收成一份，否则第二遍会
 /// 对着已经杀掉的 PID 再走一轮超时等待。
+///
+/// 没人占的端口也要留一个空条目：[`show`] 靠它打出「没人占」那一行，而「这个口
+/// 我们查过了」正是这条命令要回答的——漏掉它，表里就只剩有人占的那几个，看的人
+/// 分不清是没人占还是没查。
 fn scan(ports: &[u16]) -> BTreeMap<u16, Vec<Holder>> {
-    ports.iter().map(|&p| (p, port::holders(p))).collect()
+    let mut found = port::holders_many(ports);
+    for &p in ports {
+        found.entry(p).or_default();
+    }
+    found
 }
 
 fn show(found: &BTreeMap<u16, Vec<Holder>>) {
+    // 看不见占用者的那些端口，统一问一次「到底占没占着」，而不是每行问一次。
+    let unclear: Vec<u16> = found
+        .iter()
+        .filter(|(_, hs)| hs.is_empty())
+        .map(|(&p, _)| p)
+        .collect();
+    let taken = port::taken_many(&unclear);
     println!(
         "{}{}{}协议",
         ui::pad("端口", 8),
@@ -112,7 +124,7 @@ fn show(found: &BTreeMap<u16, Vec<Holder>>) {
     for (port, hs) in found {
         if hs.is_empty() {
             // 看不见占用者不等于没人占：非 root 时读不到别人的 /proc/<pid>/fd。
-            let what = if port::is_taken(*port) {
+            let what = if taken.contains(port) {
                 "有人占着，但看不出是谁（试试 sudo）"
             } else {
                 "没人占"

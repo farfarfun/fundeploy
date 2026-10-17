@@ -52,17 +52,25 @@ pub fn race(urls: &[String], timeout: Duration, jobs: usize) -> Vec<Outcome> {
     let slots: Vec<Mutex<Option<Outcome>>> = urls.iter().map(|_| Mutex::new(None)).collect();
     let next = AtomicUsize::new(0);
     let workers = jobs.min(urls.len()).max(1);
+    // Agent 建一次就够，内部是 Arc，克隆是廉价的。每个 URL 新建一个等于把 rustls
+    // 的 ClientConfig（含根证书集）重新装配十几遍——量到的那个数字里就掺进了这部分
+    // 本机开销，而这条命令的全部意义是比较各个源之间的差别。
+    let agent = build_agent(timeout);
 
     std::thread::scope(|s| {
         for _ in 0..workers {
-            s.spawn(|| {
+            // 只有 agent 需要搬进闭包（每个线程一份克隆），其余两样是共享的，
+            // 显式借出来——不然 `move` 会把它们整个拿走，第二个线程就没得用了。
+            let agent = agent.clone();
+            let (slots, next) = (&slots, &next);
+            s.spawn(move || {
                 // 抢任务而不是按线程数均分：一个慢源不该拖住分到同一份的其他源。
                 loop {
                     let i = next.fetch_add(1, Ordering::Relaxed);
                     if i >= urls.len() {
                         break;
                     }
-                    let outcome = one(&urls[i], timeout);
+                    let outcome = one(&agent, &urls[i]);
                     *slots[i].lock().unwrap() = Some(outcome);
                 }
             });
@@ -75,15 +83,17 @@ pub fn race(urls: &[String], timeout: Duration, jobs: usize) -> Vec<Outcome> {
         .collect()
 }
 
-fn one(url: &str, timeout: Duration) -> Outcome {
-    let agent = ureq::AgentBuilder::new()
+fn build_agent(timeout: Duration) -> ureq::Agent {
+    ureq::AgentBuilder::new()
         .timeout_connect(timeout)
         .timeout(timeout)
         // 不跟重定向：跟过去量到的是另一个站的延迟，而配置里写的还是这一个。
         .redirects(0)
         .user_agent(concat!("fundeploy/", env!("CARGO_PKG_VERSION")))
-        .build();
+        .build()
+}
 
+fn one(agent: &ureq::Agent, url: &str) -> Outcome {
     let t0 = Instant::now();
     match agent.get(url).call() {
         // 响应体不读：`call()` 拿到响应头就返回，这里直接丢掉连接。

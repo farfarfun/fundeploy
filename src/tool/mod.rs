@@ -47,25 +47,13 @@ pub trait Tool {
     }
 }
 
-/// 卸载确认的跳过开关。
-fn uninstall_env_var(name: &str) -> String {
-    format!(
-        "FUNDEPLOY_{}_UNINSTALL_YES",
-        name.to_ascii_uppercase().replace(['-', '.'], "_")
-    )
-}
+/// 卸载确认的跳过开关。和 service 那边共用一份，理由见
+/// [`crate::common::env::uninstall_yes_var`]。
+pub(crate) use crate::common::env::uninstall_yes_var as uninstall_env_var;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn 卸载确认的环境变量名由工具名推出() {
-        assert_eq!(
-            uninstall_env_var("open-pencil"),
-            "FUNDEPLOY_OPEN_PENCIL_UNINSTALL_YES"
-        );
-    }
 
     #[test]
     fn 注册表里没有重名工具() {

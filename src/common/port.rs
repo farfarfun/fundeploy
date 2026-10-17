@@ -3,6 +3,7 @@
 //! Linux 上监听表直接读 /proc，不依赖 lsof/ss——容器镜像里这两个常常都没装，
 //! 而 `ss` 的输出格式在不同 iproute2 版本间也变过。macOS 没有 /proc，退回 lsof。
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
 
@@ -102,13 +103,37 @@ pub struct Holder {
 /// 非 root 时看不见别的用户的进程（读不到他们的 /proc/<pid>/fd，`ss -p` 同样打不出
 /// pid）。那种情况下这里返回空，但端口是实打实占着的，用 [`is_taken`] 判。
 pub fn holders(port: u16) -> Vec<Holder> {
+    holders_many(&[port]).remove(&port).unwrap_or_default()
+}
+
+/// 一次问清**一批**端口各自被谁占着。语义同 [`holders`]，只是不按端口重复扫。
+///
+/// 这个批量版本才是正事，单端口那个只是它的特例。Linux 上认占用者要走两步：读
+/// 四张 `/proc/net/*` 表拿到 socket inode，再遍历 `/proc/<pid>/fd/*` 反查谁持有
+/// 它们。第二步是对**全机每个进程的每个 fd** 做一次 readlink——照端口数重复做，
+/// `port-kill 8080 8081 8082` 就是三遍全盘扫描。空闲开发机上一遍 4 ms 无所谓，
+/// 而这条命令真正要用的地方是跑着十几个服务的机器，那里进程数和 fd 数高一两个
+/// 数量级。
+///
+/// 返回的 map 只含**查到了占用者**的端口。端口占着但看不见占用者（别的用户的
+/// 进程）时它不在 map 里，那种情况要用 [`taken_many`] 判。
+pub fn holders_many(ports: &[u16]) -> BTreeMap<u16, Vec<Holder>> {
     #[cfg(target_os = "linux")]
     {
-        linux::holders(port)
+        linux::holders_many(ports)
     }
     #[cfg(not(target_os = "linux"))]
     {
-        lsof::holders(port)
+        // macOS 这边一个端口一次 lsof。代价的大头是起进程，不是扫描本身，
+        // 所以合并成一次调用省不下什么，却要去解析 lsof 的地址字段才能知道
+        // 哪个 pid 对应哪个端口——那个格式在 IPv4/IPv6 下还不一样。
+        ports
+            .iter()
+            .filter_map(|&p| {
+                let hs = lsof::holders(p);
+                (!hs.is_empty()).then_some((p, hs))
+            })
+            .collect()
     }
 }
 
@@ -117,14 +142,30 @@ pub fn holders(port: u16) -> Vec<Holder> {
 /// 杀完进程之后用它复查：[`holders`] 返回空只说明「我看不见占用者」，
 /// 把这个当成「腾出来了」会在非 root 下报假的成功。
 pub fn is_taken(port: u16) -> bool {
+    taken_many(&[port]).contains(&port)
+}
+
+/// 一次问清**一批**端口里哪些还占着。语义同 [`is_taken`]。
+///
+/// 同 [`holders_many`] 的理由：四张 `/proc/net/*` 表是整机共享的，按端口重复读
+/// 等于把同一份几千行的表解析许多遍。`fundeploy service status` 的总览要问十几个
+/// 服务、二十几个端口，此前就是二十几遍。
+pub fn taken_many(ports: &[u16]) -> BTreeSet<u16> {
     #[cfg(target_os = "linux")]
     {
         // /proc/net/tcp 是全局可读的，别人的监听也在里面。
-        !linux::bound_inodes(port).is_empty()
+        linux::bound_inodes_many(ports)
+            .into_values()
+            .map(|(port, _)| port)
+            .collect()
     }
     #[cfg(not(target_os = "linux"))]
     {
-        !holders(port).is_empty()
+        ports
+            .iter()
+            .copied()
+            .filter(|&p| !lsof::holders(p).is_empty())
+            .collect()
     }
 }
 
@@ -147,9 +188,15 @@ mod linux {
     /// TCP_LISTEN 在 /proc/net/tcp 的 `st` 列里是 0A。
     const TCP_LISTEN: &str = "0A";
 
-    /// 端口上所有被占着的 socket inode，连带它属于哪个协议。
-    pub fn bound_inodes(port: u16) -> HashMap<u64, &'static str> {
+    /// 这批端口上所有被占着的 socket inode，连带它属于哪个端口、哪个协议。
+    ///
+    /// 四张表只读一遍，要问几个端口都一样——它们是整机共享的，按端口重复读等于把
+    /// 同一份几千行的表解析许多遍。
+    pub fn bound_inodes_many(ports: &[u16]) -> HashMap<u64, (u16, &'static str)> {
         let mut out = HashMap::new();
+        if ports.is_empty() {
+            return out;
+        }
         // UDP 不筛状态：UDP 没有 LISTEN 一说，bind 上了就占着这个端口。
         for (path, proto, listen_only) in [
             ("/proc/net/tcp", "tcp", true),
@@ -179,14 +226,14 @@ mod linux {
                 let Ok(p) = u16::from_str_radix(hex_port, 16) else {
                     continue;
                 };
-                if p != port {
+                if !ports.contains(&p) {
                     continue;
                 }
                 // inode 0 是没有属主的 socket（TIME_WAIT 之类），既反查不到进程，
                 // 也不该让 is_taken 报出一个谁都腾不掉的占用。
                 match f[9].parse::<u64>() {
                     Ok(inode) if inode != 0 => {
-                        out.insert(inode, proto);
+                        out.insert(inode, (p, proto));
                     }
                     _ => {}
                 }
@@ -195,17 +242,18 @@ mod linux {
         out
     }
 
-    pub fn holders(port: u16) -> Vec<Holder> {
-        let inodes = bound_inodes(port);
+    pub fn holders_many(ports: &[u16]) -> BTreeMap<u16, Vec<Holder>> {
+        let inodes = bound_inodes_many(ports);
         if inodes.is_empty() {
-            return Vec::new();
+            return BTreeMap::new();
         }
 
         // 反查哪个进程持有这些 inode：扫 /proc/<pid>/fd/*，符号链接指向 "socket:[12345]"。
+        // 这一趟不论问几个端口都只走一遍——它是这里最贵的一步。
         let Ok(entries) = std::fs::read_dir("/proc") else {
-            return Vec::new();
+            return BTreeMap::new();
         };
-        let mut found: BTreeMap<i32, BTreeSet<&'static str>> = BTreeMap::new();
+        let mut found: BTreeMap<u16, BTreeMap<i32, BTreeSet<&'static str>>> = BTreeMap::new();
         for entry in entries.flatten() {
             let name = entry.file_name();
             let Some(name) = name.to_str() else { continue };
@@ -223,21 +271,40 @@ mod linux {
                 let Some(inode) = socket_inode(target.to_str().unwrap_or_default()) else {
                     continue;
                 };
-                if let Some(proto) = inodes.get(&inode) {
-                    found.entry(pid).or_default().insert(proto);
+                if let Some(&(port, proto)) = inodes.get(&inode) {
+                    found
+                        .entry(port)
+                        .or_default()
+                        .entry(pid)
+                        .or_default()
+                        .insert(proto);
                 }
             }
         }
 
-        // BTreeMap / BTreeSet 顺带把顺序定死了：PID 升序、协议字母序。
+        // 进程名单独读：同一个 pid 可能占着好几个要查的端口，按 pid 缓存一次，
+        // 免得对同一个 /proc/<pid>/comm 读好几遍。
+        let mut comms: HashMap<i32, String> = HashMap::new();
         found
             .into_iter()
-            .map(|(pid, protos)| Holder {
-                pid,
-                comm: comm_of(pid),
-                protos: protos.into_iter().collect(),
+            .map(|(port, pids)| {
+                let hs = pids
+                    .into_iter()
+                    .map(|(pid, protos)| Holder {
+                        pid,
+                        comm: comms.entry(pid).or_insert_with(|| comm_of(pid)).clone(),
+                        protos: protos.into_iter().collect(),
+                    })
+                    .collect();
+                (port, hs)
             })
             .collect()
+    }
+
+    /// 单端口版，只给本模块的测试用。对外那个在父模块上（[`super::holders`]）。
+    #[cfg(test)]
+    pub fn holders(port: u16) -> Vec<Holder> {
+        holders_many(&[port]).remove(&port).unwrap_or_default()
     }
 
     /// `socket:[12345]` → 12345。指向别的东西的 fd 返回 None。
@@ -319,6 +386,76 @@ mod linux {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let port = listener.local_addr().unwrap().port();
             assert!(is_taken(port));
+        }
+
+        // ---- 批量查询 ----
+
+        #[test]
+        fn 一次问多个端口各自对上各自的占用者() {
+            // 这是批量版最容易错的地方：一趟 /proc 扫描收上来的 inode 要分派回
+            // 各自的端口。错位的后果是 port-kill 停掉占着另一个端口的进程。
+            use crate::common::port::holders_many;
+            let a = TcpListener::bind("127.0.0.1:0").unwrap();
+            let b = TcpListener::bind("127.0.0.1:0").unwrap();
+            let (pa, pb) = (
+                a.local_addr().unwrap().port(),
+                b.local_addr().unwrap().port(),
+            );
+            let me = unsafe { libc::getpid() };
+
+            let found = holders_many(&[pa, pb]);
+
+            for p in [pa, pb] {
+                let hs = found.get(&p).unwrap_or_else(|| panic!("端口 {p} 没查到"));
+                assert!(hs.iter().any(|h| h.pid == me), "端口 {p} 上没认出自己");
+            }
+            drop((a, b));
+        }
+
+        #[test]
+        fn 没人占的端口不出现在批量结果里() {
+            // holders_many 只返回「查到了占用者」的端口，调用方靠这个区分
+            // 「没人占」和「占着但看不见是谁」。
+            use crate::common::port::holders_many;
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let busy = listener.local_addr().unwrap().port();
+            let free = {
+                let l = TcpListener::bind("127.0.0.1:0").unwrap();
+                l.local_addr().unwrap().port()
+            };
+
+            let found = holders_many(&[busy, free]);
+
+            assert!(found.contains_key(&busy));
+            assert!(!found.contains_key(&free), "空闲端口不该有条目");
+            drop(listener);
+        }
+
+        #[test]
+        fn 批量判占用和逐个判结果一致() {
+            use crate::common::port::taken_many;
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let busy = listener.local_addr().unwrap().port();
+            let free = {
+                let l = TcpListener::bind("127.0.0.1:0").unwrap();
+                l.local_addr().unwrap().port()
+            };
+
+            let taken = taken_many(&[busy, free]);
+
+            assert!(taken.contains(&busy));
+            assert!(!taken.contains(&free));
+            // 和单端口版对齐——单端口版现在就是批量版的特例，别让两边漂开。
+            assert_eq!(taken.contains(&busy), is_taken(busy));
+            assert_eq!(taken.contains(&free), is_taken(free));
+            drop(listener);
+        }
+
+        #[test]
+        fn 空端口列表不扫盘也不报错() {
+            use crate::common::port::{holders_many, taken_many};
+            assert!(holders_many(&[]).is_empty());
+            assert!(taken_many(&[]).is_empty());
         }
 
         #[test]

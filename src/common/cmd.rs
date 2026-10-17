@@ -11,6 +11,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use std::ffi::OsStr;
 use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -348,14 +349,45 @@ where
 
 /// 命令在 PATH 上吗。等价于 `command -v <name> >/dev/null`。
 pub fn has(name: &str) -> bool {
-    which::which(name).is_ok()
+    lookup(name).is_some()
 }
 
 /// 解析命令的绝对路径。
 pub fn find(name: &str) -> Option<String> {
-    which::which(name)
-        .ok()
-        .map(|p| p.to_string_lossy().into_owned())
+    lookup(name).map(|p| p.to_string_lossy().into_owned())
+}
+
+/// 在 PATH 上找一个可执行文件。
+///
+/// 自己写而不是用 `which` crate：整个项目只用到它的这一个功能（上面那两个函数），
+/// 而它为此拖进 rustix 0.38 + linux-raw-sys 0.4——依赖树里另有一份 rustix 1.x
+/// （clap、tar 在用），于是同一套 syscall 封装要编两遍。它带的 `home` 还是整棵树
+/// 里 rust-version 最高的几个之一，白抬本项目的下限。
+///
+/// 只实现 unix：[`crate::common::platform`] 里就明确只认 linux 和 macos，不存在
+/// Windows 的 PATHEXT 问题。
+fn lookup(name: &str) -> Option<PathBuf> {
+    // 带 `/` 的当成路径直接看，不去 PATH 上找。`which` 是这个语义，而调用方里
+    // 确实有传绝对路径进来的（服务自带的那份 CLI）。
+    if name.contains('/') {
+        let p = PathBuf::from(name);
+        return executable_file(&p).then_some(p);
+    }
+    let paths = std::env::var_os("PATH")?;
+    std::env::split_paths(&paths)
+        // PATH 里的空项按 POSIX 指的是当前目录。那是个有名的坑——在别人的目录里
+        // 跑命令会捡到同名文件——所以跳过，不照着 POSIX 实现。
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .map(|dir| dir.join(name))
+        .find(|p| executable_file(p))
+}
+
+/// 存在、是普通文件、且带执行位。
+fn executable_file(p: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    // 用 metadata 而不是 symlink_metadata：PATH 上的命令大半是符号链接，
+    // 要看的是它指向的那个东西。
+    std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
 /// 要求某个命令存在，否则报一条带安装指引的错。
@@ -376,6 +408,75 @@ mod tests {
     #[test]
     fn 成功的命令返回_ok() {
         run(["true"]).unwrap();
+    }
+
+    // ---- PATH 查找 ----
+    // 这几条是接替 `which` crate 留下的：换掉一个依赖，它原先保证的语义就得由
+    // 本仓库自己的测试钉住，否则下次动这段代码没有任何东西会红。
+
+    #[test]
+    fn 能在_path_上找到常见命令() {
+        // sh 在 POSIX 系统上一定在 PATH 上，而且一定是可执行的。
+        let p = find("sh").expect("PATH 上必须能找到 sh");
+        assert!(p.ends_with("/sh"), "实际: {p}");
+        assert!(has("sh"));
+    }
+
+    #[test]
+    fn 找不到的命令返回_none() {
+        assert_eq!(find("__不存在的命令_fundeploy__"), None);
+        assert!(!has("__不存在的命令_fundeploy__"));
+    }
+
+    #[test]
+    fn 不可执行的文件不算数() {
+        // 否则 PATH 上一个同名的 README 会被当成命令交出去，错要到真去执行
+        // 它的时候才报，而那时的报错跟「找不到命令」看着完全不一样。
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("装模作样");
+        std::fs::write(&f, "不是程序").unwrap();
+        assert!(!executable_file(&f));
+
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(executable_file(&f));
+    }
+
+    #[test]
+    fn 目录不算可执行文件() {
+        // 目录的权限位上几乎总有 x（那是「可进入」的意思），只看权限位会把
+        // PATH 上任何一个同名目录当成命令。
+        let d = tempfile::tempdir().unwrap();
+        assert!(!executable_file(d.path()));
+    }
+
+    #[test]
+    fn 带斜杠的当成路径而不去_path_上找() {
+        // 调用方里有传绝对路径进来的（服务自带的那份 CLI），这是 which 的语义。
+        let p = find("/bin/sh").or_else(|| find("/usr/bin/sh"));
+        assert!(p.is_some(), "/bin/sh 或 /usr/bin/sh 总该有一个在");
+        // 反过来：存在但不可执行的路径不该被交出去。
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("纯文本");
+        std::fs::write(&f, "x").unwrap();
+        assert_eq!(find(&f.display().to_string()), None);
+    }
+
+    #[test]
+    fn 跳过_path_里的空项() {
+        // 空项按 POSIX 指当前目录。真照着实现，在别人的目录里跑 fundeploy
+        // 就可能捡到一个同名的本地文件。
+        let d = tempfile::tempdir().unwrap();
+        let bin = d.path().join("只在当前目录的命令");
+        std::fs::write(&bin, "#!/bin/sh\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        // 不改进程的 PATH（会影响并发跑的其他测试），直接验 lookup 的那条规则：
+        // 空目录项拼出来的是相对路径，而我们要求它被过滤掉。
+        let 空项拼出来的 = std::path::PathBuf::from("").join("只在当前目录的命令");
+        assert_eq!(空项拼出来的, std::path::PathBuf::from("只在当前目录的命令"));
+        assert!(!executable_file(&空项拼出来的), "不该从当前目录捡命令");
     }
 
     #[test]

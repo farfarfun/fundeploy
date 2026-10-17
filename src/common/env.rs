@@ -83,9 +83,42 @@ pub fn expand_tilde(path: &str) -> PathBuf {
     }
 }
 
+/// 某样东西「卸载时跳过确认」的环境变量名。
+///
+/// service 和 tool 两域各有一份一模一样的实现，连测试都抄了两遍。规则只有一条
+/// （服务名大写、`-` 和 `.` 换成 `_`），但它是**对外承诺**的一部分——无人值守的
+/// 脚本里写着这些变量名，两份实现哪天漂开一点，那些脚本就会静默地卡在确认上。
+pub fn uninstall_yes_var(name: &str) -> String {
+    format!(
+        "FUNDEPLOY_{}_UNINSTALL_YES",
+        name.to_ascii_uppercase().replace(['-', '.'], "_")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn 卸载确认的环境变量名由名字推出() {
+        // service 和 tool 两域此前各有一份实现、各有一份这样的测试。合成一份
+        // 之后两域的例子都留着——变量名是对外承诺，service 那边的服务名带
+        // `-`，tool 那边也带，两种都得钉住。
+        assert_eq!(
+            uninstall_yes_var("funread-web"),
+            "FUNDEPLOY_FUNREAD_WEB_UNINSTALL_YES"
+        );
+        assert_eq!(
+            uninstall_yes_var("airflow"),
+            "FUNDEPLOY_AIRFLOW_UNINSTALL_YES"
+        );
+        assert_eq!(
+            uninstall_yes_var("open-pencil"),
+            "FUNDEPLOY_OPEN_PENCIL_UNINSTALL_YES"
+        );
+        // `.` 也要换掉：环境变量名里不能有点。
+        assert_eq!(uninstall_yes_var("a.b-c"), "FUNDEPLOY_A_B_C_UNINSTALL_YES");
+    }
 
     #[test]
     fn 非法端口退回默认值而不是崩掉() {
