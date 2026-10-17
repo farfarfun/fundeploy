@@ -499,10 +499,7 @@ pub fn cli_main() -> Result<()> {
 
 fn dev_cmd(name: Option<String>, action: Option<DevAction>) -> Result<()> {
     let Some(name) = name else {
-        for d in dev::registry::all() {
-            dev::status(d.as_ref())?;
-            ui::blank();
-        }
+        dev::status_all(&dev::registry::all())?;
         dev::python::list()?;
         ui::blank();
         ui::hint("装: fundeploy dev <go|nodejs|pnpm|rust|uv|python> install [--method pkg|source]");

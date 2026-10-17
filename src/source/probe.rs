@@ -7,11 +7,10 @@
 //!
 //! 并发是必须的：十来个源串行量，每个最坏等满超时，一次 `test` 要一分钟。
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use super::Mirror;
+use crate::common::par;
 
 /// 一次探测的结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,38 +48,11 @@ pub struct Timing {
 
 /// 量一遍。返回的顺序和 `urls` 一一对应。
 pub fn race(urls: &[String], timeout: Duration, jobs: usize) -> Vec<Outcome> {
-    let slots: Vec<Mutex<Option<Outcome>>> = urls.iter().map(|_| Mutex::new(None)).collect();
-    let next = AtomicUsize::new(0);
-    let workers = jobs.min(urls.len()).max(1);
-    // Agent 建一次就够，内部是 Arc，克隆是廉价的。每个 URL 新建一个等于把 rustls
-    // 的 ClientConfig（含根证书集）重新装配十几遍——量到的那个数字里就掺进了这部分
-    // 本机开销，而这条命令的全部意义是比较各个源之间的差别。
+    // Agent 建一次就够，内部是 Arc。每个 URL 新建一个等于把 rustls 的 ClientConfig
+    // （含根证书集）重新装配十几遍——量到的那个数字里就掺进了这部分本机开销，而这条
+    // 命令的全部意义是比较各个源之间的差别。
     let agent = build_agent(timeout);
-
-    std::thread::scope(|s| {
-        for _ in 0..workers {
-            // 只有 agent 需要搬进闭包（每个线程一份克隆），其余两样是共享的，
-            // 显式借出来——不然 `move` 会把它们整个拿走，第二个线程就没得用了。
-            let agent = agent.clone();
-            let (slots, next) = (&slots, &next);
-            s.spawn(move || {
-                // 抢任务而不是按线程数均分：一个慢源不该拖住分到同一份的其他源。
-                loop {
-                    let i = next.fetch_add(1, Ordering::Relaxed);
-                    if i >= urls.len() {
-                        break;
-                    }
-                    let outcome = one(&agent, &urls[i]);
-                    *slots[i].lock().unwrap() = Some(outcome);
-                }
-            });
-        }
-    });
-
-    slots
-        .into_iter()
-        .map(|m| m.into_inner().unwrap().unwrap_or(Outcome::Unreachable))
-        .collect()
+    par::map(urls, jobs, |url| one(&agent, url))
 }
 
 fn build_agent(timeout: Duration) -> ureq::Agent {

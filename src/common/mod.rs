@@ -10,6 +10,7 @@ pub mod fs;
 pub mod github;
 pub mod ini;
 pub mod npm;
+pub mod par;
 pub mod pip;
 pub mod platform;
 pub mod pm;

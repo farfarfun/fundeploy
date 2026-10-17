@@ -13,7 +13,7 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
-use crate::common::{cmd, env};
+use crate::common::{cmd, env, par};
 use crate::ui;
 
 const DEFAULT_ORG: &str = "farfarfun-skills";
@@ -168,6 +168,28 @@ fn fetch_remote(c: &Conf) -> Result<Vec<Remote>> {
 
 // ---------------------------------------------------------------- 状态
 
+/// 对一个仓库做完之后的结局。
+///
+/// 「跳过」不是失败，所以它在 `Ok` 这一边：sync 一次处理二十几个仓库，其中一个
+/// 的目录被别人占着不该让整条命令以非零退出。点名装一个的时候它才是失败——那个
+/// 判断由调用方用 [`Did::into_result`] 做，而不是靠去匹配错误里的字。
+#[derive(Debug, PartialEq, Eq)]
+enum Did {
+    Installed,
+    Updated,
+    Skipped(String),
+}
+
+impl Did {
+    /// 「跳过」在点名操作单个仓库时算失败。
+    fn into_result(self) -> Result<()> {
+        match self {
+            Did::Skipped(why) => bail!("{why}"),
+            _ => Ok(()),
+        }
+    }
+}
+
 /// 一个技能仓库在本机的状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
@@ -292,8 +314,12 @@ impl Sync {
             self.remote.len(),
             self.conf.dir.display()
         );
-        for r in &self.remote {
-            println!("{}{}", ui::pad(self.state(&r.name).label(), 18), r.name);
+        // 状态并发问。每个仓库的 state() 要起一次 `git status --porcelain`，实测
+        // 二十几个仓库串行就是两秒多——而这条命令只是「列一下」，人会盯着等。
+        // 结果按输入顺序回来，所以打印顺序和远端列表完全一致。
+        let states = par::map(&self.remote, par::JOBS, |r| self.state(&r.name));
+        for (r, st) in self.remote.iter().zip(states) {
+            println!("{}{}", ui::pad(st.label(), 18), r.name);
         }
         // 远端没有、本地还留着的也要报出来：那多半是上游改名或者删库了，不报的话
         // 这个目录会一直攒着没人认领的东西。
@@ -310,56 +336,91 @@ impl Sync {
         Ok(())
     }
 
-    fn install_one(&self, name: &str) -> Result<()> {
+    /// 跑一条 git。`quiet` 为真时捕获输出，失败时它会进错误里。
+    ///
+    /// 并发路径必须 quiet：八条 git 同时往终端上写，出来的东西没法看，而 git 的
+    /// 进度条还会用回车重画当前行，交错之后连已经打出去的行也会被盖掉。单仓库的
+    /// 命令走 false，让 git 自己的进度直通终端——那时候终端是它一个人的。
+    fn git(&self, args: &[&str], quiet: bool) -> Result<()> {
+        if quiet {
+            // capture 失败时会把 stderr 末尾几行带进错误，所以 quiet 丢掉的只有
+            // 成功时的噪音，不是诊断信息。
+            cmd::capture(args).map(|_| ())
+        } else {
+            cmd::run(args)
+        }
+    }
+
+    /// 把一个仓库拉到位：本地没有就 clone，已有就 fetch + reset。
+    ///
+    /// 返回干了哪件事，给调用方汇总用。这里不打印任何东西——并发跑的时候谁先打
+    /// 完全看调度，报告由调用方按固定顺序出。
+    ///
+    /// 「目录被别人占着」用 [`Did::Skipped`] 而不是 `Err` 表达：对 sync 来说那是
+    /// 预料之内的局面（人自己在那儿放了东西），不该让整条命令以非零退出；而对点名
+    /// 装一个的命令来说它是失败。两种判断靠类型区分，不靠匹配错误里的字。
+    fn pull_one(&self, name: &str, quiet: bool) -> Result<Did> {
         let url = self
             .url_of(name)
             .ok_or_else(|| anyhow::anyhow!("远端没有 {name}"))?
             .to_string();
-        match self.state(name) {
-            State::Clean | State::Dirty => {
-                ui::info(format!("{name} 已经装着了，跳过。"));
-                return Ok(());
-            }
-            State::Foreign => bail!(
-                "{} 已经被别的东西占着（不是这个组织的仓库），没动它。",
-                self.dir_of(name).display()
-            ),
-            State::Missing => {}
-        }
         let dir = self.dir_of(name);
-        std::fs::create_dir_all(&self.conf.dir)
-            .with_context(|| format!("建目录失败: {}", self.conf.dir.display()))?;
+        match self.state(name) {
+            State::Foreign => Ok(Did::Skipped(format!(
+                "{} 已经被别的东西占着（不是这个组织的仓库），没动它。",
+                dir.display()
+            ))),
+            State::Missing => {
+                std::fs::create_dir_all(&self.conf.dir)
+                    .with_context(|| format!("建目录失败: {}", self.conf.dir.display()))?;
+                // --depth 1：技能仓库要的是内容，历史是纯粹的下载量。
+                self.git(
+                    &["git", "clone", "--depth", "1", &url, &dir.to_string_lossy()],
+                    quiet,
+                )?;
+                strip_dot_dirs(&dir)?;
+                Ok(Did::Installed)
+            }
+            State::Clean | State::Dirty => {
+                let d = dir.to_string_lossy().into_owned();
+                // 本地改动会被覆盖，这是这条命令说好的语义：技能仓库是只读的消费
+                // 端，真要改就去上游改。
+                //
+                // fetch 带 --depth 1：clone 时是浅的，fetch 不说深度的话会把整部
+                // 历史拉回来，仓库越同步越大。
+                self.git(
+                    &[
+                        "git", "-C", &d, "fetch", "--force", "--prune", "--depth", "1", "origin",
+                        "HEAD",
+                    ],
+                    quiet,
+                )?;
+                self.git(&["git", "-C", &d, "reset", "--hard", "FETCH_HEAD"], quiet)?;
+                self.git(&["git", "-C", &d, "clean", "-ffdx"], quiet)?;
+                strip_dot_dirs(&dir)?;
+                Ok(Did::Updated)
+            }
+        }
+    }
+
+    fn install_one(&self, name: &str) -> Result<()> {
+        if matches!(self.state(name), State::Clean | State::Dirty) {
+            ui::info(format!("{name} 已经装着了，跳过。"));
+            return Ok(());
+        }
         ui::step(format!("装 {name}"));
-        // --depth 1：技能仓库要的是内容，历史是纯粹的下载量。
-        cmd::run(["git", "clone", "--depth", "1", &url, &dir.to_string_lossy()])?;
-        strip_dot_dirs(&dir)
+        self.pull_one(name, false)?.into_result()
     }
 
     fn update_one(&self, name: &str) -> Result<()> {
         if self.url_of(name).is_none() {
             bail!("远端没有 {name}");
         }
-        match self.state(name) {
-            State::Missing => bail!("{name} 还没装，先 install。"),
-            State::Foreign => bail!(
-                "{} 不是这个组织的仓库，没动它。",
-                self.dir_of(name).display()
-            ),
-            _ => {}
+        if self.state(name) == State::Missing {
+            bail!("{name} 还没装，先 install。");
         }
-        let dir = self.dir_of(name).to_string_lossy().into_owned();
         ui::step(format!("更新 {name}"));
-        // 本地改动会被覆盖，这是这条命令说好的语义：技能仓库是只读的消费端，
-        // 真要改就去上游改。
-        //
-        // fetch 带 --depth 1：clone 时是浅的，fetch 不说深度的话会把整部历史拉
-        // 回来，仓库越同步越大。
-        cmd::run([
-            "git", "-C", &dir, "fetch", "--force", "--prune", "--depth", "1", "origin", "HEAD",
-        ])?;
-        cmd::run(["git", "-C", &dir, "reset", "--hard", "FETCH_HEAD"])?;
-        cmd::run(["git", "-C", &dir, "clean", "-ffdx"])?;
-        strip_dot_dirs(Path::new(&dir))
+        self.pull_one(name, false)?.into_result()
     }
 
     fn remove_one(&self, name: &str) -> Result<()> {
@@ -381,30 +442,37 @@ impl Sync {
     }
 
     /// 装上缺的、更新已有的。
+    ///
+    /// 并发做。每个仓库要一次 git 网络往返，实测到 Gitee 单次约 800 ms——二十几个
+    /// 仓库串行就是二十秒起步，而它们彼此毫无关系。这条命令的全部价值就是「一次
+    /// 把全部拉齐」，那就不该让人按住 Ctrl+C 犹豫要不要等下去。
+    ///
+    /// 输出不随完成顺序走：各仓库的 git 输出被捕获（见 [`Self::git`]），报告按远端
+    /// 列表的固定顺序出。并发跑却想保留逐行进度的话，拿到的是八条 git 的进度条互相
+    /// 覆盖，比没有还糟。
     fn sync(&self) -> Result<()> {
+        let results = par::map(&self.remote, par::JOBS, |r| self.pull_one(&r.name, true));
+
         let (mut added, mut updated, mut skipped) = (0, 0, 0);
         let mut failed: Vec<String> = Vec::new();
-        for r in &self.remote {
-            let (what, res) = match self.state(&r.name) {
-                State::Missing => ("装", self.install_one(&r.name)),
-                State::Clean | State::Dirty => ("更新", self.update_one(&r.name)),
-                State::Foreign => {
-                    ui::warn(format!(
-                        "跳过 {}：{} 被别的东西占着。",
-                        r.name,
-                        self.dir_of(&r.name).display()
-                    ));
-                    skipped += 1;
-                    continue;
-                }
-            };
+        for (r, res) in self.remote.iter().zip(results) {
             match res {
-                Ok(()) if what == "装" => added += 1,
-                Ok(()) => updated += 1,
+                Ok(Did::Installed) => {
+                    ui::step(format!("装 {}", r.name));
+                    added += 1;
+                }
+                Ok(Did::Updated) => {
+                    ui::step(format!("更新 {}", r.name));
+                    updated += 1;
+                }
+                Ok(Did::Skipped(why)) => {
+                    ui::warn(format!("跳过 {}：{why}", r.name));
+                    skipped += 1;
+                }
                 Err(e) => {
                     // 一个仓库失败不该把剩下几十个也带停：这条命令的价值就在于
                     // 一次把全部拉齐，中途退出等于每次都得从头再来一遍。
-                    ui::warn(format!("{}{} 失败：{e}", what, r.name));
+                    ui::warn(format!("{} 失败：{e}", r.name));
                     failed.push(r.name.clone());
                 }
             }

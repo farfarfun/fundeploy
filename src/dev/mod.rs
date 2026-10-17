@@ -27,7 +27,7 @@ use anyhow::{bail, Result};
 use clap::ValueEnum;
 
 use crate::common::pm::Pm;
-use crate::common::{cmd, download, env, fs};
+use crate::common::{cmd, download, env, fs, par};
 use crate::ui;
 
 /// 装法。
@@ -49,7 +49,10 @@ impl Method {
 }
 
 /// 一样开发工具。
-pub trait Dev {
+///
+/// `Sync` 是为了 [`status_all`] 能并发探：所有实现都是无状态的单元结构体，
+/// 这个约束不要求任何人多做什么。
+pub trait Dev: Sync {
     fn name(&self) -> &str;
     fn summary(&self) -> &str;
 
@@ -235,23 +238,49 @@ pub fn uninstall(d: &dyn Dev, method: Option<Method>, yes: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn status(d: &dyn Dev) -> Result<()> {
-    ui::heading(d.name());
-    let (bin, args) = d.probe();
+/// 一样工具探出来的状态。探和打分开，是为了能并发探。
+///
+/// 每样工具要起一到两个子进程问版本，而有些上游问一次版本很贵——`pnpm --version`
+/// 在装了 corepack 的机器上是 corepack → pnpm-native 三层嵌套。五样串行探实测
+/// 一百五十多毫秒，而它们彼此毫无关系。
+struct Probed {
+    name: String,
+    bin: &'static str,
+    root: PathBuf,
+    source_bin: Option<PathBuf>,
+    source_ver: Option<String>,
+    on_path: Option<String>,
+    path_ver: Option<String>,
+}
 
-    let root = d.root();
+/// 探一样工具。只问，不打印。
+fn probe_status(d: &dyn Dev) -> Probed {
+    let (bin, args) = d.probe();
     let source_bin = d.bin_dir().map(|b| b.join(bin)).filter(|p| p.is_file());
     let source_ver = source_bin.as_ref().map(|p| ask_version(p, args));
-    ui::kv(
-        format!("官方包   {}", root.display()),
-        Some(source_ver.as_deref().unwrap_or("未安装")),
-    );
-
     let on_path = cmd::find(bin);
     let path_ver = on_path.as_ref().map(|p| ask_version(Path::new(p), args));
-    match &on_path {
-        Some(p) => ui::kv(format!("PATH     {p}"), path_ver.as_deref()),
-        None => ui::kv(format!("PATH     {bin}"), Some("找不到")),
+    Probed {
+        name: d.name().to_string(),
+        bin,
+        root: d.root(),
+        source_bin,
+        source_ver,
+        on_path,
+        path_ver,
+    }
+}
+
+/// 打印一样工具的状态。只打印，不问。
+fn print_status(p: &Probed) {
+    ui::heading(&p.name);
+    ui::kv(
+        format!("官方包   {}", p.root.display()),
+        Some(p.source_ver.as_deref().unwrap_or("未安装")),
+    );
+    match &p.on_path {
+        Some(path) => ui::kv(format!("PATH     {path}"), p.path_ver.as_deref()),
+        None => ui::kv(format!("PATH     {}", p.bin), Some("找不到")),
     }
 
     // 两边都装了、版本还对不上，就是「升级完版本号没变」的那个经典场面：
@@ -260,14 +289,31 @@ pub fn status(d: &dyn Dev) -> Result<()> {
     // 只在版本真的不一样时才说。两份同版本是装机时很常见的局面（包管理器一份、
     // 我们一份），此时提醒没有任何可操作的内容，次次都报反而把真出问题时的那次
     // 淹掉了。
-    if let (Some(s), Some(sv), Some(pv)) = (&source_bin, &source_ver, &path_ver) {
+    if let (Some(s), Some(sv), Some(pv)) = (&p.source_bin, &p.source_ver, &p.path_ver) {
         if sv != pv {
             ui::warn(format!(
-                "PATH 上的 {bin} 是 {pv}，{} 里是 {sv}。要用后者，把 {} 排到 PATH 前面。",
-                root.display(),
-                s.parent().unwrap_or(&root).display()
+                "PATH 上的 {} 是 {pv}，{} 里是 {sv}。要用后者，把 {} 排到 PATH 前面。",
+                p.bin,
+                p.root.display(),
+                s.parent().unwrap_or(&p.root).display()
             ));
         }
+    }
+}
+
+pub fn status(d: &dyn Dev) -> Result<()> {
+    print_status(&probe_status(d));
+    Ok(())
+}
+
+/// 全部工具链的状态：并发探，按给进来的顺序打。
+///
+/// 顺序必须稳：这张表每次打出来的样子应该一样，否则人没法一眼扫过去对比，
+/// 把输出贴进 issue 做 diff 也会全是噪音。
+pub fn status_all(all: &[Box<dyn Dev>]) -> Result<()> {
+    for p in par::map(all, par::JOBS, |d| probe_status(d.as_ref())) {
+        print_status(&p);
+        ui::blank();
     }
     Ok(())
 }
