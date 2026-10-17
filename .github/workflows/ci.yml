@@ -52,8 +52,9 @@ jobs:
       - uses: actions/checkout@v4
 
       # Cargo.toml 的 rust-version 不验证就是一句空话：它曾经写着 1.74，而锁住的
-      # clap 要求 1.85。写低了编不过时报的是依赖的名字，人读了 manifest 以为自己
-      # 够格，装到一半才撞上一句跟 fundeploy 无关的错。
+      # icu_*（ureq → url → idna 那条线上的）要求 1.88。写低了编不过时报的是依赖
+      # 的名字，人读了 manifest 以为自己够格，装到一半才撞上一句跟 fundeploy 无关
+      # 的错。
       #
       # 从 Cargo.toml 里读，而不是在这儿再写一遍版本号：两处各写一份必然漂移，
       # 而漂移的方向恰好是「CI 还在测老版本，manifest 已经抬上去了」。
