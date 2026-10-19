@@ -7,7 +7,7 @@
 //!
 //! **先判断机器上现有的是哪一份，然后继续用同一条路线，绝不另开一条。**
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 
 use super::cmd;
@@ -93,61 +93,24 @@ impl PipPkg {
             return cmd::run(["uv", "tool", "install", flag, &spec]);
         }
 
-        if let Some(pip) = &self.explicit_pip {
-            let mut args = vec![pip.as_str(), "install"];
-            if !pinned {
-                args.push("--upgrade");
-            }
-            args.push(&spec);
-            return cmd::run(args);
-        }
-
         // 已有安装时钉住它所在的解释器：`uv pip` 自己探测出来的环境未必是同一个，
         // 装进别的环境等于升级了一份没人跑的副本。
-        let py = self.cli_python();
-
-        if cmd::has("uv") {
-            let mut args: Vec<String> = vec!["uv".into(), "pip".into(), "install".into()];
-            if let Some(p) = &py {
-                args.push("--python".into());
-                args.push(p.to_string_lossy().into_owned());
-            }
-            if !pinned {
-                args.push("--upgrade".into());
-            }
-            args.push(spec);
-            return cmd::run(args);
+        let uv = cmd::require("uv", "可先运行 `fundeploy dev uv install`")?;
+        let py = if let Some(pip) = &self.explicit_pip {
+            let head = read_first_line(Path::new(pip))
+                .with_context(|| format!("读不到 pip 入口的解释器: {pip}"))?;
+            Some(parse_shebang_python(&head).context("pip 入口没有绝对路径解释器")?)
+        } else {
+            self.cli_python()
+        };
+        let mut args = vec![uv, "pip".into(), "install".into(), spec];
+        if let Some(p) = py {
+            args.push("--python".into());
+            args.push(p.to_string_lossy().into_owned());
         }
-
-        if let Some(p) = &py {
-            let mut args: Vec<String> = vec![
-                p.to_string_lossy().into_owned(),
-                "-m".into(),
-                "pip".into(),
-                "install".into(),
-            ];
-            if !pinned {
-                args.push("--upgrade".into());
-            }
-            args.push(spec);
-            return cmd::run(args);
-        }
-
-        let py3 = cmd::require(
-            "python3",
-            "可先运行 `fundeploy dev uv install` 或 `fundeploy dev python-env install`",
-        )?;
-        let mut args: Vec<String> = vec![
-            py3,
-            "-m".into(),
-            "pip".into(),
-            "install".into(),
-            "--user".into(),
-        ];
         if !pinned {
-            args.push("--upgrade".into());
+            args.push("-U".into());
         }
-        args.push(spec);
         cmd::run(args)
     }
 
@@ -328,10 +291,10 @@ fn parse_uv_tool_list(stdout: &str, pkg: &str) -> Option<String> {
 
 /// 要求 Python 侧的安装手段至少有一个可用。
 pub fn require_any_installer() -> Result<()> {
-    if cmd::has("uv") || cmd::has("python3") || cmd::has("pip3") || cmd::has("pip") {
+    if cmd::has("uv") {
         return Ok(());
     }
-    bail!("未找到 uv/python3/pip（可先运行 `fundeploy dev uv install`）")
+    bail!("未找到 uv（可先运行 `fundeploy dev uv install`）")
 }
 
 #[cfg(test)]

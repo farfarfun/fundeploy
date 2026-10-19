@@ -141,15 +141,13 @@ pub fn install(version: Option<&str>, force: bool) -> Result<()> {
         ui::info("没有要装的基础包。");
     } else {
         ui::step(format!("装基础包: {}", pkgs.join(" ")));
-        let mut argv = vec![
-            uv.clone(),
-            "pip".into(),
-            "install".into(),
+        let mut argv = vec![uv.clone(), "pip".into(), "install".into()];
+        argv.extend(pkgs);
+        argv.extend([
             "--python".into(),
             py.to_string_lossy().into_owned(),
             "-U".into(),
-        ];
-        argv.extend(pkgs);
+        ]);
         cmd::run(&argv)?;
     }
 
@@ -179,15 +177,13 @@ pub fn update(version: Option<&str>) -> Result<()> {
         return Ok(());
     }
     ui::step(format!("更新 {}: {}", path.display(), pkgs.join(" ")));
-    let mut argv = vec![
-        uv,
-        "pip".into(),
-        "install".into(),
+    let mut argv = vec![uv, "pip".into(), "install".into()];
+    argv.extend(pkgs);
+    argv.extend([
         "--python".into(),
         py.to_string_lossy().into_owned(),
         "-U".into(),
-    ];
-    argv.extend(pkgs);
+    ]);
     cmd::run(&argv)?;
     ui::ok(format!("Python {v} 的基础包已是最新。"));
     Ok(())

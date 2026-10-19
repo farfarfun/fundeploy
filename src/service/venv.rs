@@ -801,6 +801,7 @@ pub trait Venv {
     fn provision(&self, version: Option<&str>, upgrade: bool) -> Result<()> {
         let spec = self.spec();
         spec.validate()?;
+        cmd::require("uv", "可先运行 `fundeploy dev uv install`")?;
         ensure_dirs(spec)?;
 
         if !spec.python_path().is_file() {
@@ -1116,10 +1117,7 @@ fn create_venv(py: &str, venv: &Path) -> Result<()> {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("建目录失败: {}", parent.display()))?;
     }
-    if cmd::has("uv") {
-        return cmd::run(["uv", "venv", "--python", py, &venv.to_string_lossy()]);
-    }
-    cmd::run([py, "-m", "venv", &venv.to_string_lossy()])
+    cmd::run(["uv", "venv", "--python", py, &venv.to_string_lossy()])
 }
 
 /// venv 里有没有 pip。
@@ -1130,7 +1128,7 @@ fn ensure_pip(spec: &VenvSpec) {
     if spec.bin("pip").is_file() {
         return;
     }
-    if let Err(e) = pip_install(spec, &["pip".to_string()], None, false) {
+    if let Err(e) = pip_install(spec, &["pip".to_string()], None, true) {
         ui::warn(format!("往 venv 里装 pip 失败（不影响服务本身）: {e}"));
     }
 }
@@ -1142,25 +1140,18 @@ fn pip_install(
     upgrade: bool,
 ) -> Result<()> {
     let py = spec.python_path().to_string_lossy().into_owned();
-    let mut argv: Vec<String> = if cmd::has("uv") {
-        vec![
-            "uv".into(),
-            "pip".into(),
-            "install".into(),
-            "--python".into(),
-            py,
-        ]
-    } else {
-        vec![py, "-m".into(), "pip".into(), "install".into()]
-    };
+    let uv = cmd::require("uv", "可先运行 `fundeploy dev uv install`")?;
+    let mut argv = vec![uv, "pip".into(), "install".into()];
+    argv.extend(pkgs.iter().cloned());
+    argv.push("--python".into());
+    argv.push(py);
     if upgrade {
-        argv.push("--upgrade".into());
+        argv.push("-U".into());
     }
     if let Some(c) = constraint {
         argv.push("--constraint".into());
         argv.push(c.into());
     }
-    argv.extend(pkgs.iter().cloned());
     cmd::run(&argv)
 }
 
