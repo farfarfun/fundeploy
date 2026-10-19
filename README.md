@@ -150,7 +150,7 @@ fundeploy service funread-web status
 | --- | --- |
 | `funfluid-web` | funfluid 前后端（18806 / 8806） |
 | `funlesson-web` | funlesson 前后端（18812 / 8814） |
-| `fungame-web` | fungame 后端 + 管理端 + 用户端（8809 / 8807 / 8808） |
+| `fungame-web` | fungame 后端 + 管理端 + 用户端（8809 / 8807 / 8808）；前端包为 `@farfarfun/fungame-admin`、`@farfarfun/fungame-web` |
 | `funflix-web` | funflix 前后端（18810 / 8810） |
 | `funread-web` | funread 前后端（18811 / 8811） |
 | `funmill` | funmill 任务执行 API（8813 / 8812） |

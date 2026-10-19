@@ -171,7 +171,7 @@ fn fungame_web() -> ServiceSpec {
         "admin",
         "管理端 fungame-admin",
         Pkg::npm(
-            &env_str("FUNGAME_WEB_ADMIN_PACKAGE", "@fungame/admin-cli"),
+            &env_str("FUNGAME_WEB_ADMIN_PACKAGE", "@farfarfun/fungame-admin"),
             "fungame-admin",
         ),
         &env_str("FUNGAME_WEB_ADMIN_HOST", "127.0.0.1"),
@@ -182,10 +182,10 @@ fn fungame_web() -> ServiceSpec {
 
     let client = Component::new(
         "client",
-        "用户端 fungame-client",
+        "用户端 fungame-web",
         Pkg::npm(
-            &env_str("FUNGAME_WEB_CLIENT_PACKAGE", "@fungame/client-cli"),
-            "fungame-client",
+            &env_str("FUNGAME_WEB_CLIENT_PACKAGE", "@farfarfun/fungame-web"),
+            "fungame-web",
         ),
         &env_str("FUNGAME_WEB_CLIENT_HOST", "127.0.0.1"),
         env_port("FUNGAME_WEB_CLIENT_PORT", 8808),

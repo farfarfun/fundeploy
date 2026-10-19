@@ -3,6 +3,19 @@
 版本号以 `Cargo.toml` 里的 `version` 为准；发布由推同版本的 `v*` tag 触发（见
 `.github/workflows/release.yml`），因此「有 tag ＝ 已发布」。
 
+## [0.3.14] - 2026-10-19
+
+### 变更
+
+- **`fungame-web` 的两个前端换成新包。** fungame 的管理端和用户端不再各有一个
+  独立的部署载体包，应用包本身就是部署制品（只含构建产物 `dist/` 与零依赖的静态
+  服务 CLI），自 0.1.47 起发布：
+  - 管理端 `@fungame/admin-cli` → `@farfarfun/fungame-admin`，命令仍是 `fungame-admin`；
+  - 用户端 `@fungame/client-cli` → `@farfarfun/fungame-web`，命令由 `fungame-client`
+    改为 `fungame-web`。
+
+  启停参数不变，端口仍是 8809 / 8807 / 8808。
+
 ## [0.3.13] - 2026-10-17
 
 ### 变更
