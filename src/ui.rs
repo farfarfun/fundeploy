@@ -712,6 +712,7 @@ pub fn select<'a>(prompt: &str, options: &'a [String]) -> Result<Option<&'a Stri
     }
     Ok(
         inquire::Select::new(prompt, options.iter().collect::<Vec<_>>())
+            .with_page_size(15)
             .prompt()
             .ok(),
     )

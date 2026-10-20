@@ -641,6 +641,15 @@ fn pick_overview(overview: &str) -> Result<bool> {
     Ok(choose("要做什么", &menu)?.starts_with("status"))
 }
 
+fn service_menu(all: &[Box<dyn Service>]) -> Vec<String> {
+    let mut menu = vec!["status         所有服务的状态总览".to_string()];
+    menu.extend(
+        all.iter()
+            .map(|s| format!("{:<14} {}", s.name(), s.summary())),
+    );
+    menu
+}
+
 // 下面这几张表是各域动作菜单的**唯一出处**: 菜单由它生成, 测试也拿它和 clap 的
 // 子命令对照。写成「命令名 + 说明」两列而不是两份清单, 就不会出现「菜单里改了、
 // 测试里忘了」这种漂移。
@@ -904,20 +913,17 @@ fn no_args() -> Result<()> {
     // 逐个列全、不留 `_ =>` 兜底: 兜底会把「菜单加了项却忘了加分支」变成「选了
     // upgrade 却跳出工具列表」, 不报错也查不出来。
     match choose_head("要管什么", &domains)?.as_str() {
-        // 先问「看全部」还是「挑一个」：不点名服务的 status（所有服务的状态总览）
-        // 只有这条路能走到，否则它在交互里等于不存在。
-        "service" => match pick_overview("所有服务的状态总览")? {
-            true => {
+        "service" => {
+            let all = service::registry::all();
+            let idx = choose_index("选一个服务", &service_menu(&all))?;
+            if idx == 0 {
                 status_all();
                 Ok(())
-            }
-            false => {
-                let svc = pick_one(service::registry::all(), "选一个服务", |s| {
-                    (s.name().to_string(), s.summary().to_string())
-                })?;
+            } else {
+                let svc = all.into_iter().nth(idx - 1).expect("菜单与服务列表等长");
                 pick_and_run(svc.as_ref())
             }
-        },
+        }
         "tool" => match pick_overview("所有工具的状态")? {
             true => {
                 tool_status_all();
@@ -1266,6 +1272,17 @@ fn pick_and_run_tool(t: &dyn Tool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn 服务菜单先列状态再列全部服务() {
+        let all = service::registry::all();
+        let menu = service_menu(&all);
+        assert!(menu[0].starts_with("status"));
+        assert_eq!(menu.len(), all.len() + 1);
+        for (line, svc) in menu.iter().skip(1).zip(all.iter()) {
+            assert!(line.starts_with(svc.name()));
+        }
+    }
 
     #[test]
     fn 命令定义本身是合法的() {
