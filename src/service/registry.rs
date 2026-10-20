@@ -148,10 +148,10 @@ fn funlesson_web() -> ServiceSpec {
 fn fungame_web() -> ServiceSpec {
     let backend = Component::new(
         "backend",
-        "后端 fungame-backend",
+        "后端 fungame-api",
         Pkg::pip(
-            &env_str("FUNGAME_WEB_BACKEND_PACKAGE", "fungame-backend"),
-            "fungame-backend",
+            &env_str("FUNGAME_WEB_BACKEND_PACKAGE", "fungame-api"),
+            "fungame-api",
         ),
         &env_str("FUNGAME_WEB_BACKEND_HOST", "127.0.0.1"),
         env_port("FUNGAME_WEB_BACKEND_PORT", 8809),
@@ -929,6 +929,16 @@ mod tests {
             let i = a.iter().position(|x| x == "--api-upstream-port").unwrap();
             assert_eq!(a[i + 1], "8809", "{key} 的上游端口不对");
         }
+    }
+
+    #[test]
+    fn fungame_的后端是_fungame_api_包和命令() {
+        let _排队 = 排队();
+        let spec = fungame_web();
+        let a = argv(&spec, "backend", |c| &c.stop);
+        assert_eq!(a[0], "fungame-api", "后端命令应为 fungame-api");
+        assert_eq!(a[1], "server");
+        assert_eq!(spec.component("backend").unwrap().pkg.cli(), "fungame-api");
     }
 
     #[test]

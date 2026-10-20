@@ -3,6 +3,16 @@
 版本号以 `Cargo.toml` 里的 `version` 为准；发布由推同版本的 `v*` tag 触发（见
 `.github/workflows/release.yml`），因此「有 tag ＝ 已发布」。
 
+## [0.3.18] - 2026-10-21
+
+### 变更
+
+- **`fungame-web` 的后端换成新包名。** 后端由 `fungame-backend` 更名为 `fungame-api`，
+  包名与命令同名（`fungame-api server …`）；启停参数、端口（8809 / 8807 / 8808）不变，
+  `FUNGAME_WEB_BACKEND_PACKAGE` 仍可覆盖包名。配置目录改为 `~/.farfarfun/fungame/api/`，
+  fundeploy 仍通过 `fungame-api server status` 输出里的 `config <路径>)` 取得它。
+  旧包 `fungame-backend` 不再维护，旧装机需要手动装 `fungame-api` 并停掉旧服务。
+
 ## [0.3.17] - 2026-10-20
 
 ### 变更
