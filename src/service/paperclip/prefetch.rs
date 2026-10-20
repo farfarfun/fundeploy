@@ -21,25 +21,23 @@ use super::progress::{downloading_style, unpacking_style};
 /// 只清环境变量不够——配置本来就来自文件。
 pub(super) struct Npmrc {
     pub(super) path: PathBuf,
+    _scratch: Scratch,
 }
 
 impl Npmrc {
     pub(super) fn write(registry: &str) -> Option<Self> {
-        let path =
-            std::env::temp_dir().join(format!("fundeploy-paperclip-npmrc.{}", std::process::id()));
+        let scratch = Scratch::new("paperclip-npmrc").ok()?;
+        let path = scratch.path().join("npmrc");
         let registry = registry.trim_end_matches('/');
         std::fs::write(
             &path,
             format!("registry={registry}/\n@paperclipai:registry={registry}/\n"),
         )
         .ok()?;
-        Some(Self { path })
-    }
-}
-
-impl Drop for Npmrc {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+        Some(Self {
+            path,
+            _scratch: scratch,
+        })
     }
 }
 
@@ -274,10 +272,14 @@ pub(super) struct Picked {
 ///    的下载地址。实测 888 个条目里有 348 个是这种，全在 `@paperclipai/server` 肚子里。
 /// 2. **`os` / `cpu` / `libc` 不匹配的跳过**。npm 装的时候自己会按这三个字段过滤，
 ///    预热不跟着过滤就会把另外一百个平台的二进制也灌进缓存（esbuild 一家 25 个平台）。
-/// 3. **`resolved` 不在钉死的 registry 上的跳过**。npm 的缓存键里带着完整 URL，所以
+/// 3. **`resolved` 不在安装所用 registry 上的跳过**。npm 的缓存键里带着完整 URL，所以
 ///    预热必须跟 install 走同一个源才算命中；顺带也是道闸门，这棵树里本该一个外部
 ///    URL 都没有。
-pub(super) fn prefetch_specs(lock: &serde_json::Value, plat: &NpmPlatform) -> Picked {
+pub(super) fn prefetch_specs(
+    lock: &serde_json::Value,
+    plat: &NpmPlatform,
+    registry: &str,
+) -> Picked {
     let mut out = Picked::default();
     let Some(pkgs) = lock["packages"].as_object() else {
         return out;
@@ -298,7 +300,7 @@ pub(super) fn prefetch_specs(lock: &serde_json::Value, plat: &NpmPlatform) -> Pi
             out.other_platform += 1;
             continue;
         }
-        if !on_pinned_registry(resolved) {
+        if !on_pinned_registry(resolved, registry) {
             out.foreign.push(resolved.to_string());
             continue;
         }
@@ -326,9 +328,9 @@ pub(super) fn entry_name<'a>(path: &'a str, m: &'a serde_json::Value) -> Option<
         .filter(|s| !s.is_empty())
 }
 
-/// 这个下载地址是不是落在钉死的那个 registry 上。
-pub(super) fn on_pinned_registry(url: &str) -> bool {
-    url.strip_prefix(NPM_REGISTRY)
+/// 这个下载地址是不是落在安装所用的 registry 上。
+pub(super) fn on_pinned_registry(url: &str, registry: &str) -> bool {
+    url.strip_prefix(registry)
         .is_some_and(|rest| rest.starts_with('/'))
 }
 
@@ -483,6 +485,8 @@ impl Paperclip {
     pub(super) fn npm_env(&self, npmrc: Option<&Npmrc>) -> Vec<EnvEdit> {
         let mut e: Vec<EnvEdit> = vec![
             ("npm_config_allow_scripts".to_string(), None),
+            ("npm_config_audit".to_string(), Some("false".to_string())),
+            ("npm_config_fund".to_string(), Some("false".to_string())),
             (
                 "npm_config_fetch_retries".to_string(),
                 Some(self.fetch.retries.to_string()),
@@ -578,8 +582,8 @@ impl Paperclip {
         ));
         if self.proxy.is_none() {
             ui::hint(
-                "官方 managed install 把 registry 钉死在 npmjs.org，换镜像对它无效（刻意的\
-                 防投毒设计，有上游测试守着），受限网络请走代理：\
+                "当前 managed install 固定从 npmjs.org 下载；新安装默认走 npm 镜像。\
+                 当前安装受限时请走代理：\
                  PAPERCLIP_HTTPS_PROXY=http://127.0.0.1:7890。",
             );
         }
@@ -620,19 +624,20 @@ impl Paperclip {
 
     fn prefetch_now(&self, ch: Channel) -> Result<()> {
         cmd::require("npm", "它随 Node.js 一起装：https://nodejs.org/")?;
-        let npmrc = Npmrc::write(NPM_REGISTRY);
+        let registry = self.prefetch_registry();
+        let npmrc = Npmrc::write(&registry);
         let env = self.npm_env(npmrc.as_ref());
 
-        let version = self.prefetch_target(ch, &env)?;
-        let lock = self.resolve_tree(&version, &env)?;
-        let picked = prefetch_specs(&lock, &NpmPlatform::current());
+        let version = self.prefetch_target(ch, &env, &registry)?;
+        let lock = self.resolve_tree(&version, &env, &registry)?;
+        let picked = prefetch_specs(&lock, &NpmPlatform::current(), &registry);
         if !picked.foreign.is_empty() {
             // 一个都不该有：这棵树里 539 个 resolved 全在钉死的那个 registry 上。真冒
             // 出来一个，说明上游改了依赖的写法，那时候该来看一眼而不是默默去下。
             ui::warn(format!(
                 "有 {} 个包的下载地址不在 {} 上，跳过不灌: {}",
                 picked.foreign.len(),
-                NPM_REGISTRY,
+                registry,
                 picked.foreign.join(" ")
             ));
         }
@@ -645,11 +650,11 @@ impl Paperclip {
             picked.other_platform,
             picked.bundled
         ));
-        self.fill_cache(&picked.specs, &env)
+        self.fill_cache(&picked.specs, &env, &registry)
     }
 
     /// 一批批灌缓存，并把进度报出来。
-    fn fill_cache(&self, specs: &[String], env: &[EnvEdit]) -> Result<()> {
+    fn fill_cache(&self, specs: &[String], env: &[EnvEdit], registry: &str) -> Result<()> {
         let total = specs.len();
         let cache = npm_cacache();
         let before = dir_size(&cache);
@@ -671,7 +676,7 @@ impl Paperclip {
                 "cache".to_string(),
                 "add".to_string(),
                 "--registry".to_string(),
-                NPM_REGISTRY.to_string(),
+                registry.to_string(),
             ];
             argv.extend(chunk.iter().cloned());
             // 输出收起来：成功时 `npm cache add` 一个字都不打（实测），失败时要的是
@@ -737,9 +742,8 @@ impl Paperclip {
     }
 
     /// 通道当前指向的版本。
-    fn prefetch_target(&self, ch: Channel, env: &[EnvEdit]) -> Result<String> {
-        // 先问官方：`update --check` 给的那个 target，就是 install / upgrade 自己要去
-        // 装的那一个。
+    fn prefetch_target(&self, ch: Channel, env: &[EnvEdit], registry: &str) -> Result<String> {
+        // 已安装时先问当前安装源：`update_check` 给的 target，就是 upgrade 要去装的版本。
         if let Some(c) = self.update_check(ch) {
             let v = if c.target.is_empty() {
                 c.current
@@ -751,7 +755,7 @@ impl Paperclip {
                 return Ok(v);
             }
         }
-        // 问不出来（还没装 CLI，或者离线）就退回 dist-tag。猜错的代价有限：差的那几个
+        // 问不出来（还没装 CLI，或者离线）就退回同一源的 dist-tag。猜错的代价有限：差的那几个
         // 是 @paperclipai/* 自己那十来个包，大头（各家 agent CLI 的二进制）相邻两版用
         // 的是同一份，照样命中。
         let spec = format!("paperclipai@{}", ch.dist_tag());
@@ -762,7 +766,7 @@ impl Paperclip {
                 &spec,
                 "version",
                 "--registry",
-                NPM_REGISTRY,
+                registry,
                 "--json",
             ],
             env,
@@ -802,7 +806,12 @@ impl Paperclip {
     ///
     /// 这里放开它的前提是取回的范围已经被另一道闸门管住：[`prefetch_specs`] 逐条核对
     /// `resolved` 的主机名，不在钉死的 registry 上的一个都不灌。
-    fn resolve_tree(&self, version: &str, env: &[EnvEdit]) -> Result<serde_json::Value> {
+    fn resolve_tree(
+        &self,
+        version: &str,
+        env: &[EnvEdit],
+        registry: &str,
+    ) -> Result<serde_json::Value> {
         let scratch = Scratch::new("paperclip-prefetch")?;
         let mut env = env.to_vec();
         env.push((
@@ -823,7 +832,7 @@ impl Paperclip {
                 "--package-lock-only",
                 &format!("paperclipai@{version}"),
                 "--registry",
-                NPM_REGISTRY,
+                registry,
                 "--no-audit",
                 "--no-fund",
                 // 自己画进度条，不跟 npm 的抢同一行。
@@ -887,6 +896,17 @@ impl Paperclip {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn 嵌套_npmrc_互不覆盖() {
+        let outer = Npmrc::write(NPM_MIRROR).unwrap();
+        let inner = Npmrc::write(NPM_REGISTRY).unwrap();
+        assert_ne!(outer.path, inner.path);
+        drop(inner);
+        assert!(std::fs::read_to_string(&outer.path)
+            .unwrap()
+            .contains(NPM_MIRROR));
+    }
 
     #[test]
     fn 暂存目录不会和正式_payload_认错() {
@@ -1121,7 +1141,7 @@ mod tests {
             cpu: "x64",
             libc: Some("glibc"),
         };
-        let picked = prefetch_specs(&lock_fixture(), &linux);
+        let picked = prefetch_specs(&lock_fixture(), &linux, NPM_REGISTRY);
         assert_eq!(
             picked.specs,
             vec![
@@ -1144,12 +1164,36 @@ mod tests {
             cpu: "arm64",
             libc: None,
         };
-        let picked = prefetch_specs(&lock_fixture(), &mac);
+        let picked = prefetch_specs(&lock_fixture(), &mac, NPM_REGISTRY);
         assert_eq!(
             picked.specs,
             vec!["paperclipai@2026.1015.0-canary.9".to_string()]
         );
         assert_eq!(picked.other_platform, 3);
+    }
+
+    #[test]
+    fn 镜像预热只接受镜像地址() {
+        let plat = NpmPlatform {
+            os: "darwin",
+            cpu: "arm64",
+            libc: None,
+        };
+        let lock = serde_json::json!({
+            "packages": {
+                "node_modules/paperclipai": {
+                    "version": "2026.1020.0-canary.3",
+                    "resolved": "https://registry.npmmirror.com/paperclipai/-/paperclipai-2026.1020.0-canary.3.tgz"
+                },
+                "node_modules/other": {
+                    "version": "1.0.0",
+                    "resolved": "https://registry.npmjs.org/other/-/other-1.0.0.tgz"
+                }
+            }
+        });
+        let picked = prefetch_specs(&lock, &plat, NPM_MIRROR);
+        assert_eq!(picked.specs, vec!["paperclipai@2026.1020.0-canary.3"]);
+        assert_eq!(picked.foreign.len(), 1);
     }
 
     #[test]

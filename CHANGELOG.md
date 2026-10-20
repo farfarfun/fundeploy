@@ -3,6 +3,15 @@
 版本号以 `Cargo.toml` 里的 `version` 为准；发布由推同版本的 `v*` tag 触发（见
 `.github/workflows/release.yml`），因此「有 tag ＝ 已发布」。
 
+## [0.3.17] - 2026-10-20
+
+### 变更
+
+- `paperclip` 新装正式版和 canary 默认通过 npm 镜像安装到用户目录，省去首次 `npx`
+  引导与 managed install 的重复安装；镜像失败自动回退官方源。后续升级沿用安装
+  通道和成功使用的源。已有 managed install 继续使用原路径；npm 全局安装不支持
+  managed payload 的 `rollback`。
+
 ## [0.3.16] - 2026-10-20
 
 ### 变更

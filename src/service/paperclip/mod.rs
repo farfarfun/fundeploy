@@ -53,9 +53,9 @@ use progress::{human_secs, progress_bar, STEADY_TICK};
 /// 是绝对路径，自带了它那份 node，PATH 上是不是旧版无关。
 const NODE_MIN: &str = "24.11.0";
 
-/// 官方源。用途只有一个：npx 引导那一跳的 registry。managed install 自己也把它钉死
-/// （见 [`Paperclip::npm_env`]），这里跟着写一遍只是让那一跳落在同一个源上。
+/// 官方源。npx 引导与 managed install 使用同一源，才能共享 npm 的 URL 缓存。
 const NPM_REGISTRY: &str = "https://registry.npmjs.org";
+const NPM_MIRROR: &str = "https://registry.npmmirror.com";
 
 /// 下载量与落盘体积的比值。
 ///
@@ -246,6 +246,7 @@ pub struct Paperclip {
     no_proxy: Option<String>,
     network_hint: bool,
     install_via_npx: bool,
+    npm_registry: Option<String>,
     prefer_offline: bool,
     fetch: NpmFetch,
     start_timeout: Duration,
@@ -287,6 +288,9 @@ impl Paperclip {
             no_proxy: env::opt("PAPERCLIP_NO_PROXY"),
             network_hint: env::flag("PAPERCLIP_NETWORK_HINT", true),
             install_via_npx: env::flag("PAPERCLIP_INSTALL_VIA_NPX", false),
+            npm_registry: env::opt("PAPERCLIP_NPM_REGISTRY")
+                .as_deref()
+                .and_then(checked_registry),
             prefer_offline: env::flag("PAPERCLIP_NPM_PREFER_OFFLINE", false),
             fetch: NpmFetch {
                 retries: env::num("PAPERCLIP_NPM_FETCH_RETRIES", 5),
@@ -336,7 +340,50 @@ impl Paperclip {
         if is_executable(&shim) {
             return Some(shim);
         }
+        let global = self.global_cli_path();
+        if is_executable(&global) {
+            return Some(global);
+        }
         cmd::find("paperclipai").map(PathBuf::from)
+    }
+
+    fn global_prefix(&self) -> PathBuf {
+        self.home.join("cli").join("npm-global")
+    }
+
+    fn global_cli_path(&self) -> PathBuf {
+        self.global_prefix().join("bin/paperclipai")
+    }
+
+    fn global_registry(&self) -> String {
+        self.npm_registry
+            .clone()
+            .or_else(|| {
+                std::fs::read_to_string(self.global_prefix().join(".fundeploy-registry"))
+                    .ok()
+                    .as_deref()
+                    .and_then(checked_registry)
+            })
+            .unwrap_or_else(|| NPM_MIRROR.to_string())
+    }
+
+    fn global_channel(&self) -> Channel {
+        std::fs::read_to_string(self.global_prefix().join(".fundeploy-channel"))
+            .ok()
+            .and_then(|s| Channel::parse(s.trim()).ok())
+            .unwrap_or(Channel::Prod)
+    }
+
+    fn prefetch_registry(&self) -> String {
+        if is_executable(&env::home().join(".local/bin/paperclipai")) || self.install_via_npx {
+            NPM_REGISTRY.to_string()
+        } else {
+            self.global_registry()
+        }
+    }
+
+    fn using_global_cli(&self) -> bool {
+        self.cli_path().as_deref() == Some(self.global_cli_path().as_path())
     }
 
     fn require_cli(&self) -> Result<PathBuf> {
@@ -385,6 +432,9 @@ impl Paperclip {
         let bin = self.require_cli()?;
         let mut env = self.cli_env(&self.config());
         env.extend_from_slice(extra_env);
+        if self.using_global_cli() {
+            env.extend(self.node_env()?);
+        }
 
         let mut argv = vec![bin.display().to_string()];
         argv.extend(args.iter().map(|s| (*s).to_string()));
@@ -444,13 +494,23 @@ impl Paperclip {
         c.args(args)
             .stdin(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
-        cmd::apply_env(&mut c, &self.cli_env(&self.config()));
+        let mut cli_env = self.cli_env(&self.config());
+        if self.using_global_cli() {
+            cli_env.extend(self.node_env().ok()?);
+        }
+        cmd::apply_env(&mut c, &cli_env);
         serde_json::from_slice(&c.output().ok()?.stdout).ok()
     }
 
     fn installed_version(&self) -> Option<String> {
         let bin = self.cli_path()?;
-        let out = cmd::try_run([bin.display().to_string().as_str(), "--version"]).ok()?;
+        let node_env = if self.using_global_cli() {
+            self.node_env().ok()?
+        } else {
+            Vec::new()
+        };
+        let out =
+            cmd::try_run_with([bin.display().to_string().as_str(), "--version"], &node_env).ok()?;
         out.success()
             .then(|| {
                 out.stdout
@@ -811,11 +871,33 @@ impl Paperclip {
         )
     }
 
+    fn npm_command(&self) -> Result<(String, Vec<EnvEdit>)> {
+        let node_env = self.node_env()?;
+        if let Some((_, Some(path))) = node_env.iter().find(|(key, _)| key == "PATH") {
+            if let Some(bin) = path.split(':').next() {
+                let npm = Path::new(bin).join("npm");
+                if is_executable(&npm) {
+                    return Ok((npm.display().to_string(), node_env));
+                }
+            }
+        }
+        Ok((
+            cmd::require("npm", "它随 Node.js 一起装：https://nodejs.org/")?,
+            node_env,
+        ))
+    }
+
     // ---------------------------------------------------------------- npm
 
     // ------------------------------------------------------------ 安装与升级
 
     fn install_channel(&self, ch: Channel) -> Result<()> {
+        if !is_executable(&env::home().join(".local/bin/paperclipai")) && !self.install_via_npx {
+            return self.install_global_with_fallback(ch);
+        }
+        if self.using_global_cli() {
+            bail!("已有 npm 镜像安装，不能同时使用 managed install；先卸载旧版再切换");
+        }
         let npmrc = Npmrc::write(NPM_REGISTRY);
         let mut env = self.npm_env(npmrc.as_ref());
         self.print_network_hint(ch);
@@ -873,6 +955,62 @@ impl Paperclip {
         self.must(&["--version"])
     }
 
+    fn install_global_with_fallback(&self, ch: Channel) -> Result<()> {
+        let registry = self.global_registry();
+        match self.install_global(ch, &registry) {
+            Ok(()) => Ok(()),
+            Err(e) if registry != NPM_REGISTRY && self.npm_registry.is_none() => {
+                ui::warn(format!("npm 镜像安装失败（{e}），改用官方源重试"));
+                self.install_global(ch, NPM_REGISTRY)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn install_global(&self, ch: Channel, registry: &str) -> Result<()> {
+        let (npm, node_env) = self.npm_command()?;
+        let npmrc = Npmrc::write(registry);
+        let mut env = self.npm_env(npmrc.as_ref());
+        env.extend(node_env);
+        let prefix = self.global_prefix();
+        ui::step(format!(
+            "从 {registry} 安装 Paperclip {} 到 {}",
+            ch.name(),
+            prefix.display()
+        ));
+        let spec = format!("paperclipai@{}", ch.dist_tag());
+        let registry_arg = format!("--registry={registry}");
+        let scope_arg = format!("--@paperclipai:registry={registry}");
+        let prefix_arg = prefix.display().to_string();
+        let code = cmd::spawn_status_in(
+            [
+                &npm,
+                "install",
+                "--global",
+                "--prefix",
+                &prefix_arg,
+                &spec,
+                &registry_arg,
+                &scope_arg,
+                "--no-audit",
+                "--no-fund",
+            ],
+            &env,
+            None,
+        )?;
+        if code != Some(0) {
+            bail!(
+                "npm 镜像安装失败（退出码 {}）",
+                code.map_or_else(|| "信号终止".to_string(), |c| c.to_string())
+            );
+        }
+        self.must(&["--version"])?;
+        std::fs::write(prefix.join(".fundeploy-registry"), registry)
+            .context("保存 Paperclip npm 镜像地址失败")?;
+        std::fs::write(prefix.join(".fundeploy-channel"), ch.name())
+            .context("保存 Paperclip 安装通道失败")
+    }
+
     fn check(&self, ch: Channel) -> Result<()> {
         let Some(c) = self.update_check(ch) else {
             bail!(
@@ -901,6 +1039,38 @@ impl Paperclip {
     }
 
     fn update_check(&self, ch: Channel) -> Option<UpdateCheck> {
+        if self.using_global_cli() {
+            let (npm, node_env) = self.npm_command().ok()?;
+            let registry = self.global_registry();
+            let npmrc = Npmrc::write(&registry);
+            let mut env = self.npm_env(npmrc.as_ref());
+            env.extend(node_env);
+            let spec = format!("paperclipai@{}", ch.dist_tag());
+            let out = cmd::try_run_with(
+                [
+                    &npm,
+                    "view",
+                    &spec,
+                    "version",
+                    "--registry",
+                    &registry,
+                    "--json",
+                ],
+                &env,
+            )
+            .ok()?;
+            if !out.success() {
+                return None;
+            }
+            let target = prefetch::npm_view_version(&out.stdout)?;
+            let current = self.installed_version()?;
+            return Some(UpdateCheck {
+                available: version::is_newer(&target, &current),
+                downgrade: version::is_newer(&current, &target),
+                current,
+                target,
+            });
+        }
         let v = self.json(&["update", ch.flag(), "--check", "--json"])?;
         Some(UpdateCheck {
             current: v["currentVersion"].as_str().unwrap_or_default().to_string(),
@@ -915,7 +1085,9 @@ impl Paperclip {
     fn upgrade_channel(&self, ch: Channel) -> Result<()> {
         let npmrc = Npmrc::write(NPM_REGISTRY);
         let npm = self.npm_env(npmrc.as_ref());
-        self.print_network_hint(ch);
+        if !self.using_global_cli() {
+            self.print_network_hint(ch);
+        }
 
         let mut args: Vec<&str> = vec![ch.flag()];
         // 先问官方要不要动，别自己比版本号。问不出来（离线、还没装）就不阻塞，往下走。
@@ -989,12 +1161,29 @@ impl Paperclip {
         argv.extend_from_slice(update_args);
         argv.push("--no-backup");
         // update 是整条命令里最长的一段沉默：上游从头到尾只在最后 emit 一行。
-        if self.exec_watching(&argv, npm)? != 0 {
+        let update_result = if self.using_global_cli() {
+            let ch = if update_args.contains(&"--canary") {
+                Channel::Canary
+            } else if update_args.contains(&"--latest") {
+                Channel::Prod
+            } else {
+                bail!("npm 镜像安装没有 managed payload，无法使用官方 rollback");
+            };
+            self.install_global_with_fallback(ch).map(|_| 0)
+        } else {
+            self.exec_watching(&argv, npm)
+        };
+        let failed = match update_result {
+            Ok(0) => None,
+            Ok(code) => Some(format!("退出码 {code}")),
+            Err(e) => Some(e.to_string()),
+        };
+        if let Some(reason) = failed {
             // 尽力把服务拉起来，但保留 update 本身的失败语义。
             if let Err(e) = self.start() {
                 ui::warn(format!("换包失败后想把服务拉起来，也没成功: {e}"));
             }
-            bail!("paperclipai update 失败");
+            bail!("Paperclip 更新失败: {reason}");
         }
 
         // 上游专门有这条修复命令：检查配置、install store、manifest、current 链接、
@@ -1079,12 +1268,19 @@ impl Service for Paperclip {
     }
 
     fn upgrade(&self) -> Result<()> {
-        // 默认跟 canary：装了这个项目的机器基本都在跟开发版，stable 落后得多。
-        // 要走正式版: PAPERCLIP_CHANNEL=prod。
-        self.upgrade_channel(self.channel.unwrap_or(Channel::Canary))
+        // managed install 默认跟 canary；npm 安装跟随首次安装时选的通道。
+        let default = if self.using_global_cli() {
+            self.global_channel()
+        } else {
+            Channel::Canary
+        };
+        self.upgrade_channel(self.channel.unwrap_or(default))
     }
 
     fn rollback(&self, version: &str) -> Result<()> {
+        if self.using_global_cli() {
+            bail!("npm 镜像安装不保留 managed payload，无法 rollback；可重新安装指定通道");
+        }
         // 官方只在 install store 里留上一份 payload，没有「回到任意版本」这回事。
         if !matches!(version, "previous" | "prev" | "last" | "-") {
             bail!(
@@ -1207,7 +1403,28 @@ impl Service for Paperclip {
         // 收掉 fundeploy 托管的进程就会在服务运行中把它的 payload 删掉。
         self.stop_fallback(false)?;
         self.must(&["service", "uninstall"])?;
-        self.must(&["uninstall"])?;
+        if self.using_global_cli() {
+            let prefix = self.global_prefix().display().to_string();
+            let (npm, mut npm_env) = self.npm_command()?;
+            npm_env.push(("npm_config_audit".to_string(), Some("false".to_string())));
+            match cmd::spawn_status_in(
+                [
+                    &npm,
+                    "uninstall",
+                    "--global",
+                    "--prefix",
+                    &prefix,
+                    "paperclipai",
+                ],
+                &npm_env,
+                None,
+            )? {
+                Some(0) => {}
+                other => bail!("npm 卸载 paperclipai 失败（退出码 {other:?}）"),
+            }
+        } else {
+            self.must(&["uninstall"])?;
+        }
         ui::ok(format!(
             "已卸载 Paperclip 的服务和 CLI；数据留在 {}。",
             self.home.display()
@@ -1461,9 +1678,38 @@ fn checked_proxy(raw: String) -> Option<String> {
     None
 }
 
+fn checked_registry(raw: &str) -> Option<String> {
+    let registry = raw.trim_end_matches('/');
+    if registry.starts_with("https://")
+        && registry.len() > "https://".len()
+        && !registry.chars().any(char::is_whitespace)
+        && !registry.contains('@')
+    {
+        return Some(registry.to_string());
+    }
+    ui::warn("忽略 PAPERCLIP_NPM_REGISTRY：需要不含账号密码的 HTTPS 地址。继续使用 npmjs.org。");
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn 镜像地址必须是安全的_https() {
+        assert_eq!(
+            checked_registry("https://registry.npmmirror.com/"),
+            Some("https://registry.npmmirror.com".into())
+        );
+        for bad in [
+            "http://mirror",
+            "https://",
+            "https://user@host",
+            "https://host\nfoo",
+        ] {
+            assert!(checked_registry(bad).is_none());
+        }
+    }
 
     #[test]
     fn 通道只认那两个写法() {

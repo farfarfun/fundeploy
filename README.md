@@ -183,6 +183,13 @@ Node 还开着那棵树里的文件。
 `paperclip` 额外转发官方 CLI 的动作：`install-canary`、`check`、`backup`、`channels`、
 `doctor`、`health`、`onboard`、`logs`、`plugin`、`service-install`。
 
+`fundeploy service paperclip install` 和 `fundeploy service paperclip install-canary` 在
+新安装时默认从 npm 镜像下载，安装到用户目录；
+无需设置环境变量。`upgrade` 跟随安装时选择的通道和实际成功使用的源；镜像失败时会
+自动改用官方 npm 源。已有 managed install 继续走原安装路径，避免暗中切换；该模式
+可用 `PAPERCLIP_HTTPS_PROXY=http://127.0.0.1:7890` 加速官方源。npm 全局安装不保留
+managed payload，因此不支持 `rollback`。
+
 ### 开发工具链 `fundeploy dev`
 
 ```bash
