@@ -3,6 +3,13 @@
 版本号以 `Cargo.toml` 里的 `version` 为准；发布由推同版本的 `v*` tag 触发（见
 `.github/workflows/release.yml`），因此「有 tag ＝ 已发布」。
 
+## [0.3.19] - 2026-10-25
+
+### 变更
+
+- Python 服务包安装和升级统一使用 `uv pip install`，不再调用 `uv tool install`。
+  已有 CLI 继续使用原解释器，旧的 `uv tool` 环境保留查询和卸载支持；首次安装需要虚拟环境。
+
 ## [0.3.18] - 2026-10-21
 
 ### 变更

@@ -3,7 +3,7 @@
 //! 整个程序的本质是编排外部命令，所以这一层只有一个目标：让一次调用是一行。
 //!
 //! ```ignore
-//! run(["uv", "tool", "install", "--upgrade", pkg])?;          // 要求成功
+//! run(["uv", "pip", "install", "-U", pkg])?;                // 要求成功
 //! let v = capture(["npm", "view", pkg, "version"])?;           // 要输出
 //! let out = try_run(["systemctl", "is-active", unit])?;        // 容许失败
 //! ```

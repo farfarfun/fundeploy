@@ -3,7 +3,7 @@
 fn main() {
     if let Err(err) = fundeploy::cli_main() {
         // anyhow 的 chain 从具体到抽象，倒过来打更像人话：
-        //   错误: uv tool install 失败
+        //   错误: uv pip install 失败
         //     └ 起不了进程: uv ...
         eprintln!("错误: {err}");
         for cause in err.chain().skip(1) {

@@ -146,6 +146,10 @@ fundeploy service funread-web status
 每个服务都是这套动作：`install`、`upgrade`、`rollback <版本>`、`start`、`run`（前台）、
 `stop`、`restart`、`status`、`uninstall`。
 
+Python 包统一通过 `uv pip install` 安装和升级。已有 CLI 时复用它对应的 Python
+环境（包括以前由 `uv tool` 创建的环境）；首次安装使用 uv 找到的虚拟环境，请先激活
+目标环境，例如 `source ~/opt/py312/bin/activate`。旧的 `uv tool` 环境不会自动迁移。
+
 | 服务 | 说明 |
 | --- | --- |
 | `funfluid-web` | funfluid 前后端（18806 / 8806） |

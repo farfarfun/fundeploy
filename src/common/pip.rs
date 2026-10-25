@@ -5,17 +5,18 @@
 //! 实际跑哪个完全由 PATH 顺序决定，于是会出现「升级成功、行为没变」——升的是
 //! 没人跑的那份。所以这一层的所有操作都围绕一个原则：
 //!
-//! **先判断机器上现有的是哪一份，然后继续用同一条路线，绝不另开一条。**
+//! **安装统一用 `uv pip install`，已有 CLI 就继续装进它所在的解释器。**
+//! 旧的 `uv tool` 环境保留，只在查询来源和卸载时识别它。
 
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 
 use super::cmd;
 
-/// 安装路线。
+/// 已有安装的来源。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mode {
-    /// `uv tool install` —— 独立工具 venv。
+    /// 旧的 `uv tool` 独立工具 venv。
     UvTool,
     /// 常规 pip 路线（可能经由 uv pip，也可能是解释器自带的 pip）。
     Pip,
@@ -52,7 +53,7 @@ impl PipPkg {
         &self.cli
     }
 
-    /// 决定走哪条安装路线。
+    /// 识别已有安装，供状态查询和卸载使用。
     pub fn mode(&self) -> Mode {
         if self.explicit_pip.is_some() {
             return Mode::Pip;
@@ -60,16 +61,10 @@ impl PipPkg {
         if !cmd::has("uv") {
             return Mode::Pip;
         }
-        // 已经是 uv tool 装的 → 继续用 uv tool。
         if self.uv_tool_version().is_some() {
             return Mode::UvTool;
         }
-        // CLI 已在 PATH 上但不是 uv tool 装的 → 机器上有一份 pip 安装，继续走 pip，
-        // 否则 uv tool 会另装一份把它遮住。
-        if cmd::has(&self.cli) {
-            return Mode::Pip;
-        }
-        Mode::UvTool
+        Mode::Pip
     }
 
     /// 拼安装 spec。`version` 为 None 表示最新版。
@@ -80,18 +75,10 @@ impl PipPkg {
         }
     }
 
-    /// 装。`pinned` 为真表示钉到了具体版本号。
-    ///
-    /// 钉版本时用 `--force` 而不是 `--upgrade`：钉版本要允许装成比当前**更旧**的
-    /// 版本（rollback 就是这个场景），而 `--upgrade` 会拒绝降级。
+    /// 用 uv pip 安装；不钉版本时加 -U，指定版本也支持回退。
     pub fn install(&self, version: Option<&str>) -> Result<()> {
         let spec = self.spec(version);
         let pinned = version.is_some_and(|v| !v.is_empty());
-
-        if self.mode() == Mode::UvTool {
-            let flag = if pinned { "--force" } else { "--upgrade" };
-            return cmd::run(["uv", "tool", "install", flag, &spec]);
-        }
 
         // 已有安装时钉住它所在的解释器：`uv pip` 自己探测出来的环境未必是同一个，
         // 装进别的环境等于升级了一份没人跑的副本。
@@ -197,44 +184,32 @@ impl PipPkg {
         (!v.is_empty()).then(|| v.to_string())
     }
 
-    /// 本工具这条路线所管理的那份的版本。
-    ///
-    /// `uv tool` 模式下它未必等于 [`Self::version_on_path`]——那正是
-    /// [`Self::shadow_warning`] 要检出来的情况。
+    /// 优先报告实际运行和升级的那份；CLI 不在 PATH 时兼容旧工具环境。
     pub fn managed_version(&self) -> Option<String> {
-        match self.mode() {
-            Mode::UvTool => self.uv_tool_version(),
-            Mode::Pip => self.version_on_path(),
-        }
+        self.version_on_path().or_else(|| self.uv_tool_version())
     }
 
-    /// 装完核对：刚装的那份必须就是 PATH 上会跑到的那份。
+    /// 装完核对 CLI 是否可用，以及是否存在不同版本的旧工具环境。
     ///
     /// 返回 Some(警告文案) 表示检出了问题。两种情况：
-    /// CLI 根本不在 PATH 上，或者 PATH 上那份和刚装的那份版本不一致（被遮住了）。
+    /// CLI 根本不在 PATH 上，或者 PATH 上那份和旧工具环境的版本不一致。
     pub fn shadow_warning(&self) -> Option<String> {
         let Some(cli_path) = cmd::find(&self.cli) else {
-            let bin_dir = cmd::try_run(["uv", "tool", "dir", "--bin"])
-                .ok()
-                .filter(|o| o.success())
-                .map(|o| o.stdout.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| "~/.local/bin".to_string());
             return Some(format!(
-                "{pkg} 已安装，但 {cli} 不在 PATH 上（装在 {bin_dir}）。\n\
-                 把它加进 PATH，或执行 `uv tool update-shell` 后重开 shell。",
+                "{pkg} 已安装，但 {cli} 不在 PATH 上。\n\
+                 请激活安装时使用的虚拟环境，或把它的 bin 目录加进 PATH。",
                 pkg = self.pkg,
                 cli = self.cli,
             ));
         };
 
-        let managed = self.managed_version()?;
+        let managed = self.uv_tool_version()?;
         let on_path = self.version_on_path()?;
         if managed == on_path {
             return None;
         }
         Some(format!(
-            "刚装的 {pkg} 是 {managed}，但 PATH 上的 {cli_path} 是 {on_path}。\n\
+            "uv tool 环境里的 {pkg} 是 {managed}，但 PATH 上的 {cli_path} 是 {on_path}。\n\
              机器上有第二份安装把它遮住了，先卸掉多余的那份（或调整 PATH）再重试。",
             pkg = self.pkg,
         ))
