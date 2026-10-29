@@ -168,11 +168,11 @@ Python 包统一通过 `uv pip install` 安装和升级。已有 CLI 时复用�
 
 服务默认只监听回环地址。要对外暴露就显式设对应的 `*_HOST` / `*_ADDRESS` 环境变量。
 
-`farfarfun-web` 发布在阿里云私有 npm 仓库，需要先配置该仓库的访问凭据；安装和升级
-沿用 npm/pnpm 的配置，也可以通过 `npm_config_registry` 指定仓库：
+`farfarfun-web` 的版本查询、安装和升级复用 npm/pnpm 的 `@farfarfun:registry`
+及已有认证，与 `fungame-web` 的前端使用同一个私有源。包名仍为无 scope 的
+`farfarfun-web`，无需更改默认公共源；能安装 `fungame-web` 的环境可直接执行：
 
 ```bash
-export npm_config_registry=https://farfarfun-cn-hangzhou.devops.aliyuncs.com/packages/api/protocol/npm/funnpm/
 fundeploy service farfarfun-web install
 fundeploy service farfarfun-web start
 fundeploy service farfarfun-web status

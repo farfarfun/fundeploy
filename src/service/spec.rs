@@ -99,7 +99,12 @@ pub enum Pkg {
     /// Python 包。`cli` 是它提供的可执行文件名。
     Pip { name: String, cli: String },
     /// 全局 npm 包。包名可能带 scope，而 `cli` 通常不带。
-    Npm { name: String, cli: String },
+    Npm {
+        name: String,
+        cli: String,
+        /// 无 scope 的包也可以复用已有 scope 的私有源配置。
+        registry_scope: Option<String>,
+    },
 }
 
 impl Pkg {
@@ -114,6 +119,7 @@ impl Pkg {
         Pkg::Npm {
             name: name.into(),
             cli: cli.into(),
+            registry_scope: None,
         }
     }
 

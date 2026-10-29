@@ -15,6 +15,7 @@ use super::cmd;
 pub struct Npm {
     bin: PathBuf,
     is_pnpm: bool,
+    registry_scope: Option<String>,
 }
 
 impl Npm {
@@ -87,7 +88,29 @@ impl Npm {
             .file_name()
             .and_then(|s| s.to_str())
             .is_some_and(|n| n.starts_with("pnpm"));
-        Self { bin, is_pnpm }
+        Self {
+            bin,
+            is_pnpm,
+            registry_scope: None,
+        }
+    }
+
+    pub fn with_registry_scope(mut self, scope: Option<&str>) -> Self {
+        self.registry_scope = scope.map(str::to_string);
+        self
+    }
+
+    fn registry_args(&self) -> Result<Vec<String>> {
+        let Some(scope) = &self.registry_scope else {
+            return Ok(vec![]);
+        };
+        let key = format!("{scope}:registry");
+        let registry = cmd::capture([self.bin_str().as_str(), "config", "get", &key])?;
+        if matches!(registry.as_str(), "" | "undefined" | "null") {
+            bail!("未配置 {key}，请先在 npm/pnpm 配置中设置该私有源。");
+        }
+        // pnpm 12 不读取 npm_config_registry，显式参数兼容 npm 和 pnpm。
+        Ok(vec!["--registry".into(), registry])
     }
 
     pub fn bin(&self) -> &Path {
@@ -105,7 +128,9 @@ impl Npm {
     /// 装一个全局包。`spec` 形如 `pkg@1.2.3`。
     pub fn install_global(&self, spec: &str) -> Result<()> {
         let sub = if self.is_pnpm { "add" } else { "install" };
-        cmd::run([self.bin_str().as_str(), sub, "-g", spec])
+        let mut args = vec![self.bin_str(), sub.into(), "-g".into(), spec.into()];
+        args.extend(self.registry_args()?);
+        cmd::run(args)
     }
 
     /// 卸一个全局包。失败不报错，只返回 false——卸载时包本来就可能不在。
@@ -118,7 +143,9 @@ impl Npm {
 
     /// registry 上的最新版本号。查不到返回 None。
     pub fn latest_version(&self, pkg: &str) -> Option<String> {
-        let out = cmd::try_run([self.bin_str().as_str(), "view", pkg, "version"]).ok()?;
+        let mut args = vec![self.bin_str(), "view".into(), pkg.into(), "version".into()];
+        args.extend(self.registry_args().ok()?);
+        let out = cmd::try_run(args).ok()?;
         if !out.success() {
             return None;
         }

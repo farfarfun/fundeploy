@@ -26,8 +26,12 @@ fn installer(c: &Component) -> Result<Installer> {
     match &c.pkg {
         Pkg::Pip { name, cli } => Ok(Installer::Pip(PipPkg::new(name, cli))),
         // 用已经装了它的那个工具，不然会在另一个全局根下再装一份。
-        Pkg::Npm { name, .. } => Ok(Installer::Npm {
-            npm: Npm::for_package(name, None)?,
+        Pkg::Npm {
+            name,
+            registry_scope,
+            ..
+        } => Ok(Installer::Npm {
+            npm: Npm::for_package(name, None)?.with_registry_scope(registry_scope.as_deref()),
             pkg: name.clone(),
         }),
     }
@@ -385,8 +389,7 @@ pub trait Upstream {
         // 先确认源上真有这个版本再动手。装是逐个组件装的，第二个组件装不上而第一个
         // 已经降级，会停在组件之间版本不一致的中间态上——那比没降级更难收拾。
         for c in by_package(spec) {
-            if let Pkg::Npm { name, .. } = &c.pkg {
-                let npm = Npm::for_package(name, None)?;
+            if let Installer::Npm { npm, pkg: name } = installer(c)? {
                 if npm.latest_version(&format!("{name}@{version}")).is_none() {
                     bail!("npm 源上没有 {name}@{version}，已中止（没有改动任何安装）。",);
                 }

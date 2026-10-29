@@ -1,6 +1,6 @@
 [package]
 name = "fundeploy"
-version = "0.3.20"
+version = "0.3.21"
 edition = "2021"
 # rustup 之外的渠道（apt / brew 的 rustc）往往落后好几个版本，这里写下真实下限，
 # 让编译在版本不够时直接报清楚，而不是在某个 std API 上报一行看不懂的错。

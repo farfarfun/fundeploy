@@ -55,19 +55,18 @@ fn farfarfun_web() -> ServiceSpec {
     let frontend = Component::new(
         "frontend",
         "官网 farfarfun-web",
-        Pkg::npm(
-            &env_str("FARFARFUN_WEB_FRONTEND_PACKAGE", "farfarfun-web"),
-            "farfarfun-web",
-        ),
+        Pkg::Npm {
+            name: env_str("FARFARFUN_WEB_FRONTEND_PACKAGE", "farfarfun-web"),
+            cli: "farfarfun-web".into(),
+            registry_scope: Some("@farfarfun".into()),
+        },
         &env_str("FARFARFUN_WEB_FRONTEND_HOST", "127.0.0.1"),
         env_port("FARFARFUN_WEB_FRONTEND_PORT", 8800),
     )
     .version(env_opt("FARFARFUN_WEB_FRONTEND_VERSION"))
     .cli_shape(server_subcommand_shape(vec![]));
 
-    ServiceSpec::new("farfarfun-web", "farfarfun 组织官网", vec![frontend])
-        .entry("frontend")
-        .note("包发布在阿里云私有 npm 仓库，安装和升级前需配置 registry 及访问凭据。")
+    ServiceSpec::new("farfarfun-web", "farfarfun 组织官网", vec![frontend]).entry("frontend")
 }
 
 // ---------------------------------------------------------------- funfluid-web
@@ -886,8 +885,11 @@ mod tests {
         assert!(find("farfarfun-web").is_some());
         assert_eq!(spec.components.len(), 1);
         let frontend = spec.component("frontend").unwrap();
-        assert!(matches!(&frontend.pkg, Pkg::Npm { name, cli }
-            if name == "farfarfun-web" && cli == "farfarfun-web"));
+        assert!(
+            matches!(&frontend.pkg, Pkg::Npm { name, cli, registry_scope }
+            if name == "farfarfun-web" && cli == "farfarfun-web"
+                && registry_scope.as_deref() == Some("@farfarfun"))
+        );
         assert_eq!(spec.entry_url().as_deref(), Some("http://127.0.0.1:8800"));
         for (action, template) in [("start", &frontend.cli.start), ("run", &frontend.cli.run)] {
             assert_eq!(

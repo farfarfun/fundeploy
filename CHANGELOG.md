@@ -3,6 +3,14 @@
 版本号以 `Cargo.toml` 里的 `version` 为准；发布由推同版本的 `v*` tag 触发（见
 `.github/workflows/release.yml`），因此「有 tag ＝ 已发布」。
 
+## [0.3.21] - 2026-10-29
+
+### 修复
+
+- 修复 `farfarfun-web` 安装走公共源的问题：无 scope 的包名复用 `fungame-web`
+  使用的 `@farfarfun:registry` 配置，版本查询、安装、升级和回退检查统一走该私有源。
+  不再需要单独设置全局 `npm_config_registry`。
+
 ## [0.3.20] - 2026-10-29
 
 ### 新增
