@@ -152,6 +152,7 @@ Python 包统一通过 `uv pip install` 安装和升级。已有 CLI 时复用�
 
 | 服务 | 说明 |
 | --- | --- |
+| `farfarfun-web` | farfarfun 组织官网，单个 npm 包 `farfarfun-web`（8800） |
 | `funfluid-web` | funfluid 前后端（18806 / 8806） |
 | `funlesson-web` | funlesson 前后端（18812 / 8814） |
 | `fungame-web` | fungame 后端 + 管理端 + 用户端（8809 / 8807 / 8808）；后端包为 `fungame-api`，前端包为 `@farfarfun/fungame-admin`、`@farfarfun/fungame-web` |
@@ -166,6 +167,20 @@ Python 包统一通过 `uv pip install` 安装和升级。已有 CLI 时复用�
 | `paperclip` | Paperclip 本机服务（8804） |
 
 服务默认只监听回环地址。要对外暴露就显式设对应的 `*_HOST` / `*_ADDRESS` 环境变量。
+
+`farfarfun-web` 发布在阿里云私有 npm 仓库，需要先配置该仓库的访问凭据；安装和升级
+沿用 npm/pnpm 的配置，也可以通过 `npm_config_registry` 指定仓库：
+
+```bash
+export npm_config_registry=https://farfarfun-cn-hangzhou.devops.aliyuncs.com/packages/api/protocol/npm/funnpm/
+fundeploy service farfarfun-web install
+fundeploy service farfarfun-web start
+fundeploy service farfarfun-web status
+```
+
+默认入口为 `http://127.0.0.1:8800`。可用 `FARFARFUN_WEB_FRONTEND_HOST`、
+`FARFARFUN_WEB_FRONTEND_PORT` 覆盖监听地址，用 `FARFARFUN_WEB_FRONTEND_VERSION`
+指定包版本；运行配置和 PID、日志仍由上游 CLI 管理。
 
 多进程的服务（前后端一体的那几个）只提供合并命令：一条 `start` 把该起的都起来，
 一条 `stop` 全停掉。换包前会先停服、装完按原状态起回来——在跑着的进程底下换全局包，

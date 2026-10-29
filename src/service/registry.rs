@@ -25,6 +25,7 @@ use crate::ui;
 
 pub fn all() -> Vec<Box<dyn Service>> {
     vec![
+        upstream::declared(farfarfun_web()),
         upstream::declared(funfluid_web()),
         upstream::declared(funlesson_web()),
         upstream::declared(fungame_web()),
@@ -46,6 +47,27 @@ pub fn names() -> Vec<String> {
 
 pub fn find(name: &str) -> Option<Box<dyn Service>> {
     all().into_iter().find(|s| s.name() == name)
+}
+
+// ---------------------------------------------------------------- farfarfun-web
+
+fn farfarfun_web() -> ServiceSpec {
+    let frontend = Component::new(
+        "frontend",
+        "官网 farfarfun-web",
+        Pkg::npm(
+            &env_str("FARFARFUN_WEB_FRONTEND_PACKAGE", "farfarfun-web"),
+            "farfarfun-web",
+        ),
+        &env_str("FARFARFUN_WEB_FRONTEND_HOST", "127.0.0.1"),
+        env_port("FARFARFUN_WEB_FRONTEND_PORT", 8800),
+    )
+    .version(env_opt("FARFARFUN_WEB_FRONTEND_VERSION"))
+    .cli_shape(server_subcommand_shape(vec![]));
+
+    ServiceSpec::new("farfarfun-web", "farfarfun 组织官网", vec![frontend])
+        .entry("frontend")
+        .note("包发布在阿里云私有 npm 仓库，安装和升级前需配置 registry 及访问凭据。")
 }
 
 // ---------------------------------------------------------------- funfluid-web
@@ -858,6 +880,32 @@ mod tests {
     }
 
     #[test]
+    fn farfarfun_官网使用单个_npm_组件和_server_子命令() {
+        let _排队 = 排队();
+        let spec = farfarfun_web();
+        assert!(find("farfarfun-web").is_some());
+        assert_eq!(spec.components.len(), 1);
+        let frontend = spec.component("frontend").unwrap();
+        assert!(matches!(&frontend.pkg, Pkg::Npm { name, cli }
+            if name == "farfarfun-web" && cli == "farfarfun-web"));
+        assert_eq!(spec.entry_url().as_deref(), Some("http://127.0.0.1:8800"));
+        for (action, template) in [("start", &frontend.cli.start), ("run", &frontend.cli.run)] {
+            assert_eq!(
+                frontend.render(template, &spec.components).unwrap(),
+                ["server", action, "--host", "127.0.0.1", "--port", "8800"]
+            );
+        }
+        assert_eq!(
+            argv(&spec, "frontend", |c| &c.stop),
+            ["farfarfun-web", "server", "stop"]
+        );
+        assert_eq!(
+            argv(&spec, "frontend", |c| &c.status),
+            ["farfarfun-web", "server", "status"]
+        );
+    }
+
+    #[test]
     fn funfluid_后端停的是_all() {
         let _排队 = 排队();
         // 不带 all 的话，funfluid-api 自己那个 watch 循环不会停，半分钟后会把
@@ -982,6 +1030,7 @@ mod tests {
     /// 拿不到 spec，组件级的自检只能在这里对着原始声明做。
     fn upstream_specs() -> Vec<ServiceSpec> {
         vec![
+            farfarfun_web(),
             funfluid_web(),
             funlesson_web(),
             fungame_web(),
