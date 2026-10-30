@@ -199,6 +199,11 @@ Node 还开着那棵树里的文件。
 半路；盯着终端但不想每次都按回车的，设 `FUNDEPLOY_STOP_KILL_PORT_YES=1`。
 `init` 和 fundeploy 自己这两个 PID 永远不动。
 
+Paperclip 的 `restart` 同样先 `stop` 再 `start`，不再调用上游热重启；残留端口会显示
+PID 和进程名并询问是否强停。拒绝或清理失败就中止重启，启动后还会检查 `/api/health`。
+停止时会等待运行中的任务退出，fundeploy 托管模式的等待上限由
+`PAPERCLIP_STOP_TIMEOUT_SEC` 控制（默认 300 秒）。
+
 `paperclip` 额外转发官方 CLI 的动作：`install-canary`、`check`、`backup`、`channels`、
 `doctor`、`health`、`onboard`、`logs`、`plugin`、`service-install`。
 

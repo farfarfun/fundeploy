@@ -3,6 +3,16 @@
 版本号以 `Cargo.toml` 里的 `version` 为准；发布由推同版本的 `v*` tag 触发（见
 `.github/workflows/release.yml`），因此「有 tag ＝ 已发布」。
 
+## [0.3.22] - 2026-10-30
+
+### 修复
+
+- Paperclip 重启改为先停止再启动，停止后按端口检查残留进程，沿用其他服务的
+  强停确认；端口未释放就中止重启，启动后检查 `/api/health`，避免假成功。
+- npm 安装的 Paperclip 使用绑定 Node 绝对路径的服务启动器，启动时重建启动器，
+  避免后台服务引用失效的 managed shim；升级时不再执行 managed install 修复。
+- Paperclip npm 安装补充腾讯镜像回退和依赖安装脚本白名单。
+
 ## [0.3.21] - 2026-10-29
 
 ### 修复

@@ -56,6 +56,8 @@ const NODE_MIN: &str = "24.11.0";
 /// 官方源。npx 引导与 managed install 使用同一源，才能共享 npm 的 URL 缓存。
 const NPM_REGISTRY: &str = "https://registry.npmjs.org";
 const NPM_MIRROR: &str = "https://registry.npmmirror.com";
+const NPM_MIRROR_TENCENT: &str = "https://mirrors.cloud.tencent.com/npm";
+const NPM_ALLOW_SCRIPTS: &str = "@embedded-postgres/darwin-arm64,@embedded-postgres/darwin-x64,@embedded-postgres/linux-arm64,@embedded-postgres/linux-x64,opencode-ai,ssh2,protobufjs,cpu-features,@paperclipai/server";
 
 /// 下载量与落盘体积的比值。
 ///
@@ -355,6 +357,37 @@ impl Paperclip {
         self.global_prefix().join("bin/paperclipai")
     }
 
+    fn global_service_shim_path(&self) -> PathBuf {
+        self.global_prefix().join("bin/paperclipai-service")
+    }
+
+    fn write_global_service_shim(&self, node_env: &[EnvEdit]) -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let configured_node = node_env
+            .iter()
+            .find(|(key, _)| key == "PATH")
+            .and_then(|(_, path)| path.as_deref())
+            .and_then(|path| path.split(':').next())
+            .map(|bin| Path::new(bin).join("node"))
+            .filter(|path| is_executable(path));
+        let node = match configured_node {
+            Some(node) => node,
+            None => PathBuf::from(cmd::require("node", "Paperclip 服务需要 Node.js")?),
+        };
+        let quote = |value: &str| format!("'{}'", value.replace('\'', "'\\''"));
+        let script = format!(
+            "#!/bin/sh\nexec {} {} \"$@\"\n",
+            quote(&node.display().to_string()),
+            quote(&self.global_cli_path().display().to_string())
+        );
+        let shim = self.global_service_shim_path();
+        let temporary = shim.with_extension(format!("tmp-{}", std::process::id()));
+        std::fs::write(&temporary, script).context("写 Paperclip 服务启动器失败")?;
+        std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o755))?;
+        std::fs::rename(&temporary, shim).context("启用 Paperclip 服务启动器失败")
+    }
+
     fn global_registry(&self) -> String {
         self.npm_registry
             .clone()
@@ -409,6 +442,12 @@ impl Paperclip {
         ];
         if cfg.embedded_pg {
             env.push(("DATABASE_URL".to_string(), None));
+        }
+        if self.using_global_cli() {
+            env.push((
+                "PAPERCLIP_SHIM_PATH".to_string(),
+                Some(self.global_service_shim_path().display().to_string()),
+            ));
         }
         env
     }
@@ -743,6 +782,18 @@ impl Paperclip {
         Ok(true)
     }
 
+    fn ensure_port_free(&self) -> Result<()> {
+        let cfg = self.config();
+        super::force_free_port("Paperclip", &cfg.host, cfg.port);
+        if port::is_listening(&cfg.host, cfg.port) {
+            bail!(
+                "Paperclip 的端口 {} 仍被占用，已中止重启；请确认占用者后再试",
+                cfg.port
+            );
+        }
+        Ok(())
+    }
+
     /// 官方 `service stop` 报错之后，判断这是不是「本来就停着」。
     ///
     /// 停着的服务再停一次该是个 no-op，但官方 stop 把服务管理器的原始错误直接升成了
@@ -956,15 +1007,26 @@ impl Paperclip {
     }
 
     fn install_global_with_fallback(&self, ch: Channel) -> Result<()> {
-        let registry = self.global_registry();
-        match self.install_global(ch, &registry) {
-            Ok(()) => Ok(()),
-            Err(e) if registry != NPM_REGISTRY && self.npm_registry.is_none() => {
-                ui::warn(format!("npm 镜像安装失败（{e}），改用官方源重试"));
-                self.install_global(ch, NPM_REGISTRY)
+        let primary = self.global_registry();
+        let mut registries = vec![primary.as_str()];
+        if self.npm_registry.is_none() {
+            for registry in [NPM_MIRROR, NPM_MIRROR_TENCENT, NPM_REGISTRY] {
+                if !registries.contains(&registry) {
+                    registries.push(registry);
+                }
             }
-            Err(e) => Err(e),
         }
+        let mut error = None;
+        for registry in registries {
+            match self.install_global(ch, registry) {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    ui::warn(format!("从 {registry} 安装失败: {e}"));
+                    error = Some(e);
+                }
+            }
+        }
+        Err(error.expect("至少有一个 npm 源"))
     }
 
     fn install_global(&self, ch: Channel, registry: &str) -> Result<()> {
@@ -994,17 +1056,19 @@ impl Paperclip {
                 &scope_arg,
                 "--no-audit",
                 "--no-fund",
+                &format!("--allow-scripts={NPM_ALLOW_SCRIPTS}"),
             ],
             &env,
             None,
         )?;
         if code != Some(0) {
             bail!(
-                "npm 镜像安装失败（退出码 {}）",
+                "npm 安装失败（退出码 {}）",
                 code.map_or_else(|| "信号终止".to_string(), |c| c.to_string())
             );
         }
         self.must(&["--version"])?;
+        self.write_global_service_shim(&env)?;
         std::fs::write(prefix.join(".fundeploy-registry"), registry)
             .context("保存 Paperclip npm 镜像地址失败")?;
         std::fs::write(prefix.join(".fundeploy-channel"), ch.name())
@@ -1186,11 +1250,9 @@ impl Paperclip {
             bail!("Paperclip 更新失败: {reason}");
         }
 
-        // 上游专门有这条修复命令：检查配置、install store、manifest、current 链接、
-        // shim、PATH、目录权限并尝试修好。刻意放在 start 之前——官方 `paperclipai run`
-        // 自己也是 onboard + doctor --repair 之后才启动。不让它的返回值挡住启动：服务
-        // 停着时「数据库连不上」这类检查必然判失败，真正的闸门是启动后的健康检查。
-        if self.exec(&["doctor", "--repair", "--yes"])? != 0 {
+        // 只对 managed install 修复 install store；npm 安装没有那套 store，运行修复
+        // 反而可能重建旧 shim，把服务入口切回 managed payload。
+        if !self.using_global_cli() && self.exec(&["doctor", "--repair", "--yes"])? != 0 {
             ui::warn(
                 "doctor --repair 没全过，继续启动；起来之后可执行 \
                  `fundeploy service paperclip doctor` 看详情",
@@ -1278,15 +1340,15 @@ impl Service for Paperclip {
     }
 
     fn rollback(&self, version: &str) -> Result<()> {
-        if self.using_global_cli() {
-            bail!("npm 镜像安装不保留 managed payload，无法 rollback；可重新安装指定通道");
-        }
         // 官方只在 install store 里留上一份 payload，没有「回到任意版本」这回事。
         if !matches!(version, "previous" | "prev" | "last" | "-") {
             bail!(
                 "paperclip 只能退回 install store 里留着的上一份 payload，退不到指定版本。\n\
                  执行: fundeploy service paperclip rollback previous"
             );
+        }
+        if self.using_global_cli() {
+            bail!("npm 镜像安装不保留 managed payload，无法 rollback；可重新安装指定通道");
         }
         let npmrc = Npmrc::write(NPM_REGISTRY);
         let npm = self.npm_env(npmrc.as_ref());
@@ -1296,9 +1358,18 @@ impl Service for Paperclip {
     fn start(&self) -> Result<()> {
         let sup = self.supervisor();
         if sup.available != Some(false) {
-            // supervisor 可用（含问不出来的情况）就维持官方路径：systemd 的 Type=notify
-            // 和 launchd 自己会等到就绪，不必再叠一层健康检查。
-            return self.must(&["service", "start"]);
+            if self.using_global_cli() {
+                self.write_global_service_shim(&self.node_env()?)?;
+            }
+            self.must(&["service", "start"])?;
+            // launchd 返回成功只表示 job 已加载，入口丢失或进程崩溃仍可能没起来。
+            if !self.wait_healthy(&self.config(), self.start_timeout) {
+                bail!(
+                    "Paperclip 没在 {} 秒内通过健康检查，请用 status / logs 查看原因",
+                    self.start_timeout.as_secs()
+                );
+            }
+            return Ok(());
         }
         self.require_fallback(&sup)?;
         self.start_fallback(&self.config(), &sup.reason())
@@ -1337,34 +1408,18 @@ impl Service for Paperclip {
                 // 官方 stop 分不清「停不下来」和「本来就停着」，自己核实一遍。
                 return self.confirm_stopped(code, reaped);
             }
-            return Ok(());
+            return self.ensure_port_free();
         }
         // 关掉兜底时也不该假成功：官方 stop 在这种机器上什么都不会停。
         self.require_fallback(&sup)?;
-        self.stop_fallback(false).map(|_| ())
+        self.stop_fallback(false)?;
+        self.ensure_port_free()
     }
 
     fn restart(&self) -> Result<()> {
-        let sup = self.supervisor();
-        match sup.available {
-            Some(false) => {
-                self.require_fallback(&sup)?;
-                self.stop_fallback(false)?;
-                self.start_fallback(&self.config(), &sup.reason())
-            }
-            // 问不出状态就交给官方 restart 自己报错，不猜。
-            None => self.must(&["service", "restart"]),
-            Some(true) => {
-                // 官方 service restart 只做热重启：writeHotRestartIntent 第一步就是
-                // `if (!status.pid) throw`，服务没在跑时它永远失败——那种场景要的其实
-                // 是 start。
-                if sup.pid.is_none() {
-                    ui::step("服务没在跑（supervisor 里没有 pid），改为 start");
-                    return self.must(&["service", "start"]);
-                }
-                self.must(&["service", "restart"])
-            }
-        }
+        self.stop()?;
+        ui::blank();
+        self.start()
     }
 
     fn status(&self) -> Result<()> {
@@ -1694,6 +1749,26 @@ fn checked_registry(raw: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn 残留端口没有清掉就不能继续重启() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let dir = tempfile::tempdir().unwrap();
+        let mut pc = Paperclip::from_env();
+        pc.home = dir.path().to_path_buf();
+        std::fs::create_dir_all(pc.instance_dir()).unwrap();
+        std::fs::write(
+            pc.config_path(),
+            format!(r#"{{"server":{{"host":"127.0.0.1","port":{port}}}}}"#),
+        )
+        .unwrap();
+        // 测试进程自身受保护，不会被杀掉；端口清理失败必须阻止后续 start。
+        let err = pc.ensure_port_free().unwrap_err().to_string();
+        assert!(err.contains("已中止重启"), "{err}");
+        drop(listener);
+        pc.ensure_port_free().unwrap();
+    }
 
     #[test]
     fn 镜像地址必须是安全的_https() {
