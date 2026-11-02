@@ -140,7 +140,7 @@ fn funlesson_web() -> ServiceSpec {
             "funlesson-api",
         ),
         &env_str("FUNLESSON_WEB_BACKEND_HOST", "127.0.0.1"),
-        env_port("FUNLESSON_WEB_BACKEND_PORT", 18812),
+        env_port("FUNLESSON_WEB_BACKEND_PORT", 18814),
     )
     .version(env_opt("FUNLESSON_WEB_BACKEND_VERSION"))
     .cli_shape(server_subcommand_shape(vec![]));
@@ -661,7 +661,7 @@ fn code_server() -> DaemonSpec {
         &workspace.join("opt/code-server").to_string_lossy(),
     ));
     let host = env_str("CODE_SERVER_HOST", "127.0.0.1");
-    let port = env_port("CODE_SERVER_PORT", 8080);
+    let port = env_port("CODE_SERVER_PORT", 8803);
 
     let asset = |tag: &str, p: Platform| {
         let ver = tag.trim_start_matches(['v', 'V']);
@@ -967,7 +967,7 @@ mod tests {
                 "--port",
                 "8814",
                 "--backend",
-                "http://127.0.0.1:18812"
+                "http://127.0.0.1:18814"
             ]
         );
     }

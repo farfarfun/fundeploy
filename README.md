@@ -154,13 +154,13 @@ Python 包统一通过 `uv pip install` 安装和升级。已有 CLI 时复用�
 | --- | --- |
 | `farfarfun-web` | farfarfun 组织官网，单个 npm 包 `farfarfun-web`（8800） |
 | `funfluid` | funfluid 前后端（18806 / 8806） |
-| `funlesson` | funlesson 前后端（18812 / 8814） |
+| `funlesson` | funlesson 前后端（18814 / 8814） |
 | `fungame` | fungame 后端 + 管理端 + 用户端（8809 / 8807 / 8808）；后端包为 `fungame-api`，前端包为 `@farfarfun/fungame-admin`、`@farfarfun/fungame-web` |
 | `funflix` | funflix 前后端（18810 / 8810） |
 | `funread` | funread 前后端（18811 / 8811） |
 | `funmill` | funmill 任务执行 API（8813 / 8812） |
 | `new-api` | new-api 中转网关（8801） |
-| `code-server` | 浏览器里的 VS Code（8080） |
+| `code-server` | 浏览器里的 VS Code（8803） |
 | `sub2api` | sub2api 订阅转 API（8802） |
 | `airflow` | Apache Airflow standalone（8815） |
 | `celery` | Celery worker / beat / flower（8816） |
