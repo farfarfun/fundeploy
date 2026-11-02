@@ -643,11 +643,26 @@ fn pick_overview(overview: &str) -> Result<bool> {
 
 fn service_menu(all: &[Box<dyn Service>]) -> Vec<String> {
     let mut menu = vec!["status         所有服务的状态总览".to_string()];
-    menu.extend(
-        all.iter()
-            .map(|s| format!("{:<14} {}", s.name(), s.summary())),
-    );
+    menu.extend(all.iter().map(|s| {
+        let ports = sorted_ports(s.as_ref())
+            .iter()
+            .map(u16::to_string)
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!(
+            "{}{}{}",
+            ui::pad(s.name(), 16),
+            ui::pad(&ports, 22),
+            s.summary()
+        )
+    }));
     menu
+}
+
+fn sorted_ports(s: &dyn Service) -> Vec<u16> {
+    let mut ports = s.ports();
+    ports.sort_unstable();
+    ports
 }
 
 // 下面这几张表是各域动作菜单的**唯一出处**: 菜单由它生成, 测试也拿它和 clap 的
@@ -1004,12 +1019,16 @@ fn list_all() {
     // 不可见的字节会被当成列宽, 整张表歪得莫名其妙。
     ui::heading("服务");
     for s in service::registry::all() {
-        let ports: Vec<String> = s.ports().iter().map(u16::to_string).collect();
+        let ports = sorted_ports(s.as_ref())
+            .iter()
+            .map(u16::to_string)
+            .collect::<Vec<_>>()
+            .join(" ");
         println!(
             "  {}{}{}",
             ui::strong(ui::pad(s.name(), 16)),
-            s.summary(),
-            ui::muted(format!("（端口 {}）", ports.join("、")))
+            ui::muted(ui::pad(&ports, 22)),
+            s.summary()
         );
     }
     ui::blank();
@@ -1087,7 +1106,7 @@ fn status_all() {
     let every: Vec<u16> = all.iter().flat_map(|s| s.ports()).collect();
     let taken = port::taken_many(&every);
     for s in all {
-        let ports = s.ports();
+        let ports = sorted_ports(s.as_ref());
         let up = ports.iter().filter(|p| taken.contains(p)).count();
         let (kind, label) = match (up, ports.len()) {
             (_, 0) => (ui::State::Idle, "没有端口".to_string()),
@@ -1279,8 +1298,20 @@ mod tests {
         let menu = service_menu(&all);
         assert!(menu[0].starts_with("status"));
         assert_eq!(menu.len(), all.len() + 1);
+        let minimums: Vec<u16> = all
+            .iter()
+            .map(|s| s.ports().into_iter().min().unwrap_or(u16::MAX))
+            .collect();
+        assert!(minimums.windows(2).all(|pair| pair[0] <= pair[1]));
         for (line, svc) in menu.iter().skip(1).zip(all.iter()) {
             assert!(line.starts_with(svc.name()));
+            let ports = sorted_ports(svc.as_ref())
+                .iter()
+                .map(u16::to_string)
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert!(line.contains(&ports), "菜单搜不到端口 {ports}: {line}");
+            assert!(line.find(&ports).unwrap() < line.find(svc.summary()).unwrap());
         }
     }
 
@@ -1337,10 +1368,10 @@ mod tests {
 
     #[test]
     fn 解析服务动作() {
-        let cli = Cli::try_parse_from(["fundeploy", "service", "funread-web", "start"]).unwrap();
+        let cli = Cli::try_parse_from(["fundeploy", "service", "funread", "start"]).unwrap();
         match cli.command {
             Some(Command::Service { name, action }) => {
-                assert_eq!(name.as_deref(), Some("funread-web"));
+                assert_eq!(name.as_deref(), Some("funread"));
                 assert!(matches!(action, Some(Action::Start)));
             }
             _ => panic!("解析成了别的命令"),
@@ -1539,7 +1570,7 @@ mod tests {
         // 不核名字的话，`statsu` 会被当成额外动作一路传到上游 CLI，
         // 报出来的是上游的用法提示，跟「打错了」八竿子打不着。
         let err = service_cmd(
-            Some("funread-web".into()),
+            Some("funread".into()),
             Some(Action::Extra(vec!["statsu".into()])),
         )
         .unwrap_err()
@@ -1607,6 +1638,6 @@ mod tests {
         let err = service_cmd(Some("没这个服务".into()), Some(Action::Status))
             .unwrap_err()
             .to_string();
-        assert!(err.contains("funread-web"), "实际: {err}");
+        assert!(err.contains("funread"), "实际: {err}");
     }
 }

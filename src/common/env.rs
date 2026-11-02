@@ -102,11 +102,10 @@ mod tests {
     #[test]
     fn 卸载确认的环境变量名由名字推出() {
         // service 和 tool 两域此前各有一份实现、各有一份这样的测试。合成一份
-        // 之后两域的例子都留着——变量名是对外承诺，service 那边的服务名带
-        // `-`，tool 那边也带，两种都得钉住。
+        // 之后两域的例子都留着——变量名是对外承诺。
         assert_eq!(
-            uninstall_yes_var("funread-web"),
-            "FUNDEPLOY_FUNREAD_WEB_UNINSTALL_YES"
+            uninstall_yes_var("funread"),
+            "FUNDEPLOY_FUNREAD_UNINSTALL_YES"
         );
         assert_eq!(
             uninstall_yes_var("airflow"),

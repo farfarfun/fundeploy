@@ -169,7 +169,17 @@ fn stop_component(spec: &ServiceSpec, c: &Component) {
     };
     let argv = with_program(c, argv);
     if cmd::spawn_status(&argv, &c.env).ok().flatten() != Some(0) {
-        ui::warn(format!("{} 停止失败，或者它本来就没在运行。", c.label));
+        if port::is_taken(c.port) {
+            ui::warn(format!(
+                "{} 的停止命令失败，端口 {} 仍被占用，继续按端口检查。",
+                c.label, c.port
+            ));
+        } else {
+            ui::info(format!(
+                "{} 的停止命令报错，但端口 {} 已释放。",
+                c.label, c.port
+            ));
+        }
     }
 }
 
@@ -553,7 +563,7 @@ pub trait Upstream {
         }
         // 上游的 stop 普遍只发 SIGTERM 不强杀，拒绝退出的进程会让「已停止」变成假话。
         for c in spec.components.iter().rev() {
-            force_free_port(&c.label, &c.host, c.port);
+            force_free_port(&c.label, c.port);
         }
         ui::info("已停止（best effort）。");
         Ok(())

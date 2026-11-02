@@ -24,7 +24,7 @@ use crate::common::platform::{self, Platform};
 use crate::ui;
 
 pub fn all() -> Vec<Box<dyn Service>> {
-    vec![
+    let mut services: Vec<Box<dyn Service>> = vec![
         upstream::declared(farfarfun_web()),
         upstream::declared(funfluid_web()),
         upstream::declared(funlesson_web()),
@@ -38,7 +38,9 @@ pub fn all() -> Vec<Box<dyn Service>> {
         venv::boxed(Airflow::from_env()),
         venv::boxed(Celery::from_env()),
         Box::new(Paperclip::from_env()),
-    ]
+    ];
+    services.sort_by_key(|s| s.ports().into_iter().min().unwrap_or(u16::MAX));
+    services
 }
 
 pub fn names() -> Vec<String> {
@@ -124,7 +126,7 @@ fn funfluid_web() -> ServiceSpec {
             .status(args!["status"]),
     );
 
-    ServiceSpec::new("funfluid-web", "funfluid 前后端", vec![backend, frontend]).entry("frontend")
+    ServiceSpec::new("funfluid", "funfluid 前后端", vec![backend, frontend]).entry("frontend")
 }
 
 // ---------------------------------------------------------------- funlesson-web
@@ -161,7 +163,7 @@ fn funlesson_web() -> ServiceSpec {
         Arg::SiblingUrl("backend".into())
     ]));
 
-    ServiceSpec::new("funlesson-web", "funlesson 前后端", vec![backend, frontend]).entry("frontend")
+    ServiceSpec::new("funlesson", "funlesson 前后端", vec![backend, frontend]).entry("frontend")
 }
 
 // ---------------------------------------------------------------- fungame-web
@@ -215,7 +217,7 @@ fn fungame_web() -> ServiceSpec {
     .cli_shape(server_subcommand_shape(upstream));
 
     ServiceSpec::new(
-        "fungame-web",
+        "fungame",
         "fungame 后端 + 管理端 + 用户端",
         vec![backend, admin, client],
     )
@@ -271,7 +273,7 @@ fn funflix_web() -> ServiceSpec {
     .version(env_opt("FUNFLIX_WEB_FRONTEND_VERSION"))
     .cli_shape(server_shape_with(frontend_start, vec![], vec![]));
 
-    ServiceSpec::new("funflix-web", "funflix 前后端", vec![backend, frontend]).entry("frontend")
+    ServiceSpec::new("funflix", "funflix 前后端", vec![backend, frontend]).entry("frontend")
 }
 
 // ---------------------------------------------------------------- funread-web
@@ -342,7 +344,7 @@ pub fn funread_web() -> FunreadWeb {
         frontend_addr,
     ));
 
-    let spec = ServiceSpec::new("funread-web", "funread 前后端", vec![backend, frontend])
+    let spec = ServiceSpec::new("funread", "funread 前后端", vec![backend, frontend])
         .entry_at("frontend", "/web")
         .note("管理端在 /admin。")
         .note("还没有账号就先: funread-api accounts create-admin <用户名>");
@@ -354,7 +356,7 @@ pub fn funread_web() -> FunreadWeb {
     }
 }
 
-/// funread-web 要在启动前把配置文件准备好，所以有自己的类型。
+/// funread 要在启动前把配置文件准备好，所以有自己的类型。
 pub struct FunreadWeb {
     spec: ServiceSpec,
     backend_cfg: Option<PathBuf>,
@@ -997,6 +999,19 @@ mod tests {
         let spec = fungame_web();
         assert_eq!(spec.components.len(), 3);
         assert_eq!(spec.entry_url().as_deref(), Some("http://127.0.0.1:8808"));
+    }
+
+    #[test]
+    fn 前后端整套服务使用产品名() {
+        let names = names();
+        for name in ["funfluid", "funlesson", "fungame", "funflix", "funread"] {
+            assert!(names.contains(&name.to_string()), "缺少服务 {name}");
+            assert!(
+                !names.contains(&format!("{name}-web")),
+                "旧名称仍在列表里: {name}-web"
+            );
+        }
+        assert!(names.contains(&"farfarfun-web".to_string()));
     }
 
     #[test]

@@ -570,8 +570,8 @@ pub trait Venv {
             self.kill(p);
         }
         for p in spec.procs.iter().rev() {
-            if let Some((host, port)) = &p.listen {
-                force_free_port(&p.label, host, *port);
+            if let Some((_, port)) = &p.listen {
+                force_free_port(&p.label, *port);
             }
         }
         ui::info("已停止（best effort）。");
@@ -741,8 +741,8 @@ pub trait Venv {
             self.kill(p);
             // 跟整体 stop 一样收尾，不然单停一个进程会是唯一一条「端口没腾出来也不
             // 吭声」的路径，紧接着的 start-one 照样起不来。
-            if let Some((host, port)) = &p.listen {
-                force_free_port(&p.label, host, *port);
+            if let Some((_, port)) = &p.listen {
+                force_free_port(&p.label, *port);
             }
             return Ok(());
         }

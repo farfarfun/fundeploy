@@ -784,7 +784,7 @@ impl Paperclip {
 
     fn ensure_port_free(&self) -> Result<()> {
         let cfg = self.config();
-        super::force_free_port("Paperclip", &cfg.host, cfg.port);
+        super::force_free_port("Paperclip", cfg.port);
         if port::is_listening(&cfg.host, cfg.port) {
             bail!(
                 "Paperclip 的端口 {} 仍被占用，已中止重启；请确认占用者后再试",
@@ -815,7 +815,7 @@ impl Paperclip {
             ui::warn(format!("官方 stop 没把它停下来：{evidence}"));
             // 只按端口强停，不去碰服务管理器里那个 PID：那条进程有 KeepAlive 守着，
             // 杀掉只会被立刻拉起来，把「停不下来」变成更难看的「停了又起」。
-            super::force_free_port("Paperclip", &cfg.host, cfg.port);
+            super::force_free_port("Paperclip", cfg.port);
 
             // 重新问一遍状态：强停可能已经解决问题，也可能根本没碰到真正的占用者。
             let sup = self.supervisor();

@@ -464,7 +464,7 @@ pub trait Daemon {
             self.kill(p);
         }
         for p in spec.procs.iter().rev() {
-            force_free_port(&p.label, &p.host, self.effective_port(p));
+            force_free_port(&p.label, self.effective_port(p));
         }
         ui::info("已停止（best effort）。");
         Ok(())

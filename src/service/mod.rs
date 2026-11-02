@@ -100,30 +100,49 @@ pub trait Service {
 /// 进程（同机另装了一份、或者端口号撞了）。所以把谁要被停报在问题里，让人有机会
 /// 拦住。但这一问不能挡住自动化：无人值守时不问直接停，默认选项也是「停」——
 /// 详见 [`ui::confirm_default_yes`]。
-fn force_free_port(label: &str, host: &str, port: u16) {
-    if !port::is_listening(host, port) {
+fn force_free_port(label: &str, port: u16) {
+    if !port::is_taken(port) {
         return;
     }
-    // 一次拿全占用者，而不是先 listener_pid 再 who —— 那是对 /proc 的两趟全盘
-    // 扫描挨在一起，第二趟问的还是第一趟已经看过的东西。
-    let hs = port::holders(port);
-    let Some(h) = hs.iter().find(|h| h.protos.contains(&"tcp")) else {
+    let holders = port::holders(port);
+    let listeners: Vec<_> = holders
+        .iter()
+        .filter(|h| h.protos.contains(&"tcp"))
+        .collect();
+    if listeners.is_empty() {
         ui::warn(format!(
-            "{label} 的端口 {port} 仍有人监听，但查不到 PID（多半属于别的用户），强停不了。加 sudo 再跑一次。"
+            "{label} 的端口 {port} 仍被占用，但查不到 TCP 监听进程，强停不了。必要时加 sudo 再跑一次。"
         ));
         return;
-    };
-    let pid = h.pid;
-    if let Some(why) = proc::protected(pid) {
-        ui::warn(format!(
-            "{label} 的端口 {port} 被 PID {pid} 占着，但它{why}，没有动它。"
-        ));
+    }
+    let targets: Vec<_> = listeners
+        .into_iter()
+        .filter(|h| {
+            if let Some(why) = proc::protected(h.pid) {
+                ui::warn(format!(
+                    "{label} 的端口 {port} 被 PID {} 占着，但它{why}，没有动它。",
+                    h.pid
+                ));
+                false
+            } else {
+                true
+            }
+        })
+        .collect();
+    if targets.is_empty() {
         return;
     }
 
-    // 占用者一律摆在句末：带进程名时它以全角「）」收尾，后面再接字就得夹个空格，
-    // 中文里看着像漏排版。
-    let who = describe(h);
+    let who = targets
+        .iter()
+        .map(|h| describe(h))
+        .collect::<Vec<_>>()
+        .join("、");
+    let pids = targets
+        .iter()
+        .map(|h| h.pid.to_string())
+        .collect::<Vec<_>>()
+        .join(" ");
     ui::warn(format!("{label} 的端口 {port} 停完还占着，占用者是 {who}"));
     if !ui::confirm_default_yes(
         &format!("强制停掉它，腾出端口 {port} 吗"),
@@ -131,21 +150,20 @@ fn force_free_port(label: &str, host: &str, port: u16) {
     ) {
         ui::warn(format!(
             "没有动 {who}；{label} 的端口 {port} 还占着，接下来的 start 会起不来。\
-             要自己停: kill -TERM {pid}"
+             要自己停: kill -TERM {pids}"
         ));
         return;
     }
 
-    ui::step(format!("强制停掉 {who}"));
-    // 绝不按进程组发信号：这个 PID 是从端口反查来的，它的进程组里很可能坐着
-    // 调用者自己的 shell。
-    if let Err(e) = proc::stop_pid(pid, FORCE_GRACE, false) {
-        ui::warn(format!("停不下来: {e}"));
+    for h in targets {
+        ui::step(format!("强制停掉 {}", describe(h)));
+        // 端口反查出的 PID 可能与调用者共用进程组。
+        if let Err(e) = proc::stop_pid(h.pid, FORCE_GRACE, false) {
+            ui::warn(format!("停不下来: {e}"));
+        }
     }
 
-    // 复查端口而不是复查 PID：进程没了不等于端口腾出来了，同一个端口上还可能压着
-    // 别的用户的进程，非 root 时根本看不见它。
-    if port::is_listening(host, port) {
+    if port::is_taken(port) {
         ui::warn(format!(
             "{label} 的端口 {port} 还占着。占用者多半不属于当前用户，加 sudo 再跑一次。"
         ));
@@ -180,7 +198,7 @@ mod tests {
             let l = TcpListener::bind("127.0.0.1:0").unwrap();
             l.local_addr().unwrap().port()
         };
-        force_free_port("测试", "127.0.0.1", port);
+        force_free_port("测试", port);
     }
 
     #[test]
@@ -207,13 +225,35 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
 
-        force_free_port("测试", "127.0.0.1", port);
+        force_free_port("测试", port);
 
         assert!(
             port::is_listening("127.0.0.1", port),
             "端口 {port} 不该被腾掉"
         );
         drop(listener);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn 停止后按端口关闭残留监听进程() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0);
+        if pid == 0 {
+            loop {
+                unsafe { libc::pause() };
+            }
+        }
+        drop(listener);
+
+        force_free_port("测试", port);
+        let freed = !port::is_taken(port);
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+        let mut status = 0;
+        unsafe { libc::waitpid(pid, &mut status, 0) };
+        assert!(freed, "端口 {port} 没腾出来");
     }
 
     #[test]

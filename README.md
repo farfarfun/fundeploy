@@ -138,9 +138,9 @@ fundeploy about    # 这是什么、谁做的
 ```bash
 fundeploy service                    # 列出所有服务
 fundeploy service status             # 所有服务的状态总览（在跑 / 没在跑 / 部分）
-fundeploy service funread-web install
-fundeploy service funread-web start
-fundeploy service funread-web status
+fundeploy service funread install
+fundeploy service funread start
+fundeploy service funread status
 ```
 
 每个服务都是这套动作：`install`、`upgrade`、`rollback <版本>`、`start`、`run`（前台）、
@@ -153,11 +153,11 @@ Python 包统一通过 `uv pip install` 安装和升级。已有 CLI 时复用�
 | 服务 | 说明 |
 | --- | --- |
 | `farfarfun-web` | farfarfun 组织官网，单个 npm 包 `farfarfun-web`（8800） |
-| `funfluid-web` | funfluid 前后端（18806 / 8806） |
-| `funlesson-web` | funlesson 前后端（18812 / 8814） |
-| `fungame-web` | fungame 后端 + 管理端 + 用户端（8809 / 8807 / 8808）；后端包为 `fungame-api`，前端包为 `@farfarfun/fungame-admin`、`@farfarfun/fungame-web` |
-| `funflix-web` | funflix 前后端（18810 / 8810） |
-| `funread-web` | funread 前后端（18811 / 8811） |
+| `funfluid` | funfluid 前后端（18806 / 8806） |
+| `funlesson` | funlesson 前后端（18812 / 8814） |
+| `fungame` | fungame 后端 + 管理端 + 用户端（8809 / 8807 / 8808）；后端包为 `fungame-api`，前端包为 `@farfarfun/fungame-admin`、`@farfarfun/fungame-web` |
+| `funflix` | funflix 前后端（18810 / 8810） |
+| `funread` | funread 前后端（18811 / 8811） |
 | `funmill` | funmill 任务执行 API（8813 / 8812） |
 | `new-api` | new-api 中转网关（8801） |
 | `code-server` | 浏览器里的 VS Code（8080） |
@@ -169,8 +169,8 @@ Python 包统一通过 `uv pip install` 安装和升级。已有 CLI 时复用�
 服务默认只监听回环地址。要对外暴露就显式设对应的 `*_HOST` / `*_ADDRESS` 环境变量。
 
 `farfarfun-web` 的版本查询、安装和升级复用 npm/pnpm 的 `@farfarfun:registry`
-及已有认证，与 `fungame-web` 的前端使用同一个私有源。包名仍为无 scope 的
-`farfarfun-web`，无需更改默认公共源；能安装 `fungame-web` 的环境可直接执行：
+及已有认证，与 `fungame` 的前端使用同一个私有源。包名仍为无 scope 的
+`farfarfun-web`，无需更改默认公共源；能安装 `fungame` 的环境可直接执行：
 
 ```bash
 fundeploy service farfarfun-web install
@@ -189,6 +189,7 @@ Node 还开着那棵树里的文件。
 `stop` 走完还有人占着端口时，会按端口反查出占用者，问一声再强停（SIGTERM，5 秒不走
 上 SIGKILL）。端口不腾出来，紧接着的 `start` 会跳过那个组件，于是 `stop` 和 `start`
 都报成功、跑的却还是旧进程——`restart` 卡住多半就是这么来的。
+上游停止命令即使报错，只要端口已释放，就按端口检查结果报告。
 
 ```
 警告: new-api 的端口 8801 停完还占着，占用者是 PID 2593874（python3）
