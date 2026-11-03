@@ -79,6 +79,16 @@ impl Ini {
         }
     }
 
+    /// 只在键恰好出现一次时取值，适合安全敏感配置的启动校验。
+    pub fn get_unique(&self, section: Option<&str>, key: &str) -> Option<&str> {
+        let mut values = self.scan().filter_map(|(sec, _, line)| match line {
+            Line::Pair(k, v) if sec == section && k == key => Some(v),
+            _ => None,
+        });
+        let value = values.next()?;
+        values.next().is_none().then_some(value)
+    }
+
     /// 设一个键。已有就改那一行，没有就插进对应的节末尾。
     pub fn set(&mut self, section: Option<&str>, key: &str, value: &str) {
         let entry = format!("{key} = {value}");
@@ -182,6 +192,14 @@ mod tests {
             i.get(None, "registry").as_deref(),
             Some("https://registry.npmjs.org/")
         );
+    }
+
+    #[test]
+    fn 安全配置不接受重复的键() {
+        let i = ini("httpport = 8805\n# httpport = 8000\n");
+        assert_eq!(i.get_unique(None, "httpport"), Some("8805"));
+        let i = ini("httpport = 8805\nhttpport = 8000\n");
+        assert_eq!(i.get_unique(None, "httpport"), None);
     }
 
     #[test]

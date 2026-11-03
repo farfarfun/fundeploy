@@ -196,6 +196,11 @@ pub trait Daemon {
         p.port
     }
 
+    /// 安装包缺少可用的上游 SHA-256 时是否拒绝安装。
+    fn require_checksum(&self) -> bool {
+        false
+    }
+
     // ------------------------------------------------------------ 生命周期
 
     fn install(&self, version: Option<&str>) -> Result<()> {
@@ -245,6 +250,14 @@ pub trait Daemon {
         let checksums = release
             .checksums_url()
             .and_then(|u| download::get_text(u).ok());
+        if self.require_checksum()
+            && checksums
+                .as_deref()
+                .and_then(|s| download::expected_sha256(s, &asset_name))
+                .is_none()
+        {
+            bail!("{asset_name} 缺少可用的上游 SHA-256 校验和，已取消安装");
+        }
         download::verify(&downloaded, checksums.as_deref(), &asset_name)?;
 
         let staging = work.join("app");

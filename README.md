@@ -165,8 +165,14 @@ Python 包统一通过 `uv pip install` 安装和升级。已有 CLI 时复用�
 | `airflow` | Apache Airflow standalone（8815） |
 | `celery` | Celery worker / beat / flower（8816） |
 | `paperclip` | Paperclip 本机服务（8804） |
+| `casdoor` | Casdoor SSO（8805），官方二进制 + SQLite |
 
-服务默认只监听回环地址。要对外暴露就显式设对应的 `*_HOST` / `*_ADDRESS` 环境变量。
+Casdoor 的 Caddy、登录方式和 OIDC 接入说明见 [docs/casdoor.md](docs/casdoor.md)。
+新服务的目录与配置约定见 [开发规范](docs/development.md)。
+
+除 Casdoor 外，服务默认只监听回环地址。Casdoor 上游会绑定所有网卡，启动前必须
+阻止公网访问 TCP 8805；其他服务要对外暴露就显式设对应的 `*_HOST` / `*_ADDRESS`
+环境变量。
 
 `farfarfun-web` 的版本查询、安装和升级复用 npm/pnpm 的 `@farfarfun:registry`
 及已有认证，与 `fungame` 的前端使用同一个私有源。包名仍为无 scope 的

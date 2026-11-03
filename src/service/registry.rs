@@ -10,6 +10,7 @@ use anyhow::Result;
 use std::path::PathBuf;
 
 use super::airflow::Airflow;
+use super::casdoor;
 use super::celery::Celery;
 use super::config;
 use super::daemon::{self, DaemonSpec, Github, Proc};
@@ -35,6 +36,7 @@ pub fn all() -> Vec<Box<dyn Service>> {
         daemon::boxed(new_api()),
         daemon::declared(code_server()),
         daemon::boxed(sub2api()),
+        daemon::boxed(casdoor::from_env()),
         venv::boxed(Airflow::from_env()),
         venv::boxed(Celery::from_env()),
         Box::new(Paperclip::from_env()),

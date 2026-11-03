@@ -50,7 +50,10 @@ impl Release {
         const NAMES: &[&str] = &["checksums.txt", "sha256sums.txt", "sha256sums", "checksums"];
         self.assets
             .iter()
-            .find(|a| NAMES.contains(&a.name.to_ascii_lowercase().as_str()))
+            .find(|a| {
+                let name = a.name.to_ascii_lowercase();
+                NAMES.contains(&name.as_str()) || name.ends_with("_checksums.txt")
+            })
             .map(|a| a.browser_download_url.as_str())
     }
 }
@@ -280,7 +283,12 @@ mod tests {
 
     #[test]
     fn 校验和清单的几种命名都认() {
-        for n in ["checksums.txt", "SHA256SUMS.txt", "sha256sums"] {
+        for n in [
+            "checksums.txt",
+            "SHA256SUMS.txt",
+            "sha256sums",
+            "casdoor_4.25.0_checksums.txt",
+        ] {
             assert!(release("v1", &[n]).checksums_url().is_some(), "没认出 {n}");
         }
         // 带平台后缀的那种不认：它只覆盖一部分附件，拿来校验别的会落空。

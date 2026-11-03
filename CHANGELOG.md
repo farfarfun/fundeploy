@@ -3,6 +3,18 @@
 版本号以 `Cargo.toml` 里的 `version` 为准；发布由推同版本的 `v*` tag 触发（见
 `.github/workflows/release.yml`），因此「有 tag ＝ 已发布」。
 
+## [0.3.25] - 2026-11-03
+
+### 新增
+
+- 新增 `casdoor` 服务：从官方发行包安装，默认使用 8805 端口和
+  `~/.farfarfun/casdoor` 目录；管理 SQLite 数据、配置校验及启停升级。
+- 增加 Casdoor 部署与 OIDC 接入说明，以及新服务的目录和配置开发规范。
+
+### 修复
+
+- 识别 Casdoor 带版本前缀的校验和文件；Casdoor 缺少有效 SHA-256 时拒绝安装。
+
 ## [0.3.24] - 2026-11-02
 
 ### 变更

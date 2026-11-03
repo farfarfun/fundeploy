@@ -24,6 +24,7 @@
 //! [`Service::extras`] 把九个动作之外的东西挂出来。
 
 pub mod airflow;
+pub mod casdoor;
 pub mod celery;
 pub mod config;
 pub mod daemon;
