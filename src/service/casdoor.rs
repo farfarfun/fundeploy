@@ -146,8 +146,6 @@ impl Casdoor {
         for (key, expected) in [
             ("httpport", PORT.to_string()),
             ("runmode", "prod".into()),
-            ("driverName", "sqlite".into()),
-            ("dataSourceName", self.database_uri()),
             ("ldapServerPort", "0".into()),
             ("ldapsServerPort", "0".into()),
             ("radiusServerPort", "-1".into()),
@@ -156,6 +154,22 @@ impl Casdoor {
             if cfg.get_unique(None, key) != Some(expected.as_str()) {
                 bail!("{} 中的 {key} 必须唯一且等于 {expected}", path.display());
             }
+        }
+
+        match cfg.get_unique(None, "driverName") {
+            Some("sqlite")
+                if cfg.get_unique(None, "dataSourceName") == Some(&self.database_uri()) => {}
+            Some("postgres")
+                if cfg
+                    .get_unique(None, "dataSourceName")
+                    .is_some_and(|v| !v.is_empty())
+                    && cfg
+                        .get_unique(None, "dbName")
+                        .is_some_and(|v| !v.is_empty()) => {}
+            _ => bail!(
+                "{} 中的数据库配置无效；仅支持指定路径的 SQLite 或 PostgreSQL",
+                path.display()
+            ),
         }
 
         let origin = cfg.get_unique(None, "origin").unwrap_or("");
@@ -288,6 +302,37 @@ mod tests {
         ini.set(None, "disableUpgrade", "false");
         ini.save(&path).unwrap();
         assert!(s.ensure_config().is_err(), "一键自升级不能绕过 fundeploy");
+    }
+
+    #[test]
+    fn 接受_postgresql_并拒绝无效数据库配置() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = Casdoor::at(tmp.path().join("casdoor"));
+        std::fs::create_dir_all(s.spec.app_dir()).unwrap();
+        s.prepare().unwrap();
+        let path = s.config_path();
+        let mut ini = Ini::load(&path).unwrap();
+        ini.set(None, "origin", "https://id.farfarfun.example");
+        ini.set(None, "driverName", "postgres");
+        ini.set(
+            None,
+            "dataSourceName",
+            "user=casdoor password=secret host=127.0.0.1 port=5432 sslmode=disable dbname=casdoor",
+        );
+        ini.save(&path).unwrap();
+        s.validate_config().unwrap();
+
+        ini.set(None, "dataSourceName", "");
+        ini.save(&path).unwrap();
+        assert!(s.validate_config().is_err());
+        ini.set(None, "dataSourceName", "user=casdoor dbname=casdoor");
+        ini.set(None, "dbName", "");
+        ini.save(&path).unwrap();
+        assert!(s.validate_config().is_err());
+        ini.set(None, "dataSourceName", "file:other.db");
+        ini.set(None, "driverName", "sqlite");
+        ini.save(&path).unwrap();
+        assert!(s.validate_config().is_err());
     }
 
     #[test]

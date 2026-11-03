@@ -2,7 +2,7 @@
 
 Casdoor 提供账号、微信 / 手机 / 邮箱登录和标准 OIDC；Caddy 提供 HTTPS；业务应用
 只接 OIDC，并自行决定业务权限。`fundeploy service casdoor` 管理官方原生二进制，
-无需 Docker、Java、PostgreSQL；默认单实例使用 SQLite。
+无需 Docker、Java；默认单实例使用 SQLite，也可以使用 PostgreSQL。
 
 ## 部署
 
@@ -33,8 +33,47 @@ fundeploy service casdoor install --version 4.25.0
 
 编辑 `~/.farfarfun/casdoor/data/app.conf`，把 `origin` 改成真实的 `https://` 域名。
 `initAdminPassword` 已生成；在新数据库首次启动时用于设置 `built-in/admin` 的
-bcrypt 密码。启动时会校验配置权限、真实 HTTPS 域名、管理员密码、数据库路径
+bcrypt 密码。启动时会校验配置权限、真实 HTTPS 域名、管理员密码、数据库配置
 和 `8805` 端口。
+
+### 使用 PostgreSQL
+
+在首次启动 Casdoor 前，先创建独立的 PostgreSQL 用户和空数据库。以下示例使用
+本机 PostgreSQL；将示例密码换成高强度密码，避免空格和引号：
+
+```bash
+sudo -u postgres psql
+```
+
+```sql
+CREATE ROLE casdoor LOGIN PASSWORD 'replace-with-strong-password';
+CREATE DATABASE casdoor OWNER casdoor;
+```
+
+退出 `psql` 后，将 `~/.farfarfun/casdoor/data/app.conf` 中的数据库三项改为：
+
+```ini
+driverName = postgres
+dataSourceName = user=casdoor password=replace-with-strong-password host=127.0.0.1 port=5432 sslmode=disable dbname=casdoor
+dbName = casdoor
+```
+
+远程 PostgreSQL 地址示例（`db.example.com:5432`）：
+
+```ini
+driverName = postgres
+dataSourceName = user=casdoor password=replace-with-strong-password host=db.example.com port=5432 sslmode=verify-full sslrootcert=/home/your-user/.farfarfun/casdoor/data/postgres-ca.crt dbname=casdoor
+dbName = casdoor
+```
+
+将域名、用户名、密码和 CA 证书绝对路径换成实际值；`host` 必须与数据库证书中的
+域名匹配。如果服务商提供 `postgresql://casdoor:password@db.example.com:5432/casdoor`，
+就按其中的用户名、密码、主机、端口和数据库名填写上面的键值式连接串。
+
+`dataSourceName` 中的 `dbname` 和独立的 `dbName` 都必须填写。`sslmode=disable`
+只适用于本机回环连接；远程数据库应启用 TLS 并验证服务端证书。确保 PostgreSQL
+允许该用户从 Casdoor 主机连接，然后按下文正常启动。首次启动会在空数据库中初始化
+Casdoor；改用 PostgreSQL 不会自动搬迁已有的 SQLite 用户和配置。
 
 将下面的站点块加入 `/etc/caddy/Caddyfile`，把域名改成真实值：
 
@@ -104,13 +143,24 @@ back-channel logout 和可撤销的本地会话。
 
 ## 备份与升级
 
-SQLite 适合单实例；需要多实例或更高并发时再迁移到 PostgreSQL。`data/` 包含
-数据库、上传文件和管理员初始密码。最简单的一致性备份方式是短暂停机：
+SQLite 适合单实例。使用 SQLite 时，`data/` 包含数据库、上传文件和管理员初始密码；
+最简单的一致性备份方式是短暂停机：
 
 ```bash
 umask 077
 fundeploy service casdoor stop
 tar -C "$HOME/.farfarfun/casdoor" -czf "$HOME/casdoor-$(date +%F).tar.gz" data
+fundeploy service casdoor start
+```
+
+使用 PostgreSQL 时，还需单独备份数据库；`data/` 仍包含上传文件和配置。可以
+先停 Casdoor，再运行以下命令；`pg_dump -W` 会交互输入数据库密码：
+
+```bash
+umask 077
+fundeploy service casdoor stop
+pg_dump -h 127.0.0.1 -U casdoor -W -Fc -f "$HOME/casdoor-$(date +%F).dump" casdoor
+tar -C "$HOME/.farfarfun/casdoor" -czf "$HOME/casdoor-files-$(date +%F).tar.gz" data
 fundeploy service casdoor start
 ```
 

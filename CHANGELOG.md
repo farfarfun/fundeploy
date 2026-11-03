@@ -3,6 +3,12 @@
 版本号以 `Cargo.toml` 里的 `version` 为准；发布由推同版本的 `v*` tag 触发（见
 `.github/workflows/release.yml`），因此「有 tag ＝ 已发布」。
 
+## [0.3.26] - 2026-11-03
+
+### 新增
+
+- Casdoor 支持使用 PostgreSQL，补充本机与远程数据库配置及备份示例。
+
 ## [0.3.25] - 2026-11-03
 
 ### 新增
