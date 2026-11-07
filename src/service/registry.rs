@@ -29,6 +29,7 @@ pub fn all() -> Vec<Box<dyn Service>> {
         upstream::declared(farfarfun_web()),
         upstream::declared(funfluid_web()),
         upstream::declared(funlesson_web()),
+        upstream::declared(courseware()),
         upstream::declared(fungame_web()),
         upstream::declared(funflix_web()),
         upstream::boxed(funread_web()),
@@ -166,6 +167,42 @@ fn funlesson_web() -> ServiceSpec {
     ]));
 
     ServiceSpec::new("funlesson", "funlesson 前后端", vec![backend, frontend]).entry("frontend")
+}
+
+// ---------------------------------------------------------------- courseware
+
+fn courseware() -> ServiceSpec {
+    // API 的 server 命令同时管理同步 Worker；Worker 没有单独的网络端口。
+    let backend = Component::new(
+        "backend",
+        "后端 courseware-api（含 Worker）",
+        Pkg::pip(
+            &env_str("COURSEWARE_BACKEND_PACKAGE", "courseware-api"),
+            "courseware-api",
+        ),
+        &env_str("COURSEWARE_BACKEND_HOST", "127.0.0.1"),
+        env_port("COURSEWARE_BACKEND_PORT", 8008),
+    )
+    .version(env_opt("COURSEWARE_BACKEND_VERSION"))
+    .cli_shape(server_subcommand_shape(vec![]));
+    let frontend = Component::new(
+        "frontend",
+        "前端 courseware-web",
+        Pkg::npm(
+            &env_str("COURSEWARE_FRONTEND_PACKAGE", "@farfarfun/courseware-web"),
+            "courseware-web",
+        ),
+        &env_str("COURSEWARE_FRONTEND_HOST", "127.0.0.1"),
+        env_port("COURSEWARE_FRONTEND_PORT", 8817),
+    )
+    .version(env_opt("COURSEWARE_FRONTEND_VERSION"))
+    .cli_shape(server_subcommand_shape(args![
+        "--backend",
+        Arg::SiblingUrl("backend".into())
+    ]));
+    ServiceSpec::new("courseware", "交互课程平台", vec![backend, frontend])
+        .entry("frontend")
+        .note("首次安装：courseware-api init，配置 PostgreSQL 后再次 init，再创建管理员。前端默认 8817；已有 8814/frpc 入口用 COURSEWARE_FRONTEND_PORT=8814 保持不变，并同步 CW_PUBLIC_ORIGIN。")
 }
 
 // ---------------------------------------------------------------- fungame-web
@@ -975,6 +1012,52 @@ mod tests {
     }
 
     #[test]
+    fn courseware_前端代理到_api_且_api_拥有_worker() {
+        let _排队 = 排队();
+        let spec = courseware();
+        assert_eq!(spec.components.len(), 2);
+        assert_eq!(
+            argv(&spec, "backend", |c| &c.start),
+            [
+                "courseware-api",
+                "server",
+                "start",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "8008"
+            ]
+        );
+        assert_eq!(
+            argv(&spec, "frontend", |c| &c.start),
+            [
+                "courseware-web",
+                "server",
+                "start",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "8817",
+                "--backend",
+                "http://127.0.0.1:8008"
+            ]
+        );
+        assert_eq!(
+            argv(&spec, "backend", |c| &c.stop),
+            ["courseware-api", "server", "stop"]
+        );
+        assert_eq!(
+            spec.component("frontend").unwrap().pkg.name(),
+            "@farfarfun/courseware-web"
+        );
+        std::env::set_var("COURSEWARE_BACKEND_PORT", "28008");
+        let overridden = courseware();
+        assert!(argv(&overridden, "frontend", |c| &c.start)
+            .contains(&"http://127.0.0.1:28008".to_string()));
+        std::env::remove_var("COURSEWARE_BACKEND_PORT");
+    }
+
+    #[test]
     fn fungame_的两个前端都指向同一个后端() {
         let _排队 = 排队();
         let spec = fungame_web();
@@ -1006,7 +1089,14 @@ mod tests {
     #[test]
     fn 前后端整套服务使用产品名() {
         let names = names();
-        for name in ["funfluid", "funlesson", "fungame", "funflix", "funread"] {
+        for name in [
+            "funfluid",
+            "funlesson",
+            "courseware",
+            "fungame",
+            "funflix",
+            "funread",
+        ] {
             assert!(names.contains(&name.to_string()), "缺少服务 {name}");
             assert!(
                 !names.contains(&format!("{name}-web")),
@@ -1052,6 +1142,7 @@ mod tests {
             farfarfun_web(),
             funfluid_web(),
             funlesson_web(),
+            courseware(),
             fungame_web(),
             funflix_web(),
             funread_web().spec,
