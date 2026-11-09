@@ -253,7 +253,12 @@ fundeploy source pip add 自己的源 https://...
 ### 工具 `fundeploy tool`
 
 `brew`（Homebrew 本身）、`cockpit-tools`（AI IDE 账号管理桌面应用）、
-`open-pencil`（CLI + MCP 服务器，额外有 `install-desktop`、`mcp-config`）。
+`open-pencil`（CLI + MCP 服务器，额外有 `install-desktop`、`mcp-config`）、
+`funbuild`（构建发布）、`funget`（文件传输）、`funclash`（桌面代理客户端）。
+后三个使用 farfarfun 的 apt 源或 Homebrew tap；先按上文安装说明添加包源，再运行
+`fundeploy tool <名字> install`。`funclash` 在 Homebrew 下仅支持 macOS。
+`upgrade`、`uninstall` 只管理 apt/Homebrew 安装的副本；通过 Cargo 等渠道安装的 CLI
+仍由原渠道管理。
 
 ### AI 命令行 `fundeploy ai`
 

@@ -10,6 +10,7 @@
 
 pub mod brew;
 pub mod cockpit_tools;
+pub mod farfarfun;
 pub mod open_pencil;
 pub mod registry;
 

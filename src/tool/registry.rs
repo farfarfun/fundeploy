@@ -2,6 +2,7 @@
 
 use super::brew::Brew;
 use super::cockpit_tools::CockpitTools;
+use super::farfarfun::FarfarfunTool;
 use super::open_pencil::OpenPencil;
 use super::Tool;
 
@@ -9,6 +10,21 @@ pub fn all() -> Vec<Box<dyn Tool>> {
     vec![
         Box::new(Brew::from_env()),
         Box::new(CockpitTools::from_env()),
+        Box::new(FarfarfunTool {
+            name: "funbuild",
+            summary: "项目构建与发布",
+            desktop: false,
+        }),
+        Box::new(FarfarfunTool {
+            name: "funclash",
+            summary: "代理客户端桌面应用",
+            desktop: true,
+        }),
+        Box::new(FarfarfunTool {
+            name: "funget",
+            summary: "HTTP 文件传输",
+            desktop: false,
+        }),
         Box::new(OpenPencil::from_env()),
     ]
 }

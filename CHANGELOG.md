@@ -3,6 +3,14 @@
 版本号以 `Cargo.toml` 里的 `version` 为准；发布由推同版本的 `v*` tag 触发（见
 `.github/workflows/release.yml`），因此「有 tag ＝ 已发布」。
 
+## [0.3.27] - 2026-11-09
+
+### 新增
+
+- `fundeploy tool` 支持通过 farfarfun 的 apt 源或 Homebrew tap 管理
+  `funbuild`、`funget` 和 `funclash`；状态查询会显示包管理器版本及 CLI 路径。
+- 升级沿用已有安装渠道；通过 Cargo 等渠道安装的 CLI 不会被另一份包管理器安装覆盖。
+
 ## [0.3.26] - 2026-11-03
 
 ### 新增
