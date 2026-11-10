@@ -155,6 +155,7 @@ Python 包统一通过 `uv pip install` 安装和升级。已有 CLI 时复用�
 | `farfarfun-web` | farfarfun 组织官网，单个 npm 包 `farfarfun-web`（8800） |
 | `funfluid` | funfluid 前后端（18806 / 8806） |
 | `funlesson` | funlesson 前后端（18814 / 8814） |
+| `courseware` | 交互课程平台，API + 同步 Worker + 前端（8008 / 8817）；安装 `courseware-api` 与 `@farfarfun/courseware-web` |
 | `fungame` | fungame 后端 + 管理端 + 用户端（8809 / 8807 / 8808）；后端包为 `fungame-api`，前端包为 `@farfarfun/fungame-admin`、`@farfarfun/fungame-web` |
 | `funflix` | funflix 前后端（18810 / 8810） |
 | `funread` | funread 前后端（18811 / 8811） |
@@ -168,6 +169,10 @@ Python 包统一通过 `uv pip install` 安装和升级。已有 CLI 时复用�
 | `casdoor` | Casdoor SSO（8805），官方二进制 + SQLite |
 
 Casdoor 的 Caddy、登录方式和 OIDC 接入说明见 [docs/casdoor.md](docs/casdoor.md)。
+
+Courseware 使用团队的 funpy / `@farfarfun` npm 源，安装前需配置源及读取权限。首次安装后运行 `courseware-api init` 生成 `~/.farfarfun/courseware/backend/config.json`，配置 PostgreSQL 连接后再次运行 `courseware-api init` 完成迁移，再运行 `courseware-api create-admin admin` 创建管理员。随后执行 `fundeploy service courseware start`；API 的生命周期命令同时管理课程同步 Worker。前端配置位于 `~/.farfarfun/courseware/frontend/config.json`，由 CLI 首次启动生成。`CW_CONFIG_FILE` / `CW_WEB_CONFIG_FILE` 可覆盖配置路径。
+
+Courseware 默认前端端口为 8817，避免与 funlesson 的 8814 冲突；已有 8814/frpc 入口可设置 `COURSEWARE_FRONTEND_PORT=8814`（并同步后端 `CW_PUBLIC_ORIGIN`）。`COURSEWARE_BACKEND_PORT` 会自动传入前端代理目标。frpc 只需转发前端端口，后端来源配置填写实际公网入口。升级前备份数据库和课程文件；数据库迁移需显式运行 `courseware-api init`，`rollback` 只回退软件包，不自动回退数据结构。
 新服务的目录与配置约定见 [开发规范](docs/development.md)。
 
 除 Casdoor 外，服务默认只监听回环地址。Casdoor 上游会绑定所有网卡，启动前必须
