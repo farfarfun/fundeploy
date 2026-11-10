@@ -629,18 +629,6 @@ fn source_cmd(name: Option<String>, action: Option<SourceAction>) -> Result<()> 
     }
 }
 
-/// 先问一句「看全部，还是挑一个」。
-///
-/// service / tool 这两域有「不点名就是总览」的用法（`fundeploy service status`），
-/// 而菜单从前直接跳到「选一个服务」，那条路在交互里根本走不到。
-fn pick_overview(overview: &str) -> Result<bool> {
-    let menu = [
-        format!("status  {overview}"),
-        "挑一个  装、起、停、查…".to_string(),
-    ];
-    Ok(choose("要做什么", &menu)?.starts_with("status"))
-}
-
 fn service_menu(all: &[Box<dyn Service>]) -> Vec<String> {
     let mut menu = vec!["status         所有服务的状态总览".to_string()];
     menu.extend(all.iter().map(|s| {
@@ -656,6 +644,15 @@ fn service_menu(all: &[Box<dyn Service>]) -> Vec<String> {
             s.summary()
         )
     }));
+    menu
+}
+
+fn tool_menu(all: &[Box<dyn Tool>]) -> Vec<String> {
+    let mut menu = vec!["status         所有工具的状态".to_string()];
+    menu.extend(
+        all.iter()
+            .map(|t| format!("{}{}", ui::pad(t.name(), 16), t.summary())),
+    );
     menu
 }
 
@@ -939,24 +936,27 @@ fn no_args() -> Result<()> {
                 pick_and_run(svc.as_ref())
             }
         }
-        "tool" => match pick_overview("所有工具的状态")? {
-            true => {
+        "tool" => {
+            let all = tool::registry::all();
+            let idx = choose_index("选一个工具", &tool_menu(&all))?;
+            if idx == 0 {
                 tool_status_all();
                 Ok(())
-            }
-            false => {
-                let t = pick_one(tool::registry::all(), "选一个工具", |t| {
-                    (t.name().to_string(), t.summary().to_string())
-                })?;
+            } else {
+                let t = all.into_iter().nth(idx - 1).expect("菜单与工具列表等长");
                 pick_and_run_tool(t.as_ref())
             }
-        },
+        }
         "source" => {
-            let s = pick_one(source::registry::all(), "给哪个换源", |s| {
-                (s.name().to_string(), s.summary().to_string())
-            })?;
+            let names = source::registry::all()
+                .iter()
+                .map(|s| format!("{}{}", ui::pad(s.name(), 14), s.summary()))
+                .collect();
+            let Some(name) = pick_name(names, "给哪个换源", "所有源的状态")? else {
+                return source_cmd(None, None);
+            };
             let action = pick_source_action()?;
-            source_cmd(Some(s.name().to_string()), Some(action))
+            source_cmd(Some(name), Some(action))
         }
         "port-kill" => {
             // `--list` 那条路（只看谁占着、不动手）以前在交互里走不到。
@@ -975,7 +975,9 @@ fn no_args() -> Result<()> {
         }
         "doctor" => pick_doctor_action(),
         "dev" => {
-            let name = pick_name(dev::registry::names(), "哪个工具链", "全部的状态")?;
+            let mut names = dev::registry::names();
+            names.push("python".into());
+            let name = pick_name(names, "哪个工具链", "全部的状态")?;
             match name {
                 None => dev_cmd(None, None),
                 Some(n) => {
@@ -986,9 +988,9 @@ fn no_args() -> Result<()> {
         }
         "ai" => {
             // `all` 是 ai_cmd 认的特殊名字，一次对所有 AI 命令行执行。
-            let mut names = vec!["all".to_string()];
+            let mut names = vec!["all  批量安装、升级或卸载".to_string()];
             names.extend(ai::registry::names());
-            let name = pick_name(names, "哪个 AI 命令行", "都列一遍")?;
+            let name = pick_name(names, "哪个 AI 命令行", "只看全部状态")?;
             match name {
                 None => ai::list(),
                 Some(n) => {
@@ -1215,20 +1217,6 @@ fn tool_cmd(name: Option<String>, action: Option<ToolAction>) -> Result<()> {
     }
 }
 
-/// 从一张表里选一个。`describe` 给出 (名字, 一行说明)。
-fn pick_one<T>(all: Vec<T>, prompt: &str, describe: impl Fn(&T) -> (String, String)) -> Result<T> {
-    let labels: Vec<String> = all
-        .iter()
-        .map(|x| {
-            let (name, about) = describe(x);
-            format!("{name:<14} {about}")
-        })
-        .collect();
-    let idx = choose_index(prompt, &labels)?;
-    // 下标来自 labels，而 labels 和 all 一一对应、等长，所以 nth 必有值。
-    Ok(all.into_iter().nth(idx).expect("labels 与 all 等长"))
-}
-
 /// 没给动作时的提示。额外动作不在 `--help` 里（clap 不认识它们），不在这儿说
 /// 就等于没有。
 fn no_action_hint(who: &str, domain: &str, extras: &[Extra]) -> String {
@@ -1312,6 +1300,18 @@ mod tests {
                 .join(" ");
             assert!(line.contains(&ports), "菜单搜不到端口 {ports}: {line}");
             assert!(line.find(&ports).unwrap() < line.find(svc.summary()).unwrap());
+        }
+    }
+
+    #[test]
+    fn 工具菜单先列状态再列全部工具() {
+        let all = tool::registry::all();
+        let menu = tool_menu(&all);
+        assert!(menu[0].starts_with("status"));
+        assert_eq!(menu.len(), all.len() + 1);
+        for (line, tool) in menu.iter().skip(1).zip(all.iter()) {
+            assert!(line.starts_with(tool.name()));
+            assert!(line.contains(tool.summary()));
         }
     }
 

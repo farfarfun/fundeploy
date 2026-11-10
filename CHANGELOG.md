@@ -3,6 +3,17 @@
 版本号以 `Cargo.toml` 里的 `version` 为准；发布由推同版本的 `v*` tag 触发（见
 `.github/workflows/release.yml`），因此「有 tag ＝ 已发布」。
 
+## [0.3.28] - 2026-11-10
+
+### 新增
+
+- 新增 `courseware` 服务，管理 API（含同步 Worker）和前端。
+
+### 改进
+
+- 交互菜单中的 `tool` 直接列出总览和各工具；`source` 增加全部源状态，`dev`
+  增加 Python 环境入口，`ai` 区分状态总览与批量动作。
+
 ## [0.3.27] - 2026-11-09
 
 ### 新增
