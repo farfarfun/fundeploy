@@ -125,8 +125,73 @@ fn signal(target: i32, sig: libc::c_int) {
     }
 }
 
+/// 记录确认框中展示的目标，避免用户输入期间 PID 已经换成另一个进程。
+#[derive(PartialEq)]
+pub(crate) struct StopTarget {
+    name: std::ffi::OsString,
+    started: u64,
+}
+
+impl StopTarget {
+    fn snapshot(pid: i32) -> Option<Self> {
+        use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+        let pid = Pid::from_u32(pid as u32);
+        let mut system = System::new();
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[pid]),
+            false,
+            ProcessRefreshKind::nothing(),
+        );
+        let p = system.process(pid)?;
+        Some(Self {
+            name: p.name().to_owned(),
+            started: p.start_time(),
+        })
+    }
+
+    pub(crate) fn confirm(pid: i32, source: &str) -> Result<Self> {
+        if let Some(reason) = protected(pid) {
+            anyhow::bail!("{source} 的 PID {pid} {reason}，已中止停止操作");
+        }
+        let target = Self::snapshot(pid)
+            .with_context(|| format!("{source} 的 PID {pid} 无法读取，已中止停止操作"))?;
+        let who = format!(
+            "{source} 的 PID {pid}（{}）无法确认归属",
+            target.name.to_string_lossy()
+        );
+        if !crate::ui::interactive() {
+            anyhow::bail!("{who}，无人值守时保留该进程");
+        }
+        let prompt = format!("{who}，仍要终止这个进程吗？");
+        if !inquire::Confirm::new(&prompt)
+            .with_default(false)
+            .prompt()
+            .unwrap_or(false)
+        {
+            anyhow::bail!("已保留 PID {pid}，中止停止操作");
+        }
+        Ok(target)
+    }
+
+    pub(crate) fn recheck(&self, pid: i32) -> Result<()> {
+        if Self::snapshot(pid).as_ref() != Some(self) {
+            anyhow::bail!("PID {pid} 的进程已变化，已中止停止操作");
+        }
+        Ok(())
+    }
+}
+
 /// 按 PID 文件停止，并在停成功后删掉那个文件。
 pub fn stop_by_pid_file(path: &Path, timeout: Duration, process_group: bool) -> Result<bool> {
+    stop_owned_pid_file(path, timeout, process_group, |_| true)
+}
+
+pub(crate) fn stop_owned_pid_file(
+    path: &Path,
+    timeout: Duration,
+    process_group: bool,
+    owns: impl Fn(i32) -> bool,
+) -> Result<bool> {
     let Some(pid) = read_pid_file(path) else {
         // 没有 PID 文件：可能从没起过，也可能上次是干净退出的。都不算错。
         let _ = std::fs::remove_file(path);
@@ -137,9 +202,64 @@ pub fn stop_by_pid_file(path: &Path, timeout: Duration, process_group: bool) -> 
         let _ = std::fs::remove_file(path);
         return Ok(false);
     }
-    stop_pid(pid, timeout, process_group)?;
-    let _ = std::fs::remove_file(path);
+    if let Some(reason) = protected(pid) {
+        anyhow::bail!(
+            "{} 记录的 PID {pid} {reason}，已中止停止操作",
+            path.display()
+        );
+    }
+    let owned = owns(pid);
+    if !owned {
+        let target = StopTarget::confirm(pid, &path.display().to_string())?;
+        if read_pid_file(path) != Some(pid) {
+            anyhow::bail!("{} 的 PID 记录已变化，已中止停止操作", path.display());
+        }
+        target.recheck(pid)?;
+    }
+    stop_pid(pid, timeout, owned && process_group)?;
+    if read_pid_file(path) == Some(pid) {
+        let _ = std::fs::remove_file(path);
+    }
     Ok(true)
+}
+
+/// 优先认启动时传入的 PID 文件标记。旧版启动的进程按专属安装目录核实。
+pub(crate) fn managed_process(pid: i32, pid_file: &Path, install_dir: &Path) -> Option<bool> {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let pid = Pid::from_u32(pid as u32);
+    let mut system = System::new();
+    let fields = ProcessRefreshKind::nothing()
+        .with_exe(UpdateKind::Always)
+        .with_cmd(UpdateKind::Always)
+        .with_environ(UpdateKind::Always);
+    system.refresh_processes_specifics(ProcessesToUpdate::Some(&[pid]), false, fields);
+    let process = system.process(pid)?;
+    if let Some(marker) = process
+        .environ()
+        .iter()
+        .filter_map(|s| s.to_str())
+        .find_map(|s| s.strip_prefix("FUNDEPLOY_SERVICE_PID_FILE="))
+    {
+        return Some(Path::new(marker) == pid_file);
+    }
+    let dir = install_dir.canonicalize().ok()?;
+    let exe = process.exe()?;
+    if exe.starts_with(&dir) {
+        return Some(true);
+    }
+    // venv 的 python 往往是系统解释器的符号链接，argv[0] 仍指向 venv/bin。
+    let matches = |arg: &std::ffi::OsString| {
+        let p = Path::new(arg);
+        p.is_absolute() && (p.starts_with(&dir) || p.starts_with(install_dir))
+    };
+    if process.cmd().first().is_some_and(matches) {
+        return Some(true);
+    }
+    // 只有解释器的脚本参数才代表正在执行的程序，普通程序打开的文件不能用来认领进程。
+    let interpreter = exe.file_name()?.to_str()?;
+    let runs_script =
+        interpreter.starts_with("python") || matches!(interpreter, "node" | "bash" | "sh" | "dash");
+    Some(runs_script && process.cmd().get(1).is_some_and(matches))
 }
 
 /// 后台起一个进程，返回它的 PID。
@@ -255,6 +375,15 @@ mod tests {
 
     fn tmp() -> tempfile::TempDir {
         tempfile::tempdir().unwrap()
+    }
+
+    #[test]
+    fn 确认后仍须是原来的进程() {
+        let pid = std::process::id() as i32;
+        let mut shown = StopTarget::snapshot(pid).unwrap();
+        shown.recheck(pid).unwrap();
+        shown.started = shown.started.wrapping_sub(1);
+        assert!(shown.recheck(pid).is_err());
     }
 
     #[test]

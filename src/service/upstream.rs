@@ -448,7 +448,7 @@ pub trait Upstream {
             // 不要当成启动失败。
             if port::is_listening(&c.host, c.port) {
                 ui::info(format!(
-                    "{} {}:{} 已在运行，跳过。",
+                    "{} {}:{} 端口已监听，跳过启动。",
                     c.label, c.host, c.port
                 ));
                 continue;
@@ -563,7 +563,7 @@ pub trait Upstream {
         }
         // 上游的 stop 普遍只发 SIGTERM 不强杀，拒绝退出的进程会让「已停止」变成假话。
         for c in spec.components.iter().rev() {
-            force_free_port(&c.label, c.port);
+            force_free_port(&c.label, &c.host, c.port, |_| false)?;
         }
         ui::info("已停止（best effort）。");
         Ok(())
@@ -618,12 +618,12 @@ pub trait Upstream {
                     card.row_state(
                         &c.label,
                         ui::State::Up,
-                        format!("在运行 · PID {pid} · {at}"),
+                        format!("端口已监听 · PID {pid} · {at}"),
                     )
                 }
                 None if port::is_listening(&c.host, c.port) => {
                     up += 1;
-                    card.row_state(&c.label, ui::State::Up, format!("在运行 · {at}"))
+                    card.row_state(&c.label, ui::State::Up, format!("端口已监听 · {at}"))
                 }
                 None => card.row_state(&c.label, ui::State::Idle, format!("没在运行 · {at}")),
             };
@@ -637,8 +637,8 @@ pub trait Upstream {
         let judged = spec.components.len() - delegated.len();
         let (bst, blabel) = match (up, judged) {
             (_, 0) => (ui::State::Idle, "见下方".to_string()),
-            (0, _) => (ui::State::Idle, "未运行".to_string()),
-            (u, n) if u == n => (ui::State::Up, "在运行".to_string()),
+            (0, _) => (ui::State::Idle, "未监听".to_string()),
+            (u, n) if u == n => (ui::State::Up, "端口已监听".to_string()),
             (u, n) => (ui::State::Partial, format!("部分 {u}/{n}")),
         };
         card.badge(bst, blabel).print();

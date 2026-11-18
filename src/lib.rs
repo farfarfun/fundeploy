@@ -20,17 +20,30 @@
 //! 声明。上游特有的坑（某个 CLI 的 stop 必须带参数、某份配置文件上游不会自己生成）
 //! 通过覆盖 trait 的钩子方法表达。
 
+#[cfg(unix)]
 pub mod ai;
+#[cfg_attr(windows, path = "cli_windows.rs")]
 pub mod cli;
+#[cfg(unix)]
 pub mod common;
+#[cfg(unix)]
 pub mod dev;
+#[cfg(unix)]
 pub mod doctor;
+pub mod monitor;
+#[cfg(unix)]
 pub mod port_kill;
+#[cfg(unix)]
 pub mod selfup;
+#[cfg(unix)]
 pub mod service;
+#[cfg(unix)]
 pub mod skills;
+#[cfg(unix)]
 pub mod source;
+#[cfg(unix)]
 pub mod tool;
+#[cfg(unix)]
 pub mod ui;
 
 pub use cli::cli_main;

@@ -53,6 +53,7 @@ jobs:
           - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm }
           - { target: x86_64-apple-darwin, os: macos-latest }
           - { target: aarch64-apple-darwin, os: macos-latest }
+          - { target: x86_64-pc-windows-msvc, os: windows-latest }
     steps:
       - uses: actions/checkout@v4
 
@@ -68,16 +69,24 @@ jobs:
       - run: cargo build --release --target ${{ matrix.target }}
 
       - name: 打包
+        if: runner.os != 'Windows'
         run: |
           set -eu
           mkdir -p dist
           tar -czf "dist/fundeploy-${{ matrix.target }}.tar.gz" \
             -C "target/${{ matrix.target }}/release" fundeploy
 
+      - name: 打包 Windows 面板
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist
+          Compress-Archive -Path target/${{ matrix.target }}/release/fundeploy.exe -DestinationPath dist/fundeploy-${{ matrix.target }}.zip
+
       - uses: actions/upload-artifact@v4
         with:
           name: bin-${{ matrix.target }}
-          path: dist/*.tar.gz
+          path: dist/*
           retention-days: 7
 
   release:

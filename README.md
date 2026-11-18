@@ -3,7 +3,7 @@
 一条命令管本机的开发环境、常驻服务、工具和镜像源。
 
 单个静态二进制，不依赖 Python、Node 或任何运行时，装上就能跑。支持 macOS 与 Linux 的
-x86_64 / arm64。
+x86_64 / arm64。Windows x64 提供本机资源面板。
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/farfarfun/fundeploy/HEAD/install.sh | sh
@@ -78,8 +78,10 @@ apt 这条路没有 Gitee 备份：deb 树是 Actions 部署到 GitHub Pages 的
 
 ### 直接下二进制
 
-[Releases](https://github.com/farfarfun/fundeploy/releases) 里每个平台一个 `fundeploy-<target>.tar.gz`，
+[Releases](https://github.com/farfarfun/fundeploy/releases) 里 macOS 和 Linux 每个平台一个 `fundeploy-<target>.tar.gz`，
 解开把 `fundeploy` 丢进 PATH 即可。同目录下的 `SHA256SUMS` 可以校验。
+
+Windows x64 的面板打包为 `fundeploy-x86_64-pc-windows-msvc.zip`。解压后在 PowerShell 运行 `.\fundeploy.exe monitor`。
 
 ### cargo
 
@@ -124,7 +126,7 @@ formula，apt 源也只放最新一版，点了版本会直接报错并给出路
 ## 能管什么
 
 ```bash
-fundeploy          # 不带参数：打开菜单（可输入过滤）
+fundeploy          # 不带参数：打开菜单（输入筛选，Esc 返回上一级，主菜单 Esc 退出）
 fundeploy list     # 列出所有能管的东西
 fundeploy about    # 这是什么、谁做的
 ```
@@ -133,11 +135,19 @@ fundeploy about    # 这是什么、谁做的
 撑破；`NO_COLOR=1` 或输出被重定向时自动退回无框的纯文本，不往日志里塞框线和色码。
 等端口监听这种最长半分钟的干等会转一个 spinner（进度画在 stderr，不混进重定向的结果）。
 
+### 本机资源面板 `fundeploy monitor`
+
+在 macOS、Linux 或 Windows 终端运行 `fundeploy monitor`，可查看 CPU 型号、物理核与逻辑核数、当前 CPU 利用率、内存与交换空间、各挂载卷的容量和使用率，以及 GPU 利用率。面板也显示主机名、系统版本和开机时长。按 Q 或 Ctrl+C 退出并返回原来的终端。
+
+`fundeploy monitor --once` 输出一次快照。重定向到文件或管道也会自动输出快照，方便保留排障记录。
+
+GPU 读数取决于驱动。Linux 读取 NVIDIA 的 `nvidia-smi` 或 DRM 的 `gpu_busy_percent`，macOS 读取 I/O Registry 中驱动公开的利用率，Windows 读取 WDDM 的 GPU 引擎计数器，显示每张卡最忙的引擎。驱动没有提供计数时，面板显示“暂无读数”。
+
 ### 服务 `fundeploy service`
 
 ```bash
 fundeploy service                    # 列出所有服务
-fundeploy service status             # 所有服务的状态总览（在跑 / 没在跑 / 部分）
+fundeploy service status             # 所有服务实际配置的 TCP 端口监听总览
 fundeploy service funread install
 fundeploy service funread start
 fundeploy service funread status
@@ -197,22 +207,9 @@ fundeploy service farfarfun-web status
 一条 `stop` 全停掉。换包前会先停服、装完按原状态起回来——在跑着的进程底下换全局包，
 Node 还开着那棵树里的文件。
 
-`stop` 走完还有人占着端口时，会按端口反查出占用者，问一声再强停（SIGTERM，5 秒不走
-上 SIGKILL）。端口不腾出来，紧接着的 `start` 会跳过那个组件，于是 `stop` 和 `start`
-都报成功、跑的却还是旧进程——`restart` 卡住多半就是这么来的。
-上游停止命令即使报错，只要端口已释放，就按端口检查结果报告。
+`stop` 会复查 TCP 监听端口。fundeploy 能核实进程属于该服务时，终端会询问是否清理残留，无人值守时自动清理。PID 文件或端口指向归属未知的进程时，交互终端会显示 PID、进程名和来源，并询问是否终止。回车默认保留，明确同意后只终止该 PID。无人值守时保留进程并中止重启。用 `fundeploy port-kill <端口> --list` 可以查看占用者。
 
-```
-警告: new-api 的端口 8801 停完还占着，占用者是 PID 2593874（python3）
-? 强制停掉它，腾出端口 8801 吗 (Y/n)
-```
-
-回车就是停。没有终端时（cron、CI、输出被重定向）不问直接停，`restart` 因此不会断在
-半路；盯着终端但不想每次都按回车的，设 `FUNDEPLOY_STOP_KILL_PORT_YES=1`。
-`init` 和 fundeploy 自己这两个 PID 永远不动。
-
-Paperclip 的 `restart` 同样先 `stop` 再 `start`，不再调用上游热重启；残留端口会显示
-PID 和进程名并询问是否强停。拒绝或清理失败就中止重启，启动后还会检查 `/api/health`。
+`FUNDEPLOY_STOP_KILL_PORT_YES=1` 可以跳过已确认归属的残留进程提示。Paperclip 重启时先执行 `stop`，端口释放后再启动并检查 `/api/health`。
 停止时会等待运行中的任务退出，fundeploy 托管模式的等待上限由
 `PAPERCLIP_STOP_TIMEOUT_SEC` 控制（默认 300 秒）。
 
@@ -340,7 +337,7 @@ install.sh   装机脚本
 装不进这套形状的（Paperclip 要直驱上游 CLI）才单独实现 trait。
 
 发布：改 `Cargo.toml` 里的 `version`，提交，推同版本的 tag（`v0.3.1`）。CI 会核对 tag
-与版本号、构建四个平台、生成校验和与安装包、发 Release，用装机脚本真装一遍验证，然后
+与版本号、构建各平台附件、生成校验和与安装包、发 Release，用装机脚本真装一遍验证，然后
 发 crates.io 并通知 [farfarfun/packages](https://github.com/farfarfun/packages) 重建
 apt 索引和 Homebrew formula。
 

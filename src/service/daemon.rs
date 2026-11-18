@@ -388,6 +388,12 @@ pub trait Daemon {
         for p in &spec.procs {
             let port = self.effective_port(p);
             if port::is_listening(&p.host, port) {
+                if port::listener_pid(port)
+                    .and_then(|pid| proc::managed_process(pid, &spec.pid_file(p), &spec.app_dir()))
+                    != Some(true)
+                {
+                    bail!("{}:{} 已有监听，无法确认归属，启动中止", p.host, port);
+                }
                 ui::info(format!("{} {}:{port} 已在运行，跳过。", p.label, p.host));
                 continue;
             }
@@ -464,7 +470,9 @@ pub trait Daemon {
         if !started.is_empty() {
             ui::blank();
             for p in started.iter().rev() {
-                self.kill(p);
+                if let Err(e) = self.kill(p) {
+                    result = result.and(Err(e));
+                }
             }
         }
         result
@@ -473,13 +481,15 @@ pub trait Daemon {
     fn stop(&self) -> Result<()> {
         let spec = self.spec();
         // 逆序停：先停依赖别人的那个，它才不会在被依赖方消失后报一堆连接错误。
+        let mut result = Ok(());
         for p in spec.procs.iter().rev() {
-            self.kill(p);
+            if let Err(e) = self.kill(p) {
+                ui::warn(format!("{}: {e}", p.label));
+                result = result.and(Err(e));
+            }
         }
-        for p in spec.procs.iter().rev() {
-            force_free_port(&p.label, self.effective_port(p));
-        }
-        ui::info("已停止（best effort）。");
+        result?;
+        ui::info("已停止。");
         Ok(())
     }
 
@@ -511,7 +521,9 @@ pub trait Daemon {
         for p in &spec.procs {
             let port = self.effective_port(p);
             let at = format!("{}:{port}", p.host);
-            let pid = proc::read_pid_file(&spec.pid_file(p)).filter(|&x| proc::is_alive(x));
+            let pid = proc::read_pid_file(&spec.pid_file(p)).filter(|&pid| {
+                proc::managed_process(pid, &spec.pid_file(p), &spec.app_dir()) == Some(true)
+            });
             let listening = port::is_listening(&p.host, port);
 
             let (st, text) = match (pid, listening) {
@@ -527,30 +539,26 @@ pub trait Daemon {
                 // 端口有人但 PID 文件对不上。是手工起的本服务，还是别的程序正好占了
                 // 这个端口，差别很大——后者意味着 start 会起不来、stop 不会去碰它。
                 (None, true) => match port::listener_pid(port) {
-                    Some(other) => match same_binary(other, &spec.app_dir().join(&p.bin)) {
-                        Some(true) => {
-                            up += 1;
-                            (
-                                ui::State::Up,
-                                format!("在运行 · PID {other}（不是 fundeploy 起的）· {at}"),
-                            )
+                    Some(other) => {
+                        match proc::managed_process(other, &spec.pid_file(p), &spec.app_dir()) {
+                            Some(true) => {
+                                up += 1;
+                                (
+                                    ui::State::Up,
+                                    format!("在运行 · PID {other}（不是 fundeploy 起的）· {at}"),
+                                )
+                            }
+                            Some(false) => (
+                                ui::State::Down,
+                                format!("{at} 被 PID {other} 占着，跑的不是本服务"),
+                            ),
+                            None => (
+                                ui::State::Down,
+                                format!("{at} 被 PID {other} 占着，认不出是不是本服务"),
+                            ),
                         }
-                        Some(false) => (
-                            ui::State::Down,
-                            format!("{at} 被 PID {other} 占着，跑的不是本服务"),
-                        ),
-                        None => (
-                            ui::State::Down,
-                            format!("{at} 被 PID {other} 占着，认不出是不是本服务"),
-                        ),
-                    },
-                    None => {
-                        up += 1;
-                        (
-                            ui::State::Up,
-                            format!("在运行（不是 fundeploy 起的）· {at}"),
-                        )
                     }
+                    None => (ui::State::Partial, format!("端口已监听 · 归属未知 · {at}")),
                 },
                 (None, false) => (ui::State::Idle, format!("没在运行 · {at}")),
             };
@@ -607,12 +615,14 @@ pub trait Daemon {
     fn running(&self) -> bool {
         let spec = self.spec();
         spec.procs.iter().any(|p| {
-            if proc::read_pid_file(&spec.pid_file(p)).is_some_and(proc::is_alive) {
+            if proc::read_pid_file(&spec.pid_file(p)).is_some_and(|pid| {
+                proc::managed_process(pid, &spec.pid_file(p), &spec.app_dir()) == Some(true)
+            }) {
                 return true;
             }
             // PID 文件没了也可能真是我们的进程（手工删过），认二进制。
             port::listener_pid(self.effective_port(p))
-                .and_then(|pid| same_binary(pid, &spec.app_dir().join(&p.bin)))
+                .and_then(|pid| proc::managed_process(pid, &spec.pid_file(p), &spec.app_dir()))
                 .unwrap_or(false)
         })
     }
@@ -654,7 +664,12 @@ pub trait Daemon {
 
         let log = spec.log_file(p);
         let argv = self.argv(p)?;
-        let pid = proc::spawn_detached(&argv, &p.cwd, &p.env, &log)?;
+        let mut env = p.env.clone();
+        env.push((
+            "FUNDEPLOY_SERVICE_PID_FILE".into(),
+            Some(spec.pid_file(p).display().to_string()),
+        ));
+        let pid = proc::spawn_detached(&argv, &p.cwd, &env, &log)?;
         proc::write_pid_file(&spec.pid_file(p), pid)?;
 
         let sp = ui::Spinner::new(format!("等 {} 监听 {}:{port}", p.label, p.host));
@@ -676,83 +691,14 @@ pub trait Daemon {
         bail!("{why}\n日志 {}:\n{}", log.display(), tail(&log, 20));
     }
 
-    /// 停一个进程。best effort：没在跑不算错。
-    fn kill(&self, p: &Proc) {
+    fn kill(&self, p: &Proc) -> Result<()> {
         let spec = self.spec();
-        let pid_file = spec.pid_file(p);
         ui::step(format!("停止 {}", p.label));
-
-        // 自成进程组起的，整组停——服务派生的子进程（worker、浏览器实例）
-        // 不跟着走的话会继续占着端口。
-        match proc::stop_by_pid_file(&pid_file, START_TIMEOUT, true) {
-            Ok(true) => return,
-            Ok(false) => {}
-            Err(e) => ui::warn(format!("{} 停止失败: {e}", p.label)),
-        }
-
-        // PID 文件丢了（手工删过、或者上一次是别的方式起的），按端口兜底。
-        let port = self.effective_port(p);
-        if !port::is_listening(&p.host, port) {
-            ui::info(format!("{} 本来就没在运行。", p.label));
-            return;
-        }
-        let Some(pid) = port::listener_pid(port) else {
-            ui::warn(format!(
-                "{} 的端口 {port} 有人在听，但既没有 PID 文件也查不到 PID。",
-                p.label
-            ));
-            return;
-        };
-
-        // 只报不动：真要动手是 stop 收尾那一步（[`force_free_port`]）的事，强停要问
-        // 一声，而这一问全流程只该出现一次。这里先把归属交代清楚——那一问只给得出
-        // 进程名，「它跑的是不是本服务的二进制」只有这儿答得上来。
-        let bin = spec.app_dir().join(&p.bin);
-        match same_binary(pid, &bin) {
-            Some(true) => ui::info(format!("PID 文件没了，按端口 {port} 找到 PID {pid}")),
-            Some(false) => ui::warn(format!(
-                "端口 {port} 被 PID {pid} 占着，它跑的不是 {}。",
-                bin.display()
-            )),
-            None => ui::warn(format!(
-                "端口 {port} 被 PID {pid} 占着，确认不了那是不是 {}（多半不是当前用户起的）。",
-                p.label
-            )),
-        }
+        let owns =
+            |pid| proc::managed_process(pid, &spec.pid_file(p), &spec.app_dir()) == Some(true);
+        proc::stop_owned_pid_file(&spec.pid_file(p), START_TIMEOUT, true, owns)?;
+        force_free_port(&p.label, &p.host, self.effective_port(p), owns)
     }
-}
-
-/// `pid` 跑的是不是 `bin` 这个文件。
-///
-/// `None` 表示答不上来——进程不属于当前用户时，`/proc/<pid>/exe` 读不了，
-/// macOS 上 `ps` 也问不出路径。「答不上来」和「确认不是」得分开：前者只能保守
-/// 处理，后者可以直说。
-fn same_binary(pid: i32, bin: &Path) -> Option<bool> {
-    Some(running_exe(pid)? == bin.canonicalize().ok()?)
-}
-
-/// `pid` 正在跑的可执行文件路径。
-#[cfg(target_os = "linux")]
-fn running_exe(pid: i32) -> Option<PathBuf> {
-    std::fs::read_link(format!("/proc/{pid}/exe")).ok()
-}
-
-/// macOS 没有 `/proc`。`ps -o comm=` 在这儿给的是完整路径（Linux 上只有进程名，
-/// 还会被截到 15 个字符，所以这条路不能两边共用）。
-#[cfg(not(target_os = "linux"))]
-fn running_exe(pid: i32) -> Option<PathBuf> {
-    let out = std::process::Command::new("ps")
-        .args(["-p", &pid.to_string(), "-o", "comm="])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let line = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    // 进程没了、或者 ps 只给得出进程名（路径里有空格时它照样原样打，但带
-    // 参数的 argv 不会出现在 comm 里），都当答不上来。
-    let p = PathBuf::from(line);
-    p.is_absolute().then(|| p.canonicalize().unwrap_or(p))
 }
 
 // ---------------------------------------------------------------- 安装细节
@@ -841,7 +787,12 @@ impl<T: Daemon> Service for Adapter<T> {
         &self.0.spec().summary
     }
     fn ports(&self) -> Vec<u16> {
-        self.0.spec().procs.iter().map(|p| p.port).collect()
+        self.0
+            .spec()
+            .procs
+            .iter()
+            .map(|p| self.0.effective_port(p))
+            .collect()
     }
     fn install(&self, version: Option<&str>) -> Result<()> {
         self.0.install(version)
@@ -920,19 +871,6 @@ mod tests {
         assert!(s.data_dir().ends_with("data"));
         assert!(s.pid_file(&s.procs[0]).ends_with("run/main.pid"));
         assert!(s.log_file(&s.procs[0]).ends_with("log/main.log"));
-    }
-
-    #[test]
-    fn 认得出端口上那个进程跑的是不是指定的二进制() {
-        // stop 的端口兜底要靠它来避免停掉别人的进程。自己的 PID 一定查得出来，
-        // 拿 PID 1 当反例——它一定不是测试二进制，而且就算读不到也只会得到 None。
-        let me = std::process::id() as i32;
-        let exe = std::env::current_exe().unwrap();
-        assert_eq!(same_binary(me, &exe), Some(true));
-        assert_ne!(same_binary(1, &exe), Some(true), "不能把别人的进程认成自己");
-        assert_eq!(same_binary(me, Path::new("/bin/sh")), Some(false));
-        // 不存在的路径 canonicalize 不了，只能答「不知道」，不能答「是」。
-        assert_eq!(same_binary(me, Path::new("/nope/nothing")), None);
     }
 
     #[test]

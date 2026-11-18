@@ -645,10 +645,7 @@ pub fn confirm_destructive(prompt: &str, env_yes: &str) -> Result<()> {
     if !interactive() {
         bail!("{prompt}\n当前是无人值守环境，确认请设 {env_yes}=1 后重试。");
     }
-    let yes = inquire::Confirm::new(prompt)
-        .with_default(false)
-        .prompt()
-        .unwrap_or(false);
+    let yes = inquire::Confirm::new(prompt).with_default(false).prompt()?;
     if !yes {
         bail!("已取消。");
     }
@@ -710,12 +707,15 @@ pub fn select<'a>(prompt: &str, options: &'a [String]) -> Result<Option<&'a Stri
     if !interactive() {
         bail!("{prompt}\n当前是无人值守环境，请把选项直接写在命令行上。");
     }
-    Ok(
-        inquire::Select::new(prompt, options.iter().collect::<Vec<_>>())
-            .with_page_size(15)
-            .prompt()
-            .ok(),
-    )
+    match inquire::Select::new(prompt, options.iter().collect::<Vec<_>>())
+        .with_page_size(15)
+        .with_help_message("↑↓ 选择 · 输入筛选 · Enter 确认 · Esc 返回")
+        .prompt()
+    {
+        Ok(item) => Ok(Some(item)),
+        Err(inquire::InquireError::OperationCanceled) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
 }
 
 #[cfg(test)]

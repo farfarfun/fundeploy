@@ -612,7 +612,14 @@ fn new_api() -> NewApi {
         &home().join("opt/new-api").to_string_lossy(),
     ));
     let data = home.join("data");
-    let port = env_port("NEW_API_PORT", 8801);
+    let configured_port = if env_opt("NEW_API_FORCE_SCRIPT_PORT").as_deref() == Some("1") {
+        None
+    } else {
+        env_file_value(&data.join(".env"), "PORT")
+            .and_then(|v| v.parse::<u16>().ok())
+            .filter(|&p| p > 0)
+    };
+    let port = configured_port.unwrap_or_else(|| env_port("NEW_API_PORT", 8801));
     let host = env_str("NEW_API_HOST", "127.0.0.1");
 
     // 上游给三种附件，macOS 不分架构。
@@ -630,8 +637,7 @@ fn new_api() -> NewApi {
 
     // godotenv 不覆盖已存在的环境变量。有 .env 就把 PORT 让给它，同时从继承环境里
     // 删掉 PORT——操作者 shell 里 export 过一个，.env 那行就白写了，而且没人报错。
-    let force = env_opt("NEW_API_FORCE_SCRIPT_PORT").as_deref() == Some("1");
-    proc = if data.join(".env").is_file() && !force {
+    proc = if configured_port.is_some() {
         proc.unset("PORT")
     } else {
         proc.env("PORT", port.to_string())
@@ -660,15 +666,6 @@ fn new_api() -> NewApi {
 impl daemon::Daemon for NewApi {
     fn spec(&self) -> &DaemonSpec {
         &self.spec
-    }
-
-    /// `.env` 里的 PORT 才是真正生效的那个（见上面 godotenv 的说明）。
-    /// 不按它探测的话，start 会在一个没人监听的端口上空等三十秒然后报失败。
-    fn effective_port(&self, p: &Proc) -> u16 {
-        env_file_value(&self.spec.data_dir().join(".env"), "PORT")
-            .and_then(|v| v.parse().ok())
-            .filter(|&x| x > 0)
-            .unwrap_or(p.port)
     }
 }
 
@@ -1326,6 +1323,10 @@ mod tests {
             ".env 里的 PORT 才是真正生效的那个"
         );
 
+        assert_eq!(daemon::boxed(s).ports(), [9999]);
+        std::env::set_var("NEW_API_FORCE_SCRIPT_PORT", "1");
+        assert_eq!(daemon::boxed(new_api()).ports(), [8801]);
+        std::env::remove_var("NEW_API_FORCE_SCRIPT_PORT");
         std::env::remove_var("NEW_API_SERVICE_HOME");
     }
 

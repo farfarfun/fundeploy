@@ -680,9 +680,10 @@ impl Paperclip {
         if !proc::is_alive(pid) {
             return None;
         }
-        // PID 会被复用，而这份文件可能是上次重启前留下的。只认命令行里确实是
-        // paperclipai 的进程，否则宁可当成「没在跑」，也不能朝陌生进程发信号。
-        process_cmdline(pid)?.contains("paperclipai").then_some(pid)
+        let program = self.cli_path().unwrap_or_else(|| self.global_cli_path());
+        (proc::protected(pid).is_none()
+            && proc::managed_process(pid, &self.pid_file(), &program) == Some(true))
+        .then_some(pid)
     }
 
     fn start_fallback(&self, cfg: &Config, reason: &str) -> Result<()> {
@@ -711,6 +712,10 @@ impl Paperclip {
 
         let mut spawn_env = self.cli_env(cfg);
         spawn_env.extend(self.node_env()?);
+        spawn_env.push((
+            "FUNDEPLOY_SERVICE_PID_FILE".into(),
+            Some(self.pid_file().display().to_string()),
+        ));
         // 刻意不设 PAPERCLIP_SERVICE_MANAGED=1：它只用来让 run 跳过「同实例已在
         // supervisor 下运行」的检查，而这里恰好要保留那层保护。
 
@@ -761,30 +766,25 @@ impl Paperclip {
     ///
     /// `quiet`：没东西可停时不出声，供官方 stop 之后的收尾调用——那条路径已经有输出了。
     fn stop_fallback(&self, quiet: bool) -> Result<bool> {
-        let Some(pid) = self.fallback_pid() else {
-            if !quiet {
-                ui::info("Paperclip 没在运行（没有 fundeploy 托管的进程）。");
-            }
-            let _ = std::fs::remove_file(self.pid_file());
-            return Ok(false);
-        };
-        ui::step(format!(
-            "停止 fundeploy 托管的 Paperclip（PID {pid}，最长等 {} 秒排空运行中的任务）",
-            self.stop_timeout.as_secs()
-        ));
-        // 整组停：spawn_detached 做过 setsid，这个 PID 就是组 leader，而服务会派生
-        // 数据库和 agent 子进程，只停父进程会留下孤儿。
-        proc::stop_pid(pid, self.stop_timeout, true)?;
-        let _ = std::fs::remove_file(self.pid_file());
+        let path = self.pid_file();
+        let stopped = proc::stop_owned_pid_file(&path, self.stop_timeout, true, |pid| {
+            self.fallback_pid() == Some(pid)
+        })?;
         if !quiet {
-            ui::ok("已停止 fundeploy 托管的 Paperclip。");
+            if stopped {
+                ui::ok("已停止 PID 文件记录的 Paperclip 进程。");
+            } else {
+                ui::info("Paperclip 没有 fundeploy 托管的进程。");
+            }
         }
-        Ok(true)
+        Ok(stopped)
     }
 
     fn ensure_port_free(&self) -> Result<()> {
         let cfg = self.config();
-        super::force_free_port("Paperclip", cfg.port);
+        super::force_free_port("Paperclip", &cfg.host, cfg.port, |pid| {
+            self.fallback_pid() == Some(pid)
+        })?;
         if port::is_listening(&cfg.host, cfg.port) {
             bail!(
                 "Paperclip 的端口 {} 仍被占用，已中止重启；请确认占用者后再试",
@@ -815,7 +815,9 @@ impl Paperclip {
             ui::warn(format!("官方 stop 没把它停下来：{evidence}"));
             // 只按端口强停，不去碰服务管理器里那个 PID：那条进程有 KeepAlive 守着，
             // 杀掉只会被立刻拉起来，把「停不下来」变成更难看的「停了又起」。
-            super::force_free_port("Paperclip", cfg.port);
+            super::force_free_port("Paperclip", &cfg.host, cfg.port, |pid| {
+                self.fallback_pid() == Some(pid)
+            })?;
 
             // 重新问一遍状态：强停可能已经解决问题，也可能根本没碰到真正的占用者。
             let sup = self.supervisor();
@@ -1206,7 +1208,7 @@ impl Paperclip {
         // 且什么都没停），fundeploy 托管的那个只能从 PID 文件收。这里刻意尽力而为、
         // 不因为停不掉就退出——真正的护栏是紧随其后的端口检查。
         let _ = self.exec(&["service", "stop"]);
-        let _ = self.stop_fallback(true);
+        self.stop_fallback(true)?;
 
         // 假成功会让上面两步什么都没停下，继续下去就是在服务运行中替换 payload；用
         // `run` 前台起的实例正是这种情况。所以无条件确认端口真的放开了。
@@ -1765,7 +1767,10 @@ mod tests {
         .unwrap();
         // 测试进程自身受保护，不会被杀掉；端口清理失败必须阻止后续 start。
         let err = pc.ensure_port_free().unwrap_err().to_string();
-        assert!(err.contains("已中止重启"), "{err}");
+        assert!(
+            err.contains(&port.to_string()) && err.contains("已中止"),
+            "{err}"
+        );
         drop(listener);
         pc.ensure_port_free().unwrap();
     }

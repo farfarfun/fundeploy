@@ -151,12 +151,21 @@ pub fn is_taken(port: u16) -> bool {
 /// 等于把同一份几千行的表解析许多遍。`fundeploy service status` 的总览要问十几个
 /// 服务、二十几个端口，此前就是二十几遍。
 pub fn taken_many(ports: &[u16]) -> BTreeSet<u16> {
+    bound_ports(ports, false)
+}
+
+/// 只统计 TCP 监听，UDP bind 不代表服务已监听 TCP。
+pub fn listening_many(ports: &[u16]) -> BTreeSet<u16> {
+    bound_ports(ports, true)
+}
+
+fn bound_ports(ports: &[u16], tcp_only: bool) -> BTreeSet<u16> {
     #[cfg(target_os = "linux")]
     {
         // /proc/net/tcp 是全局可读的，别人的监听也在里面。
         linux::bound_inodes_many(ports)
             .into_values()
-            .map(|(port, _)| port)
+            .filter_map(|(port, proto)| (!tcp_only || proto == "tcp").then_some(port))
             .collect()
     }
     #[cfg(not(target_os = "linux"))]
@@ -164,7 +173,12 @@ pub fn taken_many(ports: &[u16]) -> BTreeSet<u16> {
         ports
             .iter()
             .copied()
-            .filter(|&p| !lsof::holders(p).is_empty())
+            .filter(|&p| {
+                lsof::holders(p)
+                    .iter()
+                    .any(|h| !tcp_only || h.protos.contains(&"tcp"))
+                    || (tcp_only && is_listening("127.0.0.1", p))
+            })
             .collect()
     }
 }

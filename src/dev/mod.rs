@@ -23,7 +23,7 @@ pub mod uv;
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use clap::ValueEnum;
 
 use crate::common::pm::Pm;
@@ -182,6 +182,53 @@ pub fn upgrade(d: &dyn Dev, method: Option<Method>) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// 在目标文件系统验证新工具链，交换目录成功后才回收旧版。
+fn install_archive(pkg: &Path, root: &Path, bin: &str, probe: &str) -> Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    let parent = root
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    let work = tempfile::tempdir_in(parent)?;
+    let staged = work.path().join("new");
+    crate::common::archive::untar_gz(pkg, &staged, 1)?;
+    let executable = staged.join("bin").join(bin);
+    cmd::capture([executable.as_os_str(), probe.as_ref()])
+        .with_context(|| format!("新工具链 {} 验证失败", executable.display()))?;
+
+    if !root.try_exists()? {
+        return std::fs::rename(&staged, root).context("启用工具链失败");
+    }
+    let actual = root.canonicalize()?;
+    fs::guard_removable(&actual)?;
+    if actual == Path::new("/opt") || !root.is_dir() || root.is_symlink() {
+        bail!("无效的工具链安装目录: {}", root.display());
+    }
+    let src = CString::new(staged.as_os_str().as_bytes())?;
+    let dest = CString::new(root.as_os_str().as_bytes())?;
+    // 内核在一次操作中交换两个目录；进程被中断时，原路径仍有完整版本。
+    #[cfg(target_os = "linux")]
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            libc::AT_FDCWD,
+            src.as_ptr(),
+            libc::AT_FDCWD,
+            dest.as_ptr(),
+            libc::RENAME_EXCHANGE,
+        )
+    };
+    #[cfg(target_os = "macos")]
+    let result = unsafe { libc::renamex_np(src.as_ptr(), dest.as_ptr(), libc::RENAME_SWAP) };
+    if result != 0 {
+        return Err(std::io::Error::last_os_error())
+            .context("切换工具链失败，原版本仍在安装目录中");
+    }
+    Ok(())
 }
 
 /// 卸载。
@@ -383,6 +430,44 @@ mod tests {
     use super::*;
 
     /// 这些测试会改进程级的环境变量，必须排队。
+    #[test]
+    fn 换包先试运行_失败保留旧版() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir_in(env::home()).unwrap();
+        let root = temp.path().join("installed");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("old"), "working").unwrap();
+        let payload = temp.path().join("release/bin");
+        std::fs::create_dir_all(&payload).unwrap();
+        let pkg = temp.path().join("pkg.tar.gz");
+        let script = payload.join("node");
+        for code in [1, 0] {
+            std::fs::write(&script, format!("#!/bin/sh\nexit {code}\n")).unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(std::process::Command::new("tar")
+                .arg("-czf")
+                .arg(&pkg)
+                .arg("-C")
+                .arg(temp.path())
+                .arg("release")
+                .status()
+                .unwrap()
+                .success());
+            let result = install_archive(&pkg, &root, "node", "--version");
+            if code == 1 {
+                assert!(result.is_err());
+                assert_eq!(
+                    std::fs::read_to_string(root.join("old")).unwrap(),
+                    "working"
+                );
+            } else {
+                result.unwrap();
+                assert!(root.join("bin/node").is_file());
+                assert!(!root.join("old").exists());
+            }
+        }
+    }
+
     fn 排队() -> std::sync::MutexGuard<'static, ()> {
         static M: std::sync::Mutex<()> = std::sync::Mutex::new(());
         M.lock().unwrap_or_else(|e| e.into_inner())

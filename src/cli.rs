@@ -31,6 +31,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// 本机资源面板（CPU、内存、磁盘、GPU）
+    Monitor(crate::monitor::Options),
     /// 服务管理
     #[command(visible_alias = "svc")]
     Service {
@@ -458,10 +460,28 @@ fn split_extra<'a>(
 }
 
 pub fn cli_main() -> Result<()> {
+    match dispatch() {
+        Err(e)
+            if matches!(
+                e.downcast_ref::<inquire::InquireError>(),
+                Some(
+                    inquire::InquireError::OperationCanceled
+                        | inquire::InquireError::OperationInterrupted
+                )
+            ) =>
+        {
+            Ok(())
+        }
+        other => other,
+    }
+}
+
+fn dispatch() -> Result<()> {
     // 必须在任何交互之前：inquire 不走 ui::color()，默认配色会在重定向时把 ANSI
     // 码漏进管道。
     ui::init_theme();
     match Cli::parse().command {
+        Some(Command::Monitor(options)) => options.run(),
         Some(Command::List) => {
             list_all();
             Ok(())
@@ -711,13 +731,29 @@ fn action_menu(items: &[(&str, &str)]) -> Vec<String> {
         .collect()
 }
 
-/// 弹一张菜单，返回选中的那一行。
-///
-/// 存在的理由只有一条：把「选完了判有没有取消」收到一处。这条链此前在本文件里
-/// 抄了十四遍，而每一遍都要原样写出同一句「已取消。」——抄漏一个 `?` 或者把那
-/// 句话写成别的措辞，都不会有任何东西发现。
+/// 子页按 Esc 时重新显示当前菜单；当前菜单的 Esc 交给上一级。
+fn submenu<T, R>(
+    mut pick: impl FnMut() -> Result<T>,
+    mut enter: impl FnMut(T) -> Result<R>,
+) -> Result<R> {
+    loop {
+        let picked = pick()?;
+        match enter(picked) {
+            Err(e)
+                if matches!(
+                    e.downcast_ref::<inquire::InquireError>(),
+                    Some(inquire::InquireError::OperationCanceled)
+                ) =>
+            {
+                continue
+            }
+            result => return result,
+        }
+    }
+}
+
 fn choose<'a>(prompt: &str, menu: &'a [String]) -> Result<&'a String> {
-    ui::select(prompt, menu)?.ok_or_else(|| anyhow::anyhow!("已取消。"))
+    ui::select(prompt, menu)?.ok_or_else(|| inquire::InquireError::OperationCanceled.into())
 }
 
 /// 同 [`choose`]，但只要选中那行的**第一个词**。
@@ -757,9 +793,9 @@ fn choose_index(prompt: &str, menu: &[String]) -> Result<usize> {
 ///
 /// `overview` 是「不点名」那条路的说明——每一域都有这条路，而菜单从前要么直接
 /// 跳进列表、要么直接执行默认动作，另一半在交互里走不到。
-fn pick_name(names: Vec<String>, prompt: &str, overview: &str) -> Result<Option<String>> {
+fn pick_name(names: &[String], prompt: &str, overview: &str) -> Result<Option<String>> {
     let mut menu = vec![format!("（全部）  {overview}")];
-    menu.extend(names);
+    menu.extend_from_slice(names);
     let picked = choose(prompt, &menu)?;
     if picked.starts_with("（全部）") {
         return Ok(None);
@@ -803,33 +839,37 @@ fn pick_dev_action() -> Result<DevAction> {
 }
 
 fn pick_skills_action() -> Result<SkillsAction> {
-    let head = pick_action(&SKILLS_MENU)?;
-    // 这三个都要点名仓库，选中之后才问。
-    let name = match head.as_str() {
-        "install" | "update" | "rm" => {
-            let n = ui::input("仓库名", "")?;
-            if n.is_empty() {
-                bail!("没给仓库名。");
-            }
-            Some(n)
-        }
-        _ => None,
-    };
-    Ok(match head.as_str() {
-        "sync" => SkillsAction::Sync,
-        "install" => SkillsAction::Install {
-            name: name.unwrap(),
+    submenu(
+        || pick_action(&SKILLS_MENU),
+        |head| {
+            // 这三个都要点名仓库，选中之后才问。
+            let name = match head.as_str() {
+                "install" | "update" | "rm" => {
+                    let n = ui::input("仓库名", "")?;
+                    if n.is_empty() {
+                        bail!("没给仓库名。");
+                    }
+                    Some(n)
+                }
+                _ => None,
+            };
+            Ok(match head.as_str() {
+                "sync" => SkillsAction::Sync,
+                "install" => SkillsAction::Install {
+                    name: name.unwrap(),
+                },
+                "update" => SkillsAction::Update {
+                    name: name.unwrap(),
+                },
+                "rm" => SkillsAction::Rm {
+                    name,
+                    all: false,
+                    yes: false,
+                },
+                _ => SkillsAction::List,
+            })
         },
-        "update" => SkillsAction::Update {
-            name: name.unwrap(),
-        },
-        "rm" => SkillsAction::Rm {
-            name,
-            all: false,
-            yes: false,
-        },
-        _ => SkillsAction::List,
-    })
+    )
 }
 
 /// GitHub 诊断那一域。`--fix` / `--undo` 以前在交互里走不到。
@@ -857,34 +897,39 @@ fn pick_upgrade_action() -> Result<()> {
 }
 
 fn pick_source_action() -> Result<SourceAction> {
-    Ok(match pick_action(&SOURCE_MENU)?.as_str() {
-        "list" => SourceAction::List,
-        "test" => SourceAction::Test,
-        "use" => SourceAction::Use { mirror: None },
-        "reset" => SourceAction::Reset,
-        // 这两个要带值，选中之后才问。
-        "add" => {
-            let name = ui::input("源的名字", "")?;
-            let url = ui::input("地址", "")?;
-            if name.is_empty() || url.is_empty() {
-                bail!("名字和地址都得给。");
-            }
-            // 备注是可选的，交互里不问——真要写，命令行上 `--label` 更方便。
-            SourceAction::Add {
-                name,
-                url,
-                label: None,
-            }
-        }
-        "rm" => {
-            let name = ui::input("要删哪个（自定义源的名字）", "")?;
-            if name.is_empty() {
-                bail!("没给名字。");
-            }
-            SourceAction::Rm { name }
-        }
-        _ => SourceAction::Status,
-    })
+    submenu(
+        || pick_action(&SOURCE_MENU),
+        |action| {
+            Ok(match action.as_str() {
+                "list" => SourceAction::List,
+                "test" => SourceAction::Test,
+                "use" => SourceAction::Use { mirror: None },
+                "reset" => SourceAction::Reset,
+                // 这两个要带值，选中之后才问。
+                "add" => {
+                    let name = ui::input("源的名字", "")?;
+                    let url = ui::input("地址", "")?;
+                    if name.is_empty() || url.is_empty() {
+                        bail!("名字和地址都得给。");
+                    }
+                    // 备注是可选的，交互里不问——真要写，命令行上 `--label` 更方便。
+                    SourceAction::Add {
+                        name,
+                        url,
+                        label: None,
+                    }
+                }
+                "rm" => {
+                    let name = ui::input("要删哪个（自定义源的名字）", "")?;
+                    if name.is_empty() {
+                        bail!("没给名字。");
+                    }
+                    SourceAction::Rm { name }
+                }
+                _ => SourceAction::Status,
+            })
+        },
+    )
 }
 
 /// 不带任何参数时。
@@ -894,10 +939,11 @@ fn pick_source_action() -> Result<SourceAction> {
 /// 和 clap 的 `Command` 是两份定义，天然会漂移——`upgrade` 和 `list` 就这么漏过
 /// 一阵子：菜单里没有，`--help` 里有。所以提成常量，由
 /// [`tests::菜单和命令两边都不许漏`] 双向钉住。
-const MENU: [&str; 11] = [
+const MENU: [&str; 12] = [
     "service    服务（装、起、停、查）",
     "tool       工具（装、升、卸、查）",
     "source     换源（pip、npm、brew、cargo、go）",
+    "monitor    本机资源面板（CPU、内存、磁盘、GPU）",
     "port-kill  腾端口（查出谁占着，停掉它）",
     "doctor     诊断（GitHub 连不上）",
     "dev        开发工具链（go、nodejs、pnpm、rust、uv、python）",
@@ -924,39 +970,61 @@ fn no_args() -> Result<()> {
     let domains: Vec<String> = MENU.iter().map(|s| s.to_string()).collect();
     // 逐个列全、不留 `_ =>` 兜底: 兜底会把「菜单加了项却忘了加分支」变成「选了
     // upgrade 却跳出工具列表」, 不报错也查不出来。
-    match choose_head("要管什么", &domains)?.as_str() {
+    submenu(
+        || choose_head("要管什么", &domains),
+        |domain| run_domain(&domain),
+    )
+}
+
+fn run_domain(domain: &str) -> Result<()> {
+    match domain {
+        "monitor" => crate::monitor::Options::default().run(),
         "service" => {
             let all = service::registry::all();
-            let idx = choose_index("选一个服务", &service_menu(&all))?;
-            if idx == 0 {
-                status_all();
-                Ok(())
-            } else {
-                let svc = all.into_iter().nth(idx - 1).expect("菜单与服务列表等长");
-                pick_and_run(svc.as_ref())
-            }
+            let menu = service_menu(&all);
+            submenu(
+                || choose_index("选一个服务", &menu),
+                |idx| {
+                    if idx == 0 {
+                        status_all();
+                        Ok(())
+                    } else {
+                        let svc = &all[idx - 1];
+                        pick_and_run(svc.as_ref())
+                    }
+                },
+            )
         }
         "tool" => {
             let all = tool::registry::all();
-            let idx = choose_index("选一个工具", &tool_menu(&all))?;
-            if idx == 0 {
-                tool_status_all();
-                Ok(())
-            } else {
-                let t = all.into_iter().nth(idx - 1).expect("菜单与工具列表等长");
-                pick_and_run_tool(t.as_ref())
-            }
+            let menu = tool_menu(&all);
+            submenu(
+                || choose_index("选一个工具", &menu),
+                |idx| {
+                    if idx == 0 {
+                        tool_status_all();
+                        Ok(())
+                    } else {
+                        let t = &all[idx - 1];
+                        pick_and_run_tool(t.as_ref())
+                    }
+                },
+            )
         }
         "source" => {
-            let names = source::registry::all()
+            let names: Vec<_> = source::registry::all()
                 .iter()
                 .map(|s| format!("{}{}", ui::pad(s.name(), 14), s.summary()))
                 .collect();
-            let Some(name) = pick_name(names, "给哪个换源", "所有源的状态")? else {
-                return source_cmd(None, None);
-            };
-            let action = pick_source_action()?;
-            source_cmd(Some(name), Some(action))
+            submenu(
+                || pick_name(&names, "给哪个换源", "所有源的状态"),
+                |name| {
+                    let Some(name) = name else {
+                        return source_cmd(None, None);
+                    };
+                    source_cmd(Some(name), Some(pick_source_action()?))
+                },
+            )
         }
         "port-kill" => {
             // `--list` 那条路（只看谁占着、不动手）以前在交互里走不到。
@@ -964,40 +1032,48 @@ fn no_args() -> Result<()> {
                 "kill  查出谁占着，停掉它".to_string(),
                 "list  只看谁占着，不动手".to_string(),
             ];
-            let how = choose("要做什么", &menu)?;
-            let line = ui::input("端口号（多个用空格隔开）", "")?;
-            let ports = port_kill::parse_ports(&line)?;
-            if how.starts_with("list") {
-                port_kill::list(&ports)
-            } else {
-                port_kill::kill(&ports, false)
-            }
+            submenu(
+                || choose("要做什么", &menu),
+                |how| {
+                    let line = ui::input("端口号（多个用空格隔开）", "")?;
+                    let ports = port_kill::parse_ports(&line)?;
+                    if how.starts_with("list") {
+                        port_kill::list(&ports)
+                    } else {
+                        port_kill::kill(&ports, false)
+                    }
+                },
+            )
         }
         "doctor" => pick_doctor_action(),
         "dev" => {
             let mut names = dev::registry::names();
             names.push("python".into());
-            let name = pick_name(names, "哪个工具链", "全部的状态")?;
-            match name {
-                None => dev_cmd(None, None),
-                Some(n) => {
-                    let action = pick_dev_action()?;
-                    dev_cmd(Some(n), Some(action))
-                }
-            }
+            submenu(
+                || pick_name(&names, "哪个工具链", "全部的状态"),
+                |name| match name {
+                    None => dev_cmd(None, None),
+                    Some(n) => {
+                        let action = pick_dev_action()?;
+                        dev_cmd(Some(n), Some(action))
+                    }
+                },
+            )
         }
         "ai" => {
             // `all` 是 ai_cmd 认的特殊名字，一次对所有 AI 命令行执行。
             let mut names = vec!["all  批量安装、升级或卸载".to_string()];
             names.extend(ai::registry::names());
-            let name = pick_name(names, "哪个 AI 命令行", "只看全部状态")?;
-            match name {
-                None => ai::list(),
-                Some(n) => {
-                    let action = pick_ai_action()?;
-                    ai_cmd(Some(n), Some(action))
-                }
-            }
+            submenu(
+                || pick_name(&names, "哪个 AI 命令行", "只看全部状态"),
+                |name| match name {
+                    None => ai::list(),
+                    Some(n) => {
+                        let action = pick_ai_action()?;
+                        ai_cmd(Some(n), Some(action))
+                    }
+                },
+            )
         }
         "skills" => {
             let action = pick_skills_action()?;
@@ -1106,15 +1182,15 @@ fn status_all() {
     // 先把所有服务的端口汇总成一张清单问一次。此前是逐个端口问，而每一问都要把
     // 四张 /proc/net 表重读重解一遍——十几个服务二十几个端口就是二十几遍。
     let every: Vec<u16> = all.iter().flat_map(|s| s.ports()).collect();
-    let taken = port::taken_many(&every);
+    let taken = port::listening_many(&every);
     for s in all {
         let ports = sorted_ports(s.as_ref());
         let up = ports.iter().filter(|p| taken.contains(p)).count();
         let (kind, label) = match (up, ports.len()) {
             (_, 0) => (ui::State::Idle, "没有端口".to_string()),
-            (0, _) => (ui::State::Idle, "没在跑".to_string()),
-            (u, n) if u == n => (ui::State::Up, "在跑".to_string()),
-            (u, n) => (ui::State::Partial, format!("部分 {u}/{n}")),
+            (0, _) => (ui::State::Idle, "端口未监听".to_string()),
+            (u, n) if u == n => (ui::State::Up, "端口已监听".to_string()),
+            (u, n) => (ui::State::Partial, format!("部分端口监听 {u}/{n}")),
         };
         let list: Vec<String> = ports.iter().map(u16::to_string).collect();
         println!(
@@ -1245,20 +1321,22 @@ fn pick_and_run(svc: &dyn Service) -> Result<()> {
     let actions = Action::menu();
     let labels = action_labels(actions.iter().map(Action::label).collect(), svc.extras());
 
-    let idx = choose_index(&format!("{} 要做什么", svc.name()), &labels)?;
-    match actions.get(idx) {
-        // 带必填参数的动作，菜单里只占了个位，这会儿才问。
-        Some(a) if a.needs_input() => {
-            let version = ui::input("回退到哪个版本（例如 1.1.109）", "")?;
-            if version.is_empty() {
-                bail!("没给版本号。");
+    submenu(
+        || choose_index(&format!("{} 要做什么", svc.name()), &labels),
+        |idx| match actions.get(idx) {
+            // 带必填参数的动作，菜单里只占了个位，这会儿才问。
+            Some(a) if a.needs_input() => {
+                let version = ui::input("回退到哪个版本（例如 1.1.109）", "")?;
+                if version.is_empty() {
+                    bail!("没给版本号。");
+                }
+                Action::Rollback { version }.apply(svc)
             }
-            Action::Rollback { version }.apply(svc)
-        }
-        Some(a) => a.apply(svc),
-        // 越过标准动作的下标落在 extras 上，顺序跟上面拼 labels 时一致。
-        None => svc.extra(svc.extras()[idx - actions.len()].name, &[]),
-    }
+            Some(a) => a.apply(svc),
+            // 越过标准动作的下标落在 extras 上，顺序跟上面拼 labels 时一致。
+            None => svc.extra(svc.extras()[idx - actions.len()].name, &[]),
+        },
+    )
 }
 
 fn pick_and_run_tool(t: &dyn Tool) -> Result<()> {
@@ -1269,16 +1347,36 @@ fn pick_and_run_tool(t: &dyn Tool) -> Result<()> {
     let actions = ToolAction::menu();
     let labels = action_labels(actions.iter().map(ToolAction::label).collect(), t.extras());
 
-    let idx = choose_index(&format!("{} 要做什么", t.name()), &labels)?;
-    match actions.get(idx) {
-        Some(a) => a.apply(t),
-        None => t.extra(t.extras()[idx - actions.len()].name, &[]),
-    }
+    submenu(
+        || choose_index(&format!("{} 要做什么", t.name()), &labels),
+        |idx| match actions.get(idx) {
+            Some(a) => a.apply(t),
+            None => t.extra(t.extras()[idx - actions.len()].name, &[]),
+        },
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn 子页取消回父菜单_当前页取消继续向上返回() {
+        let mut picks = 0;
+        let result = submenu(
+            || {
+                picks += 1;
+                if picks == 1 {
+                    Ok(())
+                } else {
+                    Err(inquire::InquireError::OperationCanceled.into())
+                }
+            },
+            |()| -> Result<()> { Err(inquire::InquireError::OperationCanceled.into()) },
+        );
+        assert_eq!(picks, 2);
+        assert!(result.unwrap_err().is::<inquire::InquireError>());
+    }
 
     #[test]
     fn 服务菜单先列状态再列全部服务() {

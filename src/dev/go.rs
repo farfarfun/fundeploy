@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use super::{install_root, Dev};
 use crate::common::platform::Platform;
 use crate::common::pm::Pm;
-use crate::common::{archive, download, fs};
+use crate::common::{download, fs};
 use crate::ui;
 
 /// 官方发布的版本清单入口。纯文本，第一行就是最新稳定版（形如 `go1.27.2`）。
@@ -54,19 +54,8 @@ impl Dev for Go {
         let scratch = fs::Scratch::new("go")?;
         let pkg = scratch.path().join(&name);
         download::to_file(&url, &pkg, &format!("Go {ver}"))?;
-
-        // 官方包自带一层 go/ 顶层目录，剥掉它，这样安装路径不随版本变。
-        //
-        // 先清空再解，不然换版本时上一版留下的文件会跟新版混在一起——Go 的
-        // src/ 和 pkg/ 跨版本增删频繁，混起来后 `go build` 的报错指向的是
-        // 根本不存在的旧标准库文件。
         let root = self.root();
-        if root.exists() {
-            fs::guard_removable(&root)?;
-            std::fs::remove_dir_all(&root)
-                .with_context(|| format!("清不掉旧的 {}", root.display()))?;
-        }
-        archive::untar_gz(&pkg, &root, 1)?;
+        super::install_archive(&pkg, &root, "go", "version")?;
         ui::ok(format!("Go {ver} 装到了 {}", root.display()));
         Ok(())
     }

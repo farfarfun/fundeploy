@@ -92,7 +92,7 @@ jobs:
       matrix:
         # macOS 必须覆盖：平台差异（brew cask 只在 macOS 上有、.zprofile 而不是
         # .profile、dmg 而不是 AppImage）是这个项目里真实存在的分支。
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -103,6 +103,7 @@ jobs:
       # 只按 Cargo.lock 做 key 的话，restore-keys 会把上一个 rustc 编出来的 target/
       # 捞回来——升级那周的表现是莫名其妙的重编，或者更难查的链接错误。
       - id: rust
+        shell: bash
         run: echo "ver=$(rustc --version | tr ' /' '--')" >>"$GITHUB_OUTPUT"
 
       - uses: actions/cache@v4
@@ -114,7 +115,7 @@ jobs:
           key: cargo-test-${{ runner.os }}-${{ steps.rust.outputs.ver }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: cargo-test-${{ runner.os }}-${{ steps.rust.outputs.ver }}-
 
-      - run: cargo test
+      - run: cargo test --locked
 
   build:
     name: build ${{ matrix.target }}

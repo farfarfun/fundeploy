@@ -168,9 +168,7 @@ impl Paperclip {
         }
 
         // 没给包名就从清单里挑。
-        let Some(p) = plugin::pick()? else {
-            return Ok(());
-        };
+        let p = plugin::pick()?.ok_or(inquire::InquireError::OperationCanceled)?;
         ui::step(format!("安装 Paperclip 插件 {}（来源: {}）", p.pkg, p.url));
         self.must_with(&["plugin", "install", p.pkg], &npm)
     }

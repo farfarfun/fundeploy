@@ -92,85 +92,72 @@ pub trait Service {
     }
 }
 
-/// 停完之后核对端口是不是真的放开了，没放开就按端口查出占用者停掉，动手前问一声。
-///
-/// 残留不能只是报出来：紧接着的 start 会因为端口被占而跳过该组件，于是服务看着
-/// 是起的，跑的却是旧进程——而 stop 和 start 都报了成功。
-///
-/// 要问的原因是这个 PID 是从端口反查来的，端口是全机共享的，它完全可能是别人的
-/// 进程（同机另装了一份、或者端口号撞了）。所以把谁要被停报在问题里，让人有机会
-/// 拦住。但这一问不能挡住自动化：无人值守时不问直接停，默认选项也是「停」——
-/// 详见 [`ui::confirm_default_yes`]。
-fn force_free_port(label: &str, port: u16) {
-    if !port::is_taken(port) {
-        return;
+/// 归属未知的监听进程需要逐个确认；任何未解决的占用都会中断 restart。
+fn force_free_port(
+    label: &str,
+    host: &str,
+    port: u16,
+    owns: impl Fn(i32) -> bool,
+) -> anyhow::Result<()> {
+    let listening =
+        || port::listening_many(&[port]).contains(&port) || port::is_listening(host, port);
+    if !listening() {
+        return Ok(());
     }
-    let holders = port::holders(port);
-    let listeners: Vec<_> = holders
-        .iter()
+    let listeners: Vec<_> = port::holders(port)
+        .into_iter()
         .filter(|h| h.protos.contains(&"tcp"))
         .collect();
     if listeners.is_empty() {
-        ui::warn(format!(
-            "{label} 的端口 {port} 仍被占用，但查不到 TCP 监听进程，强停不了。必要时加 sudo 再跑一次。"
-        ));
-        return;
-    }
-    let targets: Vec<_> = listeners
-        .into_iter()
-        .filter(|h| {
-            if let Some(why) = proc::protected(h.pid) {
-                ui::warn(format!(
-                    "{label} 的端口 {port} 被 PID {} 占着，但它{why}，没有动它。",
-                    h.pid
-                ));
-                false
-            } else {
-                true
-            }
-        })
-        .collect();
-    if targets.is_empty() {
-        return;
-    }
-
-    let who = targets
-        .iter()
-        .map(|h| describe(h))
-        .collect::<Vec<_>>()
-        .join("、");
-    let pids = targets
-        .iter()
-        .map(|h| h.pid.to_string())
-        .collect::<Vec<_>>()
-        .join(" ");
-    ui::warn(format!("{label} 的端口 {port} 停完还占着，占用者是 {who}"));
-    if !ui::confirm_default_yes(
-        &format!("强制停掉它，腾出端口 {port} 吗"),
-        ENV_KILL_PORT_YES,
-    ) {
-        ui::warn(format!(
-            "没有动 {who}；{label} 的端口 {port} 还占着，接下来的 start 会起不来。\
-             要自己停: kill -TERM {pids}"
-        ));
-        return;
-    }
-
-    for h in targets {
-        ui::step(format!("强制停掉 {}", describe(h)));
-        // 端口反查出的 PID 可能与调用者共用进程组。
-        if let Err(e) = proc::stop_pid(h.pid, FORCE_GRACE, false) {
-            ui::warn(format!("停不下来: {e}"));
+        if !listening() {
+            return Ok(());
         }
+        anyhow::bail!("{label} 的端口 {port} 仍在监听，无法确认占用者");
     }
-
-    if port::is_taken(port) {
-        ui::warn(format!(
-            "{label} 的端口 {port} 还占着。占用者多半不属于当前用户，加 sudo 再跑一次。"
-        ));
-    } else {
-        ui::ok(format!("{label} 的端口 {port} 已腾出。"));
+    let mut targets = Vec::new();
+    for h in &listeners {
+        if let Some(reason) = proc::protected(h.pid) {
+            anyhow::bail!(
+                "{label} 的端口 {port} 被 {} 占用，该进程{reason}，已中止",
+                describe(h)
+            );
+        }
+        let consent = if owns(h.pid) {
+            None
+        } else {
+            Some(proc::StopTarget::confirm(
+                h.pid,
+                &format!("{label} 端口 {port}"),
+            )?)
+        };
+        targets.push((h.pid, consent));
     }
+    if targets.iter().any(|(_, consent)| consent.is_none())
+        && !ui::confirm_default_yes(
+            &format!("停止 {label} 在端口 {port} 已核实归属的残留进程吗"),
+            ENV_KILL_PORT_YES,
+        )
+    {
+        anyhow::bail!("已取消，{label} 的端口 {port} 仍在监听");
+    }
+    for (pid, consent) in targets {
+        if !port::holders(port)
+            .iter()
+            .any(|v| v.pid == pid && v.protos.contains(&"tcp"))
+        {
+            continue;
+        }
+        match consent {
+            Some(target) => target.recheck(pid)?,
+            None if !owns(pid) => anyhow::bail!("PID {pid} 的归属已变化，已中止停止操作"),
+            None => {}
+        }
+        proc::stop_pid(pid, FORCE_GRACE, false)?;
+    }
+    if listening() {
+        anyhow::bail!("{label} 的端口 {port} 仍在监听，停止失败");
+    }
+    Ok(())
 }
 
 /// 把占用者说清楚：有进程名就带上。问人「要不要停掉 PID 12345」，光一个数字
@@ -199,7 +186,7 @@ mod tests {
             let l = TcpListener::bind("127.0.0.1:0").unwrap();
             l.local_addr().unwrap().port()
         };
-        force_free_port("测试", port);
+        force_free_port("测试", "127.0.0.1", port, |_| false).unwrap();
     }
 
     #[test]
@@ -226,7 +213,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
 
-        force_free_port("测试", port);
+        assert!(force_free_port("测试", "127.0.0.1", port, |_| true).is_err());
 
         assert!(
             port::is_listening("127.0.0.1", port),
@@ -249,7 +236,9 @@ mod tests {
         }
         drop(listener);
 
-        force_free_port("测试", port);
+        assert!(force_free_port("测试", "127.0.0.1", port, |_| false).is_err());
+        assert!(port::is_listening("127.0.0.1", port));
+        force_free_port("测试", "127.0.0.1", port, |p| p == pid).unwrap();
         let freed = !port::is_taken(port);
         unsafe { libc::kill(pid, libc::SIGKILL) };
         let mut status = 0;

@@ -466,10 +466,18 @@ pub trait Venv {
         for p in &spec.procs {
             if let Some((host, port)) = &p.listen {
                 if port::is_listening(host, *port) {
+                    if port::listener_pid(*port)
+                        .and_then(|pid| proc::managed_process(pid, &spec.pid_file(p), &spec.venv))
+                        != Some(true)
+                    {
+                        bail!("{host}:{port} 已有监听，无法确认归属，启动中止");
+                    }
                     ui::info(format!("{} {host}:{port} 已在运行，跳过。", p.label));
                     continue;
                 }
-            } else if proc::read_pid_file(&spec.pid_file(p)).is_some_and(proc::is_alive) {
+            } else if proc::read_pid_file(&spec.pid_file(p)).is_some_and(|pid| {
+                proc::managed_process(pid, &spec.pid_file(p), &spec.venv) == Some(true)
+            }) {
                 ui::info(format!("{} 已在运行，跳过。", p.label));
                 continue;
             }
@@ -557,7 +565,9 @@ pub trait Venv {
         if !started.is_empty() {
             ui::blank();
             for p in started.iter().rev() {
-                self.kill(p);
+                if let Err(e) = self.kill(p) {
+                    result = result.and(Err(e));
+                }
             }
         }
         result
@@ -566,15 +576,15 @@ pub trait Venv {
     fn stop(&self) -> Result<()> {
         let spec = self.spec();
         // 逆序停：先停依赖别人的那个，它才不会在被依赖方消失后报一堆连接错误。
+        let mut result = Ok(());
         for p in spec.procs.iter().rev() {
-            self.kill(p);
-        }
-        for p in spec.procs.iter().rev() {
-            if let Some((_, port)) = &p.listen {
-                force_free_port(&p.label, *port);
+            if let Err(e) = self.kill(p) {
+                ui::warn(format!("{}: {e}", p.label));
+                result = result.and(Err(e));
             }
         }
-        ui::info("已停止（best effort）。");
+        result?;
+        ui::info("已停止。");
         Ok(())
     }
 
@@ -603,7 +613,9 @@ pub trait Venv {
 
         let mut up = 0usize;
         for p in &spec.procs {
-            let pid = proc::read_pid_file(&spec.pid_file(p)).filter(|&x| proc::is_alive(x));
+            let pid = proc::read_pid_file(&spec.pid_file(p)).filter(|&pid| {
+                proc::managed_process(pid, &spec.pid_file(p), &spec.venv) == Some(true)
+            });
             let (st, text) = match (&p.listen, pid) {
                 // 没有端口的进程（celery worker、beat）只能看 PID 文件。
                 (None, Some(pid)) => {
@@ -627,32 +639,28 @@ pub trait Venv {
                         // 端口有人但 PID 文件对不上。是手工起的本服务，还是别的程序
                         // 正好占了这个端口，差别很大。
                         (None, true) => match port::listener_pid(*port) {
-                            Some(other) => match owned_by(&spec.venv, other) {
-                                Some(true) => {
-                                    up += 1;
-                                    (
-                                        ui::State::Up,
-                                        format!(
-                                            "在运行 · PID {other}（不是 fundeploy 起的）· {at}"
-                                        ),
-                                    )
+                            Some(other) => {
+                                match proc::managed_process(other, &spec.pid_file(p), &spec.venv) {
+                                    Some(true) => {
+                                        up += 1;
+                                        (
+                                            ui::State::Up,
+                                            format!(
+                                                "在运行 · PID {other}（不是 fundeploy 起的）· {at}"
+                                            ),
+                                        )
+                                    }
+                                    Some(false) => (
+                                        ui::State::Down,
+                                        format!("{at} 被 PID {other} 占着，不是这个 venv 里的东西"),
+                                    ),
+                                    None => (
+                                        ui::State::Down,
+                                        format!("{at} 被 PID {other} 占着，认不出是不是本服务"),
+                                    ),
                                 }
-                                Some(false) => (
-                                    ui::State::Down,
-                                    format!("{at} 被 PID {other} 占着，不是这个 venv 里的东西"),
-                                ),
-                                None => (
-                                    ui::State::Down,
-                                    format!("{at} 被 PID {other} 占着，认不出是不是本服务"),
-                                ),
-                            },
-                            None => {
-                                up += 1;
-                                (
-                                    ui::State::Up,
-                                    format!("在运行（不是 fundeploy 起的）· {at}"),
-                                )
                             }
+                            None => (ui::State::Partial, format!("端口已监听 · 归属未知 · {at}")),
                         },
                         (None, false) => (ui::State::Idle, format!("没在运行 · {at}")),
                     }
@@ -738,13 +746,7 @@ pub trait Venv {
         };
 
         if action == "stop-one" {
-            self.kill(p);
-            // 跟整体 stop 一样收尾，不然单停一个进程会是唯一一条「端口没腾出来也不
-            // 吭声」的路径，紧接着的 start-one 照样起不来。
-            if let Some((_, port)) = &p.listen {
-                force_free_port(&p.label, *port);
-            }
-            return Ok(());
+            return self.kill(p);
         }
 
         self.require_installed()?;
@@ -756,7 +758,9 @@ pub trait Venv {
         }
 
         // run-one：和 run 一样不接管已有进程，不然 Ctrl+C 会把别人起的那份带走。
-        if let Some(pid) = proc::read_pid_file(&spec.pid_file(p)).filter(|&x| proc::is_alive(x)) {
+        if let Some(pid) = proc::read_pid_file(&spec.pid_file(p))
+            .filter(|&pid| proc::managed_process(pid, &spec.pid_file(p), &spec.venv) == Some(true))
+        {
             bail!(
                 "{} 已经在跑（PID {pid}）。要前台跑先: fundeploy service {} stop-one {key}",
                 p.label,
@@ -839,13 +843,15 @@ pub trait Venv {
     fn running(&self) -> bool {
         let spec = self.spec();
         spec.procs.iter().any(|p| {
-            if proc::read_pid_file(&spec.pid_file(p)).is_some_and(proc::is_alive) {
+            if proc::read_pid_file(&spec.pid_file(p)).is_some_and(|pid| {
+                proc::managed_process(pid, &spec.pid_file(p), &spec.venv) == Some(true)
+            }) {
                 return true;
             }
             // PID 文件没了也可能真是我们的进程（手工删过），认 venv。
             p.port()
                 .and_then(port::listener_pid)
-                .and_then(|pid| owned_by(&spec.venv, pid))
+                .and_then(|pid| proc::managed_process(pid, &spec.pid_file(p), &spec.venv))
                 .unwrap_or(false)
         })
     }
@@ -883,6 +889,10 @@ pub trait Venv {
     fn proc_env(&self, p: &Proc) -> Vec<cmd::EnvEdit> {
         let mut env = self.env();
         env.extend(p.env.iter().cloned());
+        env.push((
+            "FUNDEPLOY_SERVICE_PID_FILE".into(),
+            Some(self.spec().pid_file(p).display().to_string()),
+        ));
         env
     }
 
@@ -946,67 +956,16 @@ pub trait Venv {
         }
     }
 
-    /// 停一个进程。best effort：没在跑不算错。
-    fn kill(&self, p: &Proc) {
+    fn kill(&self, p: &Proc) -> Result<()> {
         let spec = self.spec();
         ui::step(format!("停止 {}", p.label));
-
-        // 自成进程组起的，整组停——celery worker 的子进程池、airflow standalone
-        // 派生的 scheduler/triggerer 不跟着走的话会变成孤儿。
-        match proc::stop_by_pid_file(&spec.pid_file(p), STOP_TIMEOUT, true) {
-            Ok(true) => return,
-            Ok(false) => {}
-            Err(e) => ui::warn(format!("{} 停止失败: {e}", p.label)),
+        let owns = |pid| proc::managed_process(pid, &spec.pid_file(p), &spec.venv) == Some(true);
+        proc::stop_owned_pid_file(&spec.pid_file(p), STOP_TIMEOUT, true, owns)?;
+        if let Some((host, port)) = &p.listen {
+            force_free_port(&p.label, host, *port, owns)?;
         }
-
-        // PID 文件丢了，按端口兜底。没有端口的进程到这儿就只能作罢——拿名字去
-        // 全机扫进程然后动手，误伤的代价比留个孤儿大得多。
-        let Some((host, port)) = &p.listen else {
-            ui::info(format!("{} 本来就没在运行。", p.label));
-            return;
-        };
-        if !port::is_listening(host, *port) {
-            ui::info(format!("{} 本来就没在运行。", p.label));
-            return;
-        }
-        let Some(pid) = port::listener_pid(*port) else {
-            ui::warn(format!(
-                "{} 的端口 {port} 有人在听，但既没有 PID 文件也查不到 PID。",
-                p.label
-            ));
-            return;
-        };
-
-        // 只报不动：真要动手是 stop 收尾那一步（[`force_free_port`]）的事，强停要问
-        // 一声，而这一问全流程只该出现一次。这里先把归属交代清楚——那一问只给得出
-        // 进程名，「它是不是这个 venv 里的东西」只有这儿答得上来。
-        match owned_by(&spec.venv, pid) {
-            Some(true) => ui::info(format!("PID 文件没了，按端口 {port} 找到 PID {pid}")),
-            Some(false) => ui::warn(format!(
-                "端口 {port} 被 PID {pid} 占着，它跑的不是 {} 里的东西。",
-                spec.venv.display()
-            )),
-            None => ui::warn(format!(
-                "端口 {port} 被 PID {pid} 占着，确认不了那是不是 {}（多半不是当前用户起的）。",
-                p.label
-            )),
-        }
+        Ok(())
     }
-}
-
-// ---------------------------------------------------------------- 进程归属
-
-/// `pid` 跑的是不是 `venv` 里的东西。
-///
-/// 这里是 `starts_with` 而不是比对某个具体文件：venv 里的控制台脚本（`bin/airflow`）
-/// 跑起来，`/proc/<pid>/exe` 指的是 `venv/bin/python`；而真正监听端口的往往还是它
-/// 再 fork 出来的子进程，同样是那个解释器。认「属于这个 venv」才覆盖得住。
-///
-/// `None` 表示答不上来——非 Linux 没有 `/proc`，进程不属于当前用户时读
-/// `/proc/<pid>/exe` 也会被拒。「答不上来」和「确认不是」得分开。
-fn owned_by(venv: &Path, pid: i32) -> Option<bool> {
-    let exe = std::fs::read_link(format!("/proc/{pid}/exe")).ok()?;
-    Some(exe.starts_with(venv.canonicalize().ok()?))
 }
 
 // ---------------------------------------------------------------- 装包

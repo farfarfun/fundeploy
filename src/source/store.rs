@@ -5,7 +5,9 @@
 //! 参与列表与测速。
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::io::{ErrorKind, Write};
+use std::os::fd::AsRawFd;
+use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -34,27 +36,52 @@ pub fn path() -> PathBuf {
         .join("sources.toml")
 }
 
-fn load() -> File {
-    // 读不出来就当没有：这个文件丢了顶多少几个自定义源，不该让 `source list`
-    // 整个失败。真正要报错的是写不进去的时候。
-    std::fs::read_to_string(path())
-        .ok()
-        .and_then(|t| toml::from_str(&t).ok())
-        .unwrap_or_default()
+fn load(p: &Path) -> Result<File> {
+    let text = match std::fs::read_to_string(p) {
+        Ok(text) => text,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(File::new()),
+        Err(e) => return Err(e).with_context(|| format!("读不了 {}", p.display())),
+    };
+    toml::from_str(&text).with_context(|| format!("自定义源配置格式有误: {}", p.display()))
 }
 
-fn save(f: &File) -> Result<()> {
-    let p = path();
-    if let Some(dir) = p.parent() {
-        std::fs::create_dir_all(dir).with_context(|| format!("建目录失败: {}", dir.display()))?;
+/// 锁住目录直到替换完成：两个同时启动的 add 都必须读到上一次写入。
+fn edit(change: impl FnOnce(&mut File) -> bool) -> Result<bool> {
+    let path = path();
+    let path = if path.is_symlink() {
+        path.canonicalize()
+            .with_context(|| format!("无法解析 {}", path.display()))?
+    } else {
+        path
+    };
+    let dir = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    std::fs::create_dir_all(dir)?;
+    let lock = std::fs::File::open(dir)?;
+    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        return Err(std::io::Error::last_os_error()).context("无法锁定自定义源配置目录");
     }
-    let text = toml::to_string_pretty(f).context("序列化自定义源失败")?;
-    std::fs::write(&p, text).with_context(|| format!("写不了 {}", p.display()))
+    let mut file = load(&path)?;
+    if !change(&mut file) {
+        return Ok(false);
+    }
+    let mut staged = tempfile::NamedTempFile::new_in(dir)?;
+    if let Ok(meta) = path.metadata() {
+        staged.as_file().set_permissions(meta.permissions())?;
+    }
+    staged.write_all(toml::to_string_pretty(&file)?.as_bytes())?;
+    staged
+        .persist(&path)
+        .with_context(|| format!("写不了 {}", path.display()))?;
+    Ok(true)
 }
 
 /// 某个包管理器下，用户自己加的源。
 pub fn custom(source: &str) -> Vec<Mirror> {
-    load()
+    load(&path())
+        .unwrap_or_default()
         .remove(source)
         .unwrap_or_default()
         .into_iter()
@@ -88,31 +115,33 @@ pub fn add(source: &str, name: &str, url: &str, label: Option<&str>) -> Result<(
         url: url.to_string(),
     };
 
-    let mut f = load();
-    let list = f.entry(source.to_string()).or_default();
-    match list.iter().position(|e| e.name == name) {
-        // 同名改成覆盖而不是报错：改一个写错的地址，重跑一遍 add 是最顺手的做法。
-        Some(i) => list[i] = entry,
-        None => list.push(entry),
-    }
-    save(&f)
+    edit(|f| {
+        let list = f.entry(source.to_string()).or_default();
+        match list.iter().position(|e| e.name == name) {
+            // 同名改成覆盖而不是报错：改一个写错的地址，重跑一遍 add 是最顺手的做法。
+            Some(i) => list[i] = entry,
+            None => list.push(entry),
+        }
+        true
+    })?;
+    Ok(())
 }
 
 pub fn remove(source: &str, name: &str) -> Result<bool> {
-    let mut f = load();
-    let Some(list) = f.get_mut(source) else {
-        return Ok(false);
-    };
-    let before = list.len();
-    list.retain(|e| e.name != name);
-    if list.len() == before {
-        return Ok(false);
-    }
-    if list.is_empty() {
-        f.remove(source);
-    }
-    save(&f)?;
-    Ok(true)
+    edit(|f| {
+        let Some(list) = f.get_mut(source) else {
+            return false;
+        };
+        let before = list.len();
+        list.retain(|e| e.name != name);
+        if list.len() == before {
+            return false;
+        }
+        if list.is_empty() {
+            f.remove(source);
+        }
+        true
+    })
 }
 
 #[cfg(test)]
@@ -173,6 +202,9 @@ mod tests {
         std::fs::write(d.path().join("sources.toml"), "这不是 toml {{{").unwrap();
         // 坏文件让 `source list` 整个失败的话，人连内置源都看不到了。
         assert!(custom("pip").is_empty());
+        assert!(add("npm", "new", "https://example.org", None).is_err());
+        assert!(remove("npm", "old").is_err());
+        assert_eq!(std::fs::read_to_string(path()).unwrap(), "这不是 toml {{{");
     }
 
     #[test]

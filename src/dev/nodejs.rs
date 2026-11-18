@@ -8,7 +8,7 @@ use serde::Deserialize;
 use super::{install_root, Dev};
 use crate::common::platform::{Arch, Platform};
 use crate::common::pm::Pm;
-use crate::common::{archive, download, fs};
+use crate::common::{download, fs};
 use crate::ui;
 
 const DIST: &str = "https://nodejs.org/dist";
@@ -56,15 +56,8 @@ impl Dev for NodeJs {
         let scratch = fs::Scratch::new("node")?;
         let pkg = scratch.path().join(&name);
         download::to_file(&url, &pkg, &format!("Node {ver}"))?;
-
         let root = self.root();
-        if root.exists() {
-            fs::guard_removable(&root)?;
-            std::fs::remove_dir_all(&root)
-                .with_context(|| format!("清不掉旧的 {}", root.display()))?;
-        }
-        // 剥掉 node-v22.14.0-linux-x64/ 这层，安装路径就不随版本变。
-        archive::untar_gz(&pkg, &root, 1)?;
+        super::install_archive(&pkg, &root, "node", "--version")?;
         ui::ok(format!("Node {ver} 装到了 {}", root.display()));
         Ok(())
     }
