@@ -130,7 +130,7 @@ pub fn holders_many(ports: &[u16]) -> BTreeMap<u16, Vec<Holder>> {
         ports
             .iter()
             .filter_map(|&p| {
-                let hs = lsof::holders(p);
+                let hs = lsof::holders(p, false);
                 (!hs.is_empty()).then_some((p, hs))
             })
             .collect()
@@ -163,9 +163,9 @@ fn bound_ports(ports: &[u16], tcp_only: bool) -> BTreeSet<u16> {
     #[cfg(target_os = "linux")]
     {
         // /proc/net/tcp 是全局可读的，别人的监听也在里面。
-        linux::bound_inodes_many(ports)
+        linux::bound_inodes_many(ports, tcp_only)
             .into_values()
-            .filter_map(|(port, proto)| (!tcp_only || proto == "tcp").then_some(port))
+            .map(|(port, _)| port)
             .collect()
     }
     #[cfg(not(target_os = "linux"))]
@@ -174,10 +174,7 @@ fn bound_ports(ports: &[u16], tcp_only: bool) -> BTreeSet<u16> {
             .iter()
             .copied()
             .filter(|&p| {
-                lsof::holders(p)
-                    .iter()
-                    .any(|h| !tcp_only || h.protos.contains(&"tcp"))
-                    || (tcp_only && is_listening("127.0.0.1", p))
+                !lsof::holders(p, tcp_only).is_empty() || (tcp_only && is_listening("127.0.0.1", p))
             })
             .collect()
     }
@@ -206,7 +203,7 @@ mod linux {
     ///
     /// 四张表只读一遍，要问几个端口都一样——它们是整机共享的，按端口重复读等于把
     /// 同一份几千行的表解析许多遍。
-    pub fn bound_inodes_many(ports: &[u16]) -> HashMap<u64, (u16, &'static str)> {
+    pub fn bound_inodes_many(ports: &[u16], tcp_only: bool) -> HashMap<u64, (u16, &'static str)> {
         let mut out = HashMap::new();
         if ports.is_empty() {
             return out;
@@ -218,6 +215,9 @@ mod linux {
             ("/proc/net/udp", "udp", false),
             ("/proc/net/udp6", "udp", false),
         ] {
+            if tcp_only && proto == "udp" {
+                continue;
+            }
             let Ok(content) = std::fs::read_to_string(path) else {
                 continue;
             };
@@ -257,7 +257,7 @@ mod linux {
     }
 
     pub fn holders_many(ports: &[u16]) -> BTreeMap<u16, Vec<Holder>> {
-        let inodes = bound_inodes_many(ports);
+        let inodes = bound_inodes_many(ports, false);
         if inodes.is_empty() {
             return BTreeMap::new();
         }
@@ -379,6 +379,8 @@ mod linux {
             let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
             let port = sock.local_addr().unwrap().port();
             assert_eq!(自己那条(port).protos, ["udp"]);
+            assert!(is_taken(port));
+            assert!(!listening_many(&[port]).contains(&port));
             // UDP 没有「监听」一说，listener_pid 不该把它算进来。
             assert_ne!(listener_pid(port), Some(我()));
         }
@@ -400,6 +402,7 @@ mod linux {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let port = listener.local_addr().unwrap().port();
             assert!(is_taken(port));
+            assert!(listening_many(&[port]).contains(&port));
         }
 
         // ---- 批量查询 ----
@@ -489,14 +492,16 @@ mod lsof {
     use std::process::Command;
 
     /// macOS 没有 /proc，退回 lsof。这是唯一还需要外部命令的平台分支。
-    pub fn holders(port: u16) -> Vec<Holder> {
+    pub fn holders(port: u16, tcp_only: bool) -> Vec<Holder> {
         let mut found: BTreeMap<i32, (String, BTreeSet<&'static str>)> = BTreeMap::new();
         scan(
             &[format!("-iTCP:{port}"), "-sTCP:LISTEN".to_string()],
             "tcp",
             &mut found,
         );
-        scan(&[format!("-iUDP:{port}")], "udp", &mut found);
+        if !tcp_only {
+            scan(&[format!("-iUDP:{port}")], "udp", &mut found);
+        }
         found
             .into_iter()
             .map(|(pid, (comm, protos))| Holder {

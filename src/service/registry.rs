@@ -25,7 +25,11 @@ use crate::common::platform::{self, Platform};
 use crate::ui;
 
 pub fn all() -> Vec<Box<dyn Service>> {
-    let mut services: Vec<Box<dyn Service>> = vec![
+    all_with_ports().into_iter().map(|(s, _)| s).collect()
+}
+
+pub(crate) fn all_with_ports() -> Vec<(Box<dyn Service>, Vec<u16>)> {
+    let services: Vec<Box<dyn Service>> = vec![
         upstream::declared(farfarfun_web()),
         upstream::declared(funfluid_web()),
         upstream::declared(funlesson_web()),
@@ -42,7 +46,16 @@ pub fn all() -> Vec<Box<dyn Service>> {
         venv::boxed(Celery::from_env()),
         Box::new(Paperclip::from_env()),
     ];
-    services.sort_by_key(|s| s.ports().into_iter().min().unwrap_or(u16::MAX));
+    // ports() 可能从磁盘读取当前配置，排序和展示共用本次查询的结果。
+    let mut services: Vec<_> = services
+        .into_iter()
+        .map(|s| {
+            let mut ports = s.ports();
+            ports.sort_unstable();
+            (s, ports)
+        })
+        .collect();
+    services.sort_by_key(|(_, ports)| ports.first().copied().unwrap_or(u16::MAX));
     services
 }
 

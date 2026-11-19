@@ -649,10 +649,10 @@ fn source_cmd(name: Option<String>, action: Option<SourceAction>) -> Result<()> 
     }
 }
 
-fn service_menu(all: &[Box<dyn Service>]) -> Vec<String> {
+fn service_menu(all: &[(Box<dyn Service>, Vec<u16>)]) -> Vec<String> {
     let mut menu = vec!["status         所有服务的状态总览".to_string()];
-    menu.extend(all.iter().map(|s| {
-        let ports = sorted_ports(s.as_ref())
+    menu.extend(all.iter().map(|(s, ports)| {
+        let ports = ports
             .iter()
             .map(u16::to_string)
             .collect::<Vec<_>>()
@@ -674,12 +674,6 @@ fn tool_menu(all: &[Box<dyn Tool>]) -> Vec<String> {
             .map(|t| format!("{}{}", ui::pad(t.name(), 16), t.summary())),
     );
     menu
-}
-
-fn sorted_ports(s: &dyn Service) -> Vec<u16> {
-    let mut ports = s.ports();
-    ports.sort_unstable();
-    ports
 }
 
 // 下面这几张表是各域动作菜单的**唯一出处**: 菜单由它生成, 测试也拿它和 clap 的
@@ -980,7 +974,7 @@ fn run_domain(domain: &str) -> Result<()> {
     match domain {
         "monitor" => crate::monitor::Options::default().run(),
         "service" => {
-            let all = service::registry::all();
+            let all = service::registry::all_with_ports();
             let menu = service_menu(&all);
             submenu(
                 || choose_index("选一个服务", &menu),
@@ -989,7 +983,7 @@ fn run_domain(domain: &str) -> Result<()> {
                         status_all();
                         Ok(())
                     } else {
-                        let svc = &all[idx - 1];
+                        let (svc, _) = &all[idx - 1];
                         pick_and_run(svc.as_ref())
                     }
                 },
@@ -1096,8 +1090,8 @@ fn list_all() {
     // 一律先 ui::pad 再上色: pad 算的是终端显示宽度, 带着 ANSI 转义码进去, 那些
     // 不可见的字节会被当成列宽, 整张表歪得莫名其妙。
     ui::heading("服务");
-    for s in service::registry::all() {
-        let ports = sorted_ports(s.as_ref())
+    for (s, ports) in service::registry::all_with_ports() {
+        let ports = ports
             .iter()
             .map(u16::to_string)
             .collect::<Vec<_>>()
@@ -1178,13 +1172,13 @@ fn list_tools() {
 /// 这里刻意不去分辨：总览回答的是「这个口通不通」，认归属是单服务 status 的事。
 fn status_all() {
     ui::heading("服务状态");
-    let all = service::registry::all();
-    // 先把所有服务的端口汇总成一张清单问一次。此前是逐个端口问，而每一问都要把
-    // 四张 /proc/net 表重读重解一遍——十几个服务二十几个端口就是二十几遍。
-    let every: Vec<u16> = all.iter().flat_map(|s| s.ports()).collect();
+    let all = service::registry::all_with_ports();
+    let every: Vec<u16> = all
+        .iter()
+        .flat_map(|(_, ports)| ports.iter().copied())
+        .collect();
     let taken = port::listening_many(&every);
-    for s in all {
-        let ports = sorted_ports(s.as_ref());
+    for (s, ports) in all {
         let up = ports.iter().filter(|p| taken.contains(p)).count();
         let (kind, label) = match (up, ports.len()) {
             (_, 0) => (ui::State::Idle, "没有端口".to_string()),
@@ -1380,18 +1374,21 @@ mod tests {
 
     #[test]
     fn 服务菜单先列状态再列全部服务() {
-        let all = service::registry::all();
+        let all = service::registry::all_with_ports();
         let menu = service_menu(&all);
         assert!(menu[0].starts_with("status"));
         assert_eq!(menu.len(), all.len() + 1);
         let minimums: Vec<u16> = all
             .iter()
-            .map(|s| s.ports().into_iter().min().unwrap_or(u16::MAX))
+            .map(|(_, ports)| ports.first().copied().unwrap_or(u16::MAX))
             .collect();
         assert!(minimums.windows(2).all(|pair| pair[0] <= pair[1]));
-        for (line, svc) in menu.iter().skip(1).zip(all.iter()) {
+        for (line, (svc, ports)) in menu.iter().skip(1).zip(all.iter()) {
             assert!(line.starts_with(svc.name()));
-            let ports = sorted_ports(svc.as_ref())
+            let mut expected = svc.ports();
+            expected.sort_unstable();
+            assert_eq!(ports, &expected);
+            let ports = ports
                 .iter()
                 .map(u16::to_string)
                 .collect::<Vec<_>>()

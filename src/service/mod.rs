@@ -227,22 +227,20 @@ mod tests {
     fn 停止后按端口关闭残留监听进程() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        let pid = unsafe { libc::fork() };
-        assert!(pid >= 0);
-        if pid == 0 {
-            loop {
-                unsafe { libc::pause() };
-            }
-        }
-        drop(listener);
+        // 只传入本测试的监听 socket，避免子进程持有并行测试的端口。
+        let mut child = std::process::Command::new("sleep")
+            .arg("60")
+            .stdin(std::os::fd::OwnedFd::from(listener))
+            .spawn()
+            .unwrap();
+        let pid = child.id() as i32;
 
         assert!(force_free_port("测试", "127.0.0.1", port, |_| false).is_err());
         assert!(port::is_listening("127.0.0.1", port));
         force_free_port("测试", "127.0.0.1", port, |p| p == pid).unwrap();
         let freed = !port::is_taken(port);
-        unsafe { libc::kill(pid, libc::SIGKILL) };
-        let mut status = 0;
-        unsafe { libc::waitpid(pid, &mut status, 0) };
+        let _ = child.kill();
+        child.wait().unwrap();
         assert!(freed, "端口 {port} 没腾出来");
     }
 
