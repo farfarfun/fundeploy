@@ -1,23 +1,15 @@
 //! 本机资源面板。CPU 利用率由两次采样的差值计算。
 
 mod gpu;
+mod live;
 
 use std::fmt::Write as _;
 #[cfg(windows)]
 use std::io::IsTerminal;
 use std::io::{self, Write};
-use std::{
-    thread,
-    time::{Duration, Instant},
-};
+use std::thread;
 
 use anyhow::Result;
-use crossterm::{
-    cursor::MoveTo,
-    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
-    execute, queue,
-    terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
-};
 use sysinfo::{DiskRefreshKind, Disks, System};
 
 #[derive(clap::Args, Clone, Default)]
@@ -34,7 +26,11 @@ impl Options {
         #[cfg(windows)]
         let interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
         let live = interactive && !self.once && std::env::var("TERM").as_deref() != Ok("dumb");
-        let _screen = if live { Some(Screen::open()?) } else { None };
+        let mut screen = if live {
+            Some(live::Screen::open()?)
+        } else {
+            None
+        };
         let mut sys = System::new();
         sys.refresh_cpu_usage();
         let host = System::host_name().unwrap_or_else(|| "本机".into());
@@ -50,18 +46,30 @@ impl Options {
             sys.refresh_memory();
             disks.refresh_specifics(true, DiskRefreshKind::nothing().with_storage());
             let uptime = System::uptime() / 60;
-            let mut panel = format!(
-                "本机状态 · {host}\n{os} · 已运行 {} 天 {} 小时 {} 分\n",
+            let uptime = format!(
+                "已运行 {} 天 {} 小时 {} 分",
                 uptime / 1440,
                 uptime / 60 % 24,
                 uptime % 60
             );
-            let cpu = sys
-                .cpus()
-                .first()
-                .map(|c| c.brand().trim())
-                .filter(|s| !s.is_empty())
-                .unwrap_or("未知型号");
+            let gpus = gpu::sample();
+            if let Some(screen) = &mut screen {
+                let snapshot = live::Snapshot {
+                    host: &host,
+                    os: &os,
+                    uptime: &uptime,
+                    cores: &cores,
+                    system: &sys,
+                    disks: &disks,
+                    gpus: &gpus,
+                };
+                if screen.show(&snapshot)? {
+                    return Ok(());
+                }
+                continue;
+            }
+            let mut panel = format!("本机状态 · {host}\n{os} · {uptime}\n");
+            let cpu = cpu_model(&sys);
             writeln!(
                 panel,
                 "\nCPU   {cpu}\n      {cores} 个物理核 · {} 个逻辑核",
@@ -96,68 +104,26 @@ impl Options {
                 )?;
             }
             writeln!(panel, "\nGPU   利用率")?;
-            let gpus = gpu::sample();
             if gpus.is_empty() {
                 writeln!(panel, "      暂无读数（设备或驱动未提供利用率）")?;
             }
             for (name, percent) in gpus {
                 writeln!(panel, "      {}  {name}", meter(percent))?;
             }
-            if live {
-                writeln!(panel, "\n自动刷新 · Q / Ctrl+C 退出")?;
-            }
-
             let mut out = io::stdout().lock();
-            if live {
-                queue!(out, MoveTo(0, 0), Clear(ClearType::FromCursorDown))?;
-                // 原始模式下换行不会自动回到行首。
-                out.write_all(panel.trim_end().replace('\n', "\r\n").as_bytes())?;
-            } else {
-                out.write_all(panel.as_bytes())?;
-            }
+            out.write_all(panel.as_bytes())?;
             out.flush()?;
-            drop(out);
-            if !live || exit_requested()? {
-                return Ok(());
-            }
+            return Ok(());
         }
     }
 }
 
-struct Screen;
-
-impl Screen {
-    fn open() -> io::Result<Self> {
-        terminal::enable_raw_mode()?;
-        let screen = Self;
-        execute!(io::stdout(), EnterAlternateScreen)?;
-        Ok(screen)
-    }
-}
-
-impl Drop for Screen {
-    fn drop(&mut self) {
-        let _ = execute!(io::stdout(), LeaveAlternateScreen);
-        let _ = terminal::disable_raw_mode();
-    }
-}
-
-fn exit_requested() -> io::Result<bool> {
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while Instant::now() < deadline
-        && event::poll(deadline.saturating_duration_since(Instant::now()))?
-    {
-        if let Event::Key(key) = event::read()? {
-            if key.kind != KeyEventKind::Release
-                && (matches!(key.code, KeyCode::Char('q' | 'Q') | KeyCode::Esc)
-                    || key.code == KeyCode::Char('c')
-                        && key.modifiers.contains(KeyModifiers::CONTROL))
-            {
-                return Ok(true);
-            }
-        }
-    }
-    Ok(false)
+fn cpu_model(sys: &System) -> &str {
+    sys.cpus()
+        .first()
+        .map(|c| c.brand().trim())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("未知型号")
 }
 
 fn meter(percent: f32) -> String {
@@ -175,13 +141,16 @@ fn capacity(used: u64, total: u64) -> String {
         return "容量未知".into();
     }
     let used = used.min(total);
-    let unit = 1024_f64.powi(3);
     format!(
-        "{}  {:.2} / {:.2} GiB",
+        "{}  {}",
         meter(100.0 * used as f32 / total as f32),
-        used as f64 / unit,
-        total as f64 / unit
+        capacity_text(used, total)
     )
+}
+
+fn capacity_text(used: u64, total: u64) -> String {
+    let unit = 1024_f64.powi(3);
+    format!("{:.2} / {:.2} GiB", used as f64 / unit, total as f64 / unit)
 }
 
 #[cfg(test)]

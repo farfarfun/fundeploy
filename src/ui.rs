@@ -7,6 +7,9 @@ use anyhow::{bail, Result};
 use owo_colors::OwoColorize;
 use std::io::IsTerminal;
 use std::sync::OnceLock;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+use crate::theme::{clip, paint, AMBER, BLUE, BORDER, LAVENDER, MINT, MUTED, SURFACE, TEXT};
 
 /// 该不该上色。
 fn color() -> bool {
@@ -44,21 +47,17 @@ fn truthy_env(name: &str) -> bool {
 pub fn step(msg: impl AsRef<str>) {
     let msg = msg.as_ref();
     if color() {
-        println!("{} {msg}", "==>".cyan().bold());
+        println!("{} {msg}", paint(" › ", BLUE, true));
     } else {
         println!("==> {msg}");
     }
 }
 
-/// 分节标题。
-///
-/// 有色时用一个色块竖线起头，和 [`Card`] 的框线是一套观感；`== 标题 ==` 那种
-/// 写法脚本感太重。无色时仍退回 `==`：那条路径多半是日志文件和 CI，`▌` 的字形
-/// 不是哪里都有，而 `==` 任何地方都认得出这是个标题。
+/// 分节标题，重定向时使用纯文本。
 pub fn heading(msg: impl AsRef<str>) {
     let msg = msg.as_ref();
     if color() {
-        println!("{} {}", "▌".cyan(), msg.bold());
+        println!("{}", paint(&format!("  {msg}  "), BLUE, true));
     } else {
         println!("== {msg} ==");
     }
@@ -125,25 +124,36 @@ pub enum State {
     Idle,
 }
 
+impl State {
+    fn mark(self) -> &'static str {
+        match self {
+            Self::Idle => "○",
+            _ => "●",
+        }
+    }
+}
+
 /// `● 在运行` 这样的状态标记。
 ///
 /// 用圆点而不是纯文字：状态列里中英文混排，宽度对不齐，一个前置符号能让眼睛
 /// 直接扫到这一列。空心点留给「本来就没有」，和「出问题了」区分开。
 pub fn state(st: State, label: impl AsRef<str>) -> String {
     let label = label.as_ref();
-    if !color() {
-        let mark = match st {
-            State::Up | State::Down | State::Partial => "●",
-            State::Idle => "○",
-        };
-        return format!("{mark} {label}");
+    if color() {
+        card_state(st, label)
+    } else {
+        format!("{} {label}", st.mark())
     }
-    match st {
-        State::Up => format!("{} {}", "●".green(), label.green()),
-        State::Down => format!("{} {}", "●".red(), label.red()),
-        State::Partial => format!("{} {}", "●".yellow(), label.yellow()),
-        State::Idle => format!("{} {}", "○".dimmed(), label.dimmed()),
-    }
+}
+
+fn card_state(state: State, label: &str) -> String {
+    let foreground = match state {
+        State::Up => MINT,
+        State::Down => 210,
+        State::Partial => AMBER,
+        State::Idle => MUTED,
+    };
+    paint(&format!("{} {label}", state.mark()), foreground, false)
 }
 
 /// 一张盒绘卡片：标题 + 右上角状态 + 若干字段 + 框外脚注。
@@ -254,6 +264,11 @@ impl Card {
         } else {
             0
         };
+        let budget = term_cols().saturating_sub(3).min(CARD_MAX);
+        if budget < 28 {
+            self.print_plain();
+            return;
+        }
         let key_w = self
             .rows
             .iter()
@@ -262,7 +277,8 @@ impl Card {
                 CardRow::Section(_) => None,
             })
             .max()
-            .unwrap_or(0);
+            .unwrap_or(0)
+            .min(budget / 3);
         // 带状态的值前面要留出「● 」两列。
         let val_w = self
             .rows
@@ -290,55 +306,61 @@ impl Card {
         let badge_w = self.badge.as_ref().map(|(_, l)| cols(l) + 2).unwrap_or(0);
         let title_need = 3 + cols(&self.title) + 3 + badge_w + 3;
 
-        let budget = term_cols().saturating_sub(2).min(CARD_MAX);
         let inner = inner_need
             .max(title_need)
             .max(section_need)
-            .min(budget)
-            .max(12);
+            .clamp(20, budget);
 
-        self.print_top(inner, badge_w);
+        self.print_top(inner);
         let mut first_section = true;
         for row in &self.rows {
             match row {
                 CardRow::Section(name) => {
                     // 节与节之间空一行；第一节紧贴标题，不空。
                     if !first_section {
-                        println!("{}{}{}", "│".dimmed(), " ".repeat(inner), "│".dimmed());
+                        println!(
+                            "{}{}{}",
+                            paint("│", BORDER, false),
+                            paint(&" ".repeat(inner), TEXT, false),
+                            paint("│", BORDER, false)
+                        );
                     }
                     first_section = false;
-                    let visible = 2 + cols(name);
+                    let name = ellipsize(name, inner - 3);
                     println!(
-                        "{}  {}{}{}",
-                        "│".dimmed(),
-                        strong(name),
-                        " ".repeat(inner.saturating_sub(visible)),
-                        "│".dimmed()
+                        "{}{}{}",
+                        paint("│", BORDER, false),
+                        paint(&pad(&format!("  {name}"), inner), LAVENDER, true),
+                        paint("│", BORDER, false)
                     );
                 }
                 CardRow::Field(k, v, st) => {
                     // 先按纯文本算好省略和补齐，再上色——顺序反了框就歪。
                     let mark_w = if st.is_some() { 2 } else { 0 };
                     let val_room = inner.saturating_sub(2 + indent + key_w + 2 + 1 + mark_w);
+                    let k = ellipsize(k, key_w);
                     let v = ellipsize(v, val_room);
-                    let shown = match st {
-                        Some(s) => state(*s, &v),
-                        None => v.clone(),
-                    };
+                    let shown = st.map_or_else(|| paint(&v, TEXT, false), |s| card_state(s, &v));
                     let visible = 2 + indent + key_w + 2 + mark_w + cols(&v);
                     println!(
-                        "{}  {}{}  {}{}{}",
-                        "│".dimmed(),
-                        " ".repeat(indent),
-                        pad(k, key_w),
+                        "{}{}{}{}{}",
+                        paint("│", BORDER, false),
+                        paint(
+                            &format!("{}{k}  ", " ".repeat(indent + 2), k = pad(&k, key_w)),
+                            MUTED,
+                            false
+                        ),
                         shown,
-                        " ".repeat(inner.saturating_sub(visible)),
-                        "│".dimmed()
+                        paint(&" ".repeat(inner.saturating_sub(visible)), TEXT, false),
+                        paint("│", BORDER, false)
                     );
                 }
             }
         }
-        println!("{}", format!("╰{}╯", "─".repeat(inner)).dimmed());
+        println!(
+            "{}",
+            paint(&format!("╰{}╯", "─".repeat(inner)), BORDER, false)
+        );
         for n in &self.notes {
             println!("  {} {}", "!".yellow(), n.dimmed());
         }
@@ -346,19 +368,30 @@ impl Card {
 
     /// 标题行：`╭─ 标题 ───…─── 徽章 ─╮`，中间用框线填满。
     ///
-    /// `badge_w` 由调用方按纯文本算好传进来：这里的 badge 一旦上色就量不准了。
-    fn print_top(&self, inner: usize, badge_w: usize) {
-        let mut line = format!("─ {} ", strong(&self.title));
-        let mut used = 3 + cols(&self.title);
-        if let Some((st, label)) = &self.badge {
-            let right_w = badge_w + 3; // " " + 徽章 + " ─"
-            let fill = inner.saturating_sub(used + right_w);
-            line.push_str(&"─".repeat(fill));
-            line.push_str(&format!(" {} ─", state(*st, label)));
-            used = inner;
-        }
-        let fill = inner.saturating_sub(used);
-        println!("{}", format!("╭{line}{}╮", "─".repeat(fill)).dimmed());
+    fn print_top(&self, inner: usize) {
+        let badge = self
+            .badge
+            .as_ref()
+            .map(|(st, label)| (*st, ellipsize(label, inner / 2 - 4)));
+        let badge_width = badge.as_ref().map_or(0, |(_, label)| cols(label) + 5);
+        let title = ellipsize(&self.title, inner - badge_width - 3);
+        let rule = "─".repeat(inner - badge_width - cols(&title) - 3);
+        let right = badge.map_or_else(String::new, |(st, label)| {
+            format!(
+                "{}{}{}",
+                paint(" ", BORDER, false),
+                card_state(st, &label),
+                paint(" ─", BORDER, false)
+            )
+        });
+        println!(
+            "{}{}{}{}{}",
+            paint("╭─ ", BORDER, false),
+            paint(&title, BLUE, true),
+            paint(&format!(" {rule}"), BORDER, false),
+            right,
+            paint("╮", BORDER, false)
+        );
     }
 
     /// 无框退回版：同样对齐，只是没有框线。
@@ -459,12 +492,7 @@ pub fn brand() {
         return;
     }
 
-    println!(
-        "  {} {}  {}",
-        "fundeploy".cyan().bold(),
-        version.dimmed(),
-        "开发环境、工具与服务管理".bold()
-    );
+    menu_banner();
     // 四段各上一色，从冷到暖：读的时候自然有停顿，也不至于花。
     let painted = format!(
         "{} {} {} {} {} {} {}",
@@ -480,6 +508,31 @@ pub fn brand() {
     println!("  {}", "https://github.com/farfarfun".dimmed());
 }
 
+pub fn menu_banner() {
+    let version = env!("CARGO_PKG_VERSION");
+    if !color() {
+        println!("fundeploy {version}  开发环境、工具与服务管理");
+        return;
+    }
+    let width = term_cols().saturating_sub(1).min(58);
+    let title = "  fundeploy";
+    let version = format!("v{version}  ");
+    let subtitle = ellipsize("  开发环境、工具与服务管理", width.max(1));
+    if cols(title) + cols(&version) <= width {
+        println!(
+            "{}{}",
+            paint(&pad(title, width - cols(&version)), BLUE, true),
+            paint(&version, LAVENDER, true)
+        );
+    } else {
+        println!(
+            "{}",
+            paint(&ellipsize(title.trim(), width.max(1)), BLUE, true)
+        );
+    }
+    println!("{}", paint(&pad(&subtitle, width), MUTED, false));
+}
+
 /// 给 inquire 装上和自家输出同一套色板。
 ///
 /// 必须在任何交互之前调一次。inquire 默认有自己的配色，不走 [`color`]，所以
@@ -492,20 +545,35 @@ pub fn init_theme() {
         return;
     }
 
-    let accent = Color::LightCyan; // 和 step 的 `==>` 同色
+    let accent = Color::AnsiValue(BLUE);
+    let surface = Color::AnsiValue(SURFACE);
     let mut cfg = RenderConfig::default_colored();
-    cfg.prompt_prefix = Styled::new("?").with_fg(accent);
+    cfg.prompt_prefix = Styled::new("◆").with_fg(accent).with_bg(surface);
+    cfg.prompt = StyleSheet::new().with_attr(Attributes::BOLD);
     // 答完把 `?` 换成对勾，和 ok() 的 `✓` 一致：回头看历史记录时，哪些问完了
     // 一眼就分得出。
-    cfg.answered_prompt_prefix = Styled::new("✓").with_fg(Color::LightGreen);
-    cfg.highlighted_option_prefix = Styled::new("❯").with_fg(accent);
+    cfg.answered_prompt_prefix = Styled::new("✓")
+        .with_fg(Color::AnsiValue(MINT))
+        .with_bg(surface);
+    cfg.highlighted_option_prefix = Styled::new("❯").with_fg(accent).with_bg(surface);
+    cfg.scroll_up_prefix = Styled::new("↑")
+        .with_fg(Color::AnsiValue(LAVENDER))
+        .with_bg(surface);
+    cfg.scroll_down_prefix = Styled::new("↓")
+        .with_fg(Color::AnsiValue(LAVENDER))
+        .with_bg(surface);
     cfg.selected_option = Some(
         StyleSheet::new()
             .with_fg(accent)
+            .with_bg(Color::AnsiValue(24))
             .with_attr(Attributes::BOLD),
     );
-    cfg.answer = StyleSheet::new().with_fg(accent);
-    cfg.help_message = StyleSheet::new().with_fg(Color::DarkGrey);
+    cfg.answer = StyleSheet::new()
+        .with_fg(Color::AnsiValue(MINT))
+        .with_bg(surface);
+    cfg.help_message = StyleSheet::new()
+        .with_fg(Color::AnsiValue(MUTED))
+        .with_bg(surface);
     cfg.canceled_prompt_indicator = Styled::new("已取消").with_fg(Color::DarkGrey);
     inquire::set_global_render_config(cfg);
 }
@@ -543,7 +611,7 @@ pub fn pad(s: &str, width: usize) -> String {
 
 /// 一段文字在终端里占几列。
 pub fn cols(s: &str) -> usize {
-    s.chars().map(char_cols).sum()
+    s.width()
 }
 
 /// 终端有多少列。问不出来（重定向、没有 tty）就按 80 算。
@@ -570,9 +638,8 @@ pub fn ellipsize(s: &str, max: usize) -> String {
     if cols(s) <= max {
         return s.to_string();
     }
-    // 省略号自己占一列，太窄就没有再省的余地了，直接截断。
-    if max <= 2 {
-        return "…".to_string();
+    if max == 0 {
+        return String::new();
     }
     let keep = max - 1;
     let tail_budget = keep / 2;
@@ -581,7 +648,7 @@ pub fn ellipsize(s: &str, max: usize) -> String {
     let mut head = String::new();
     let mut used = 0;
     for c in s.chars() {
-        let w = char_cols(c);
+        let w = c.width().unwrap_or(0);
         if used + w > head_budget {
             break;
         }
@@ -592,7 +659,7 @@ pub fn ellipsize(s: &str, max: usize) -> String {
     let mut tail: Vec<char> = Vec::new();
     let mut used = 0;
     for c in s.chars().rev() {
-        let w = char_cols(c);
+        let w = c.width().unwrap_or(0);
         if used + w > tail_budget {
             break;
         }
@@ -601,28 +668,10 @@ pub fn ellipsize(s: &str, max: usize) -> String {
     }
     tail.reverse();
 
-    format!("{head}…{}", tail.into_iter().collect::<String>())
-}
-
-/// 一个字符在终端里占几列。
-///
-/// 只认「东亚宽字符」这几段——中日韩文字、全角标点、常见符号。这里不引
-/// unicode-width：要排的只有中文标签，为它多一个依赖不划算。
-fn char_cols(c: char) -> usize {
-    match c as u32 {
-        0x1100..=0x115F        // 朝鲜语字母
-        | 0x2E80..=0x303E      // 部首、中日韩符号
-        | 0x3041..=0x33FF      // 假名、注音、兼容字符
-        | 0x3400..=0x4DBF      // 扩展 A 区汉字
-        | 0x4E00..=0x9FFF      // 基本汉字
-        | 0xA000..=0xA4CF      // 彝文
-        | 0xAC00..=0xD7A3      // 朝鲜语音节
-        | 0xF900..=0xFAFF      // 兼容汉字
-        | 0xFE30..=0xFE6F      // 竖排标点
-        | 0xFF00..=0xFF60      // 全角字母数字标点
-        | 0xFFE0..=0xFFE6 => 2,
-        _ => 1,
-    }
+    clip(
+        &format!("{head}…{}", tail.into_iter().collect::<String>()),
+        max,
+    )
 }
 
 /// `键: 值` 一行，值为 None 时打「未安装」。
@@ -707,12 +756,47 @@ pub fn select<'a>(prompt: &str, options: &'a [String]) -> Result<Option<&'a Stri
     if !interactive() {
         bail!("{prompt}\n当前是无人值守环境，请把选项直接写在命令行上。");
     }
-    match inquire::Select::new(prompt, options.iter().collect::<Vec<_>>())
-        .with_page_size(15)
-        .with_help_message("↑↓ 选择 · 输入筛选 · Enter 确认 · Esc 返回")
+    struct OptionRow<'a> {
+        full: &'a String,
+        visible: String,
+    }
+    impl std::fmt::Display for OptionRow<'_> {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(&self.visible)
+        }
+    }
+
+    let width = term_cols().saturating_sub(3).clamp(1, 76);
+    let height = crossterm::terminal::size().map_or(24, |(_, rows)| usize::from(rows));
+    let row_width = options
+        .iter()
+        .map(|option| cols(option))
+        .max()
+        .unwrap_or(0)
+        .min(width);
+    let rows = options
+        .iter()
+        .map(|full| OptionRow {
+            full,
+            visible: pad(&clip(full, width), row_width),
+        })
+        .collect();
+    let help = if width >= 47 {
+        "↑↓ 选择 · 输入筛选 · Enter 确认 · Esc 返回"
+    } else {
+        "↑↓ · 输入筛选 · ↵ · Esc"
+    };
+    let help = ellipsize(help, width);
+    match inquire::Select::new(prompt, rows)
+        .with_page_size(height.saturating_sub(4).clamp(1, 15))
+        .with_help_message(&help)
+        .with_scorer(&|input, row, _, index| {
+            inquire::Select::<OptionRow<'_>>::DEFAULT_SCORER(input, row, row.full, index)
+        })
+        .with_formatter(&|row| row.value.visible.trim_end().to_owned())
         .prompt()
     {
-        Ok(item) => Ok(Some(item)),
+        Ok(item) => Ok(Some(item.full)),
         Err(inquire::InquireError::OperationCanceled) => Ok(None),
         Err(error) => Err(error.into()),
     }

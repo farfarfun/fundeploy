@@ -41,6 +41,7 @@ pub mod service;
 pub mod skills;
 #[cfg(unix)]
 pub mod source;
+mod theme;
 #[cfg(unix)]
 pub mod tool;
 #[cfg(unix)]

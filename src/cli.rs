@@ -650,17 +650,21 @@ fn source_cmd(name: Option<String>, action: Option<SourceAction>) -> Result<()> 
 }
 
 fn service_menu(all: &[(Box<dyn Service>, Vec<u16>)]) -> Vec<String> {
-    let mut menu = vec!["status         所有服务的状态总览".to_string()];
-    menu.extend(all.iter().map(|(s, ports)| {
-        let ports = ports
+    let format_ports = |ports: &[u16]| {
+        ports
             .iter()
             .map(u16::to_string)
             .collect::<Vec<_>>()
-            .join(" ");
+            .join(" ")
+    };
+    let port_labels: Vec<_> = all.iter().map(|(_, ports)| format_ports(ports)).collect();
+    let port_width = port_labels.iter().map(String::len).max().unwrap_or(0);
+    let mut menu = vec!["status          所有服务的状态总览".to_string()];
+    menu.extend(all.iter().zip(port_labels).map(|((s, _), ports)| {
         format!(
-            "{}{}{}",
+            "{}{}  {}",
             ui::pad(s.name(), 16),
-            ui::pad(&ports, 22),
+            ui::pad(&ports, port_width),
             s.summary()
         )
     }));
@@ -958,14 +962,13 @@ fn no_args() -> Result<()> {
         println!();
         return Ok(());
     }
-    // 只有「人主动打开菜单」这一条路径配得上一段 banner。
-    ui::brand();
+    ui::menu_banner();
     ui::blank();
     let domains: Vec<String> = MENU.iter().map(|s| s.to_string()).collect();
     // 逐个列全、不留 `_ =>` 兜底: 兜底会把「菜单加了项却忘了加分支」变成「选了
     // upgrade 却跳出工具列表」, 不报错也查不出来。
     submenu(
-        || choose_head("要管什么", &domains),
+        || choose_head("主菜单", &domains),
         |domain| run_domain(&domain),
     )
 }
@@ -977,7 +980,7 @@ fn run_domain(domain: &str) -> Result<()> {
             let all = service::registry::all_with_ports();
             let menu = service_menu(&all);
             submenu(
-                || choose_index("选一个服务", &menu),
+                || choose_index("服务 · 选择服务", &menu),
                 |idx| {
                     if idx == 0 {
                         status_all();
@@ -993,7 +996,7 @@ fn run_domain(domain: &str) -> Result<()> {
             let all = tool::registry::all();
             let menu = tool_menu(&all);
             submenu(
-                || choose_index("选一个工具", &menu),
+                || choose_index("工具 · 选择工具", &menu),
                 |idx| {
                     if idx == 0 {
                         tool_status_all();
@@ -1316,7 +1319,7 @@ fn pick_and_run(svc: &dyn Service) -> Result<()> {
     let labels = action_labels(actions.iter().map(Action::label).collect(), svc.extras());
 
     submenu(
-        || choose_index(&format!("{} 要做什么", svc.name()), &labels),
+        || choose_index(&format!("服务 › {}", svc.name()), &labels),
         |idx| match actions.get(idx) {
             // 带必填参数的动作，菜单里只占了个位，这会儿才问。
             Some(a) if a.needs_input() => {
@@ -1342,7 +1345,7 @@ fn pick_and_run_tool(t: &dyn Tool) -> Result<()> {
     let labels = action_labels(actions.iter().map(ToolAction::label).collect(), t.extras());
 
     submenu(
-        || choose_index(&format!("{} 要做什么", t.name()), &labels),
+        || choose_index(&format!("工具 › {}", t.name()), &labels),
         |idx| match actions.get(idx) {
             Some(a) => a.apply(t),
             None => t.extra(t.extras()[idx - actions.len()].name, &[]),

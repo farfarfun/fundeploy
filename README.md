@@ -131,13 +131,17 @@ fundeploy list     # 列出所有能管的东西
 fundeploy about    # 这是什么、谁做的
 ```
 
+![fundeploy 交互主菜单](docs/images/menu.png)
+
+主菜单截图由发布流程用当次发布的 Linux 二进制生成。
+
 输出按「一张卡片说完一件事」排：框宽跟着终端走，窄终端下长路径中间省略而不是把框
 撑破；`NO_COLOR=1` 或输出被重定向时自动退回无框的纯文本，不往日志里塞框线和色码。
 等端口监听这种最长半分钟的干等会转一个 spinner（进度画在 stderr，不混进重定向的结果）。
 
 ### 本机资源面板 `fundeploy monitor`
 
-在 macOS、Linux 或 Windows 终端运行 `fundeploy monitor`，可查看 CPU 型号、物理核与逻辑核数、当前 CPU 利用率、内存与交换空间、各挂载卷的容量和使用率，以及 GPU 利用率。面板也显示主机名、系统版本和开机时长。按 Q 或 Ctrl+C 退出并返回原来的终端。
+在 macOS、Linux 或 Windows 终端运行 `fundeploy monitor`，可查看 CPU 型号、物理核与逻辑核数、当前 CPU 利用率、内存与交换空间、各挂载卷的容量和使用率，以及 GPU 利用率。面板也显示主机名、系统版本和开机时长。面板随终端宽度切换双列或单列，内容超出窗口时按 ↑ / ↓ 滚动。按 Q、Esc 或 Ctrl+C 退出。
 
 `fundeploy monitor --once` 输出一次快照。重定向到文件或管道也会自动输出快照，方便保留排障记录。
 

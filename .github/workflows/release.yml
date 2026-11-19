@@ -111,10 +111,10 @@ jobs:
           sudo apt-get update -y && sudo apt-get install -y dpkg-dev
           work="$(mktemp -d)"
           for pair in "x86_64-unknown-linux-musl amd64" "aarch64-unknown-linux-musl arm64"; do
-            set -- $pair
-            mkdir -p "${work}/$2"
-            tar -xzf "dist/fundeploy-$1.tar.gz" -C "${work}/$2"
-            bash packaging/build-deb.sh "${work}/$2/fundeploy" "${{ needs.check.outputs.version }}" "$2" dist
+            read -r target arch <<< "$pair"
+            mkdir -p "${work}/$arch"
+            tar -xzf "dist/fundeploy-$target.tar.gz" -C "${work}/$arch"
+            bash packaging/build-deb.sh "${work}/$arch/fundeploy" "${{ needs.check.outputs.version }}" "$arch" dist
           done
 
       # 校验和清单最后生成：它要覆盖上面所有的附件，提前算就漏掉 .deb。
@@ -176,6 +176,61 @@ jobs:
           esac
           "$HOME/.local/bin/fundeploy" list >/dev/null
           "$HOME/.local/bin/fundeploy" upgrade --check
+
+  screenshots:
+    name: 更新 README 截图
+    needs: verify-install
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Gitee 用整个发布流程的结果判断是否同步附件。
+    continue-on-error: true
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 截取已发布版本的主菜单
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          sudo apt-get update -y
+          sudo apt-get install -y tmux xvfb xauth xterm xdotool scrot fonts-dejavu-core fonts-noto-cjk
+          work="$RUNNER_TEMP/fundeploy-screenshot"
+          mkdir -p "$work"
+          gh release download "$GITHUB_REF_NAME" --pattern fundeploy-x86_64-unknown-linux-musl.tar.gz --dir "$work"
+          tar -xzf "$work/fundeploy-x86_64-unknown-linux-musl.tar.gz" -C "$work"
+          bash .github/scripts/capture-menu.sh "$work/fundeploy" "$work/menu.png"
+
+      - name: 更新默认分支
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -eu
+          for attempt in 1 2 3; do
+            latest="$(gh release view --json tagName --jq .tagName)"
+            if [ "$latest" != "$GITHUB_REF_NAME" ]; then
+              echo "当前最新版本是 $latest，保留它的截图。"
+              exit 0
+            fi
+            git fetch --depth=1 origin "$DEFAULT_BRANCH"
+            git switch --detach FETCH_HEAD
+            mkdir -p docs/images
+            cp "$RUNNER_TEMP/fundeploy-screenshot/menu.png" docs/images/menu.png
+            git add docs/images/menu.png
+            if git diff --cached --quiet; then
+              exit 0
+            fi
+            git -c user.name='github-actions[bot]' \
+                -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+                commit -m "docs: refresh menu screenshot for $GITHUB_REF_NAME"
+            if git push origin "HEAD:refs/heads/$DEFAULT_BRANCH"; then
+              exit 0
+            fi
+            sleep "$attempt"
+          done
+          exit 1
 
   # apt 源和 Homebrew formula 都不在这个仓库里生成了：它们按 farfarfun/packages
   # 的清单重建，那边一次管全组织的包。这儿只负责把附件挂上 Release，然后吱一声。
