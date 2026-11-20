@@ -1,13 +1,12 @@
-//! AI 命令行工具（Claude Code、Codex、Cursor）。
+//! AI 命令行工具。
 //!
-//! 三样东西的差别只有几项：官方安装器在哪儿、npm 包叫什么、brew cask 叫什么、
-//! 装完会在哪些路径下留东西。所以这里没有 trait——每样工具就是 [`registry`] 里
-//! 的一条 [`Ai`] 声明，装、升、卸、查四个动作的流程只写一遍。
+//! [`registry`] 声明每样工具的安装方式，装、升、卸、查共用同一套流程。
 //!
 //! 同一样工具常常不止一条装法，而且人很容易忘了当初走的是哪条。所以不点名装法
 //! 时，卸载是**每条路都走一遍**：只清一条的后果是 `uninstall` 报了成功、命令却
 //! 还在 PATH 上，而看不出是为什么。
 
+pub mod config;
 pub mod registry;
 
 use std::path::PathBuf;
@@ -421,7 +420,10 @@ pub fn list() -> Result<()> {
         t.status()?;
         ui::blank();
     }
-    ui::hint("装: fundeploy ai <claude|codex|cursor> install [--method official|brew|npm|pnpm]");
+    ui::hint(format!(
+        "安装或配置：fundeploy ai <{}> install|config",
+        registry::names().join("|")
+    ));
     Ok(())
 }
 

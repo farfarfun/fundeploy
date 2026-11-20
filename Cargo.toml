@@ -1,6 +1,6 @@
 [package]
 name = "fundeploy"
-version = "0.3.30"
+version = "0.3.31"
 edition = "2021"
 # rustup 之外的渠道（apt / brew 的 rustc）往往落后好几个版本，这里写下真实下限，
 # 让编译在版本不够时直接报清楚，而不是在某个 std API 上报一行看不懂的错。
@@ -51,6 +51,8 @@ tempfile = "3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
+toml_edit = "0.22"
+url = "2"
 # 阻塞式、默认 rustls。不用 reqwest 是为了不拖进 tokio：全程串行执行外部命令，
 # 没有并发需求。rustls 也让 musl 全静态构建不需要 openssl。
 ureq = { version = "2", features = ["json"] }

@@ -3,6 +3,13 @@
 版本号以 `Cargo.toml` 里的 `version` 为准；发布由推同版本的 `v*` tag 触发（见
 `.github/workflows/release.yml`），因此「有 tag ＝ 已发布」。
 
+## [0.3.31] - 2026-11-20
+
+### 新增
+
+- 支持通过官方安装器安装 Antigravity CLI（`agy`），并可查看版本、升级和卸载。
+- Codex、Claude Code、Cursor 和 Antigravity 新增 `config` 命令。输入 API 地址和密钥后可从网关模型列表选择默认模型。Cursor 和 Antigravity 通过 `run` 启动已保存的配置。
+
 ## [0.3.30] - 2026-11-19
 
 ### 改进

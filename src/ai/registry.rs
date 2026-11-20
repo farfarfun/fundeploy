@@ -3,7 +3,7 @@
 use super::{Ai, Leftover, Official};
 
 pub fn all() -> Vec<Ai> {
-    vec![claude(), codex(), cursor()]
+    vec![claude(), codex(), cursor(), antigravity()]
 }
 
 pub fn names() -> Vec<String> {
@@ -15,6 +15,7 @@ pub fn find(name: &str) -> Option<Ai> {
         "claude-code" => "claude",
         "openai-codex" => "codex",
         "cursor-agent" | "agent" => "cursor",
+        "antigravity-cli" | "agy" => "antigravity",
         other => other,
     };
     all().into_iter().find(|t| t.name == want)
@@ -111,6 +112,27 @@ fn cursor() -> Ai {
             ],
         }),
         // Cursor 目前只公布官方安装器，npm 上和 brew 里都没有这个 CLI。
+        package: None,
+        cask: None,
+    }
+}
+
+fn antigravity() -> Ai {
+    Ai {
+        name: "antigravity",
+        summary: "Google Antigravity CLI",
+        bins: &["agy"],
+        version_args: &["--version"],
+        official: Some(Official {
+            url_env: "FUNDEPLOY_ANTIGRAVITY_INSTALL_URL",
+            url: "https://antigravity.google/cli/install.sh",
+            self_update: &["update"],
+            leftovers: &[Leftover {
+                base_env: "",
+                base: ".local/bin",
+                rel: "agy",
+            }],
+        }),
         package: None,
         cask: None,
     }

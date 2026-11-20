@@ -269,12 +269,26 @@ fundeploy source pip add 自己的源 https://...
 ### AI 命令行 `fundeploy ai`
 
 ```bash
-fundeploy ai                  # 三样的当前状态
+fundeploy ai                  # 所有 AI 工具的当前状态
 fundeploy ai claude install
+fundeploy ai antigravity install
 fundeploy ai all upgrade
+fundeploy ai codex config
+fundeploy ai claude config
+fundeploy ai cursor config
+fundeploy ai antigravity config
 ```
 
-覆盖 `claude`、`codex`、`cursor`。官方安装器优先，装不上再退到包管理器那条路。
+四个工具默认走官方安装器，安装 Antigravity CLI 后使用 `agy` 命令。
+
+`config` 会询问 API 地址和密钥，拉取模型并让你选择默认模型。模型列表不可用时可以手动输入模型 ID。也可以从主菜单进入「AI 命令行」选择「配置」。
+
+- Codex 需要支持 OpenAI Responses API 的网关。配置写入 `~/.codex/config.toml`，之后直接运行 `codex`。
+- Claude Code 需要支持 Anthropic Messages API 的网关。配置写入 `~/.claude/settings.json`，之后直接运行 `claude`。
+- Cursor 使用 Cursor 协议端点和 Cursor API Key。配置后运行 `fundeploy ai cursor run`。
+- Antigravity 使用 Gemini API（`v1beta`）和 Gemini API Key。配置后运行 `fundeploy ai antigravity run`。
+
+配置文件权限为 `0600`。Cursor 和 Antigravity 的密钥由 `run` 通过环境变量传给上游 CLI。
 
 ### 诊断 `fundeploy doctor`
 

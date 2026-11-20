@@ -80,9 +80,9 @@ enum Command {
         #[command(subcommand)]
         action: Option<DevAction>,
     },
-    /// AI 命令行工具（claude / codex / cursor）
+    /// AI 命令行工具（claude / codex / cursor / antigravity）
     Ai {
-        /// 工具名，或 all 对三样都来一遍。不给就列出全部的当前状态。
+        /// 工具名，或 all 批量安装、升级、卸载。不给就列出全部的当前状态。
         name: Option<String>,
         #[command(subcommand)]
         action: Option<AiAction>,
@@ -111,6 +111,15 @@ enum Command {
 enum AiAction {
     /// 装没装、装在哪儿、哪个版本
     Status,
+    /// 配置 API 地址、密钥和默认模型
+    #[command(visible_alias = "configure")]
+    Config,
+    /// 使用已保存的配置启动 Cursor 或 Antigravity
+    Run {
+        /// `--` 之后的参数原样交给上游 CLI
+        #[arg(trailing_var_arg = true, value_name = "参数")]
+        args: Vec<String>,
+    },
     /// 安装
     Install {
         #[command(flatten)]
@@ -568,6 +577,7 @@ fn ai_cmd(name: Option<String>, action: Option<AiAction>) -> Result<()> {
     if name == "all" {
         return match action.unwrap_or(AiAction::Status) {
             AiAction::Status => ai::list(),
+            AiAction::Config | AiAction::Run { .. } => bail!("请指定一个 AI 工具"),
             AiAction::Install { how, args } => {
                 ai::each(how.method, |t| t.install(how.method, &args))
             }
@@ -586,6 +596,8 @@ fn ai_cmd(name: Option<String>, action: Option<AiAction>) -> Result<()> {
     // 跟 dev 一样：不给动作时只报状态，不动手。
     match action.unwrap_or(AiAction::Status) {
         AiAction::Status => t.status(),
+        AiAction::Config => ai::config::configure(&t),
+        AiAction::Run { args } => ai::config::run(&t, &args),
         AiAction::Install { how, args } => t.install(how.method, &args),
         AiAction::Upgrade { how } => t.upgrade(how.method),
         AiAction::Uninstall { how, yes } => t.uninstall(how.method, yes),
@@ -696,9 +708,11 @@ const SOURCE_MENU: [(&str, &str); 7] = [
 ];
 
 /// AI 命令行那一域的动作。
-const AI_MENU: [(&str, &str); 4] = [
+const AI_MENU: [(&str, &str); 6] = [
     ("status", "装没装、装在哪儿、哪个版本"),
     ("install", "安装"),
+    ("config", "配置 API 地址、密钥和默认模型"),
+    ("run", "使用已保存的配置启动"),
     ("upgrade", "升到最新版"),
     ("uninstall", "卸载"),
 ];
@@ -803,10 +817,20 @@ fn pick_name(names: &[String], prompt: &str, overview: &str) -> Result<Option<St
     ))
 }
 
-fn pick_ai_action() -> Result<AiAction> {
+fn pick_ai_action(name: &str) -> Result<AiAction> {
     // 装法不在交互里问：不给就是 official，要点名装法命令行上 `--method` 更顺手。
     let how = AiHow { method: None };
-    Ok(match pick_action(&AI_MENU)?.as_str() {
+    let menu: Vec<_> = AI_MENU
+        .into_iter()
+        .filter(|(action, _)| match *action {
+            "config" => name != "all",
+            "run" => matches!(name, "cursor" | "antigravity"),
+            _ => true,
+        })
+        .collect();
+    Ok(match pick_action(&menu)?.as_str() {
+        "config" => AiAction::Config,
+        "run" => AiAction::Run { args: Vec::new() },
         "install" => AiAction::Install {
             how,
             args: Vec::new(),
@@ -945,7 +969,7 @@ const MENU: [&str; 12] = [
     "port-kill  腾端口（查出谁占着，停掉它）",
     "doctor     诊断（GitHub 连不上）",
     "dev        开发工具链（go、nodejs、pnpm、rust、uv、python）",
-    "ai         AI 命令行（claude、codex、cursor）",
+    "ai         AI 命令行（claude、codex、cursor、antigravity）",
     "skills     技能仓库（同步 Gitee 上的那批）",
     "upgrade    升级 fundeploy 自己",
     "list       列出能管的东西",
@@ -1066,7 +1090,7 @@ fn run_domain(domain: &str) -> Result<()> {
                 |name| match name {
                     None => ai::list(),
                     Some(n) => {
-                        let action = pick_ai_action()?;
+                        let action = pick_ai_action(&n)?;
                         ai_cmd(Some(n), Some(action))
                     }
                 },
