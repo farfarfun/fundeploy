@@ -77,16 +77,23 @@ pub(super) fn print_tail(path: &Path, lines: usize) {
 /// fundeploy 自己，不会留下一个还在跑的 tail。
 pub(super) fn follow_log(path: &Path) -> Result<()> {
     use std::io::{Read, Seek, SeekFrom, Write};
+    use std::os::unix::fs::MetadataExt;
 
     let mut f = std::fs::File::open(path)?;
+    let mut id = f.metadata().ok().map(|m| (m.dev(), m.ino()));
     let mut pos = f.seek(SeekFrom::End(0))?;
+    let mut buf = [0u8; 64 * 1024];
     loop {
         std::thread::sleep(Duration::from_millis(300));
-        let len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(pos);
-        if len < pos {
-            // 日志被轮转或清空了。旧的文件句柄指向的还是老 inode，必须重开，
-            // 否则这条通道从此就哑了。
+        let Ok(meta) = std::fs::metadata(path) else {
+            continue;
+        };
+        let len = meta.len();
+        let cur_id = Some((meta.dev(), meta.ino()));
+        if cur_id != id || len < pos {
+            // 日志被轮转（inode 变了）或清空截断了：重开句柄，避免停在旧 inode 上哑掉。
             f = std::fs::File::open(path)?;
+            id = f.metadata().ok().map(|m| (m.dev(), m.ino()));
             pos = 0;
             continue;
         }
@@ -94,12 +101,17 @@ pub(super) fn follow_log(path: &Path) -> Result<()> {
             continue;
         }
         f.seek(SeekFrom::Start(pos))?;
-        let mut buf = vec![0u8; (len - pos) as usize];
-        let n = f.read(&mut buf)?;
-        buf.truncate(n);
-        pos += n as u64;
-        std::io::stdout().write_all(&buf)?;
-        std::io::stdout().flush()?;
+        // 固定 64 KiB 缓冲循环流式读取，避免日志突发暴涨时单次分配过大内存。
+        let mut out = std::io::stdout().lock();
+        loop {
+            let n = f.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            pos += n as u64;
+            out.write_all(&buf[..n])?;
+        }
+        out.flush()?;
     }
 }
 

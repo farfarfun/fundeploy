@@ -286,8 +286,7 @@ fn probe_jobs() -> usize {
 /// 顺带改 brew 的区块，分开锁就挡不住这种跨模块的用例。
 #[cfg(test)]
 pub(crate) fn 排队() -> std::sync::MutexGuard<'static, ()> {
-    static M: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    M.lock().unwrap_or_else(|e| e.into_inner())
+    crate::common::env::test_env::EnvGuard::lock()
 }
 
 #[cfg(test)]

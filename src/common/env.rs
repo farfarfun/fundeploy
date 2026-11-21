@@ -96,7 +96,52 @@ pub fn uninstall_yes_var(name: &str) -> String {
 }
 
 #[cfg(test)]
+pub(crate) mod test_env {
+    use std::sync::{Mutex, MutexGuard};
+
+    /// 全 crate 共用的环境变量测试守卫：全局排队 + 出作用域自动还原，避免并发测试串台
+    /// 或断言失败后把脏环境变量留给后续用例。
+    pub(crate) struct EnvGuard {
+        prev: Vec<(String, Option<String>)>,
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl EnvGuard {
+        pub(crate) fn lock() -> MutexGuard<'static, ()> {
+            static LOCK: Mutex<()> = Mutex::new(());
+            LOCK.lock().unwrap_or_else(|e| e.into_inner())
+        }
+
+        pub(crate) fn set(pairs: &[(&str, Option<&str>)]) -> Self {
+            let _lock = Self::lock();
+            let mut prev = Vec::with_capacity(pairs.len());
+            for (k, v) in pairs {
+                let old = std::env::var(k).ok();
+                match v {
+                    Some(val) => std::env::set_var(k, val),
+                    None => std::env::remove_var(k),
+                }
+                prev.push(((*k).to_string(), old));
+            }
+            Self { prev, _lock }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (k, v) in self.prev.iter().rev() {
+                match v {
+                    Some(val) => std::env::set_var(k, val),
+                    None => std::env::remove_var(k),
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
+    use super::test_env::EnvGuard;
     use super::*;
 
     #[test]
@@ -121,35 +166,32 @@ mod tests {
 
     #[test]
     fn 非法端口退回默认值而不是崩掉() {
-        std::env::set_var("__FD_TEST_PORT", "八千");
+        let _g = EnvGuard::set(&[("__FD_TEST_PORT", Some("八千"))]);
         assert_eq!(port("__FD_TEST_PORT", 1234), 1234);
         std::env::set_var("__FD_TEST_PORT", "0");
         assert_eq!(port("__FD_TEST_PORT", 1234), 1234);
         std::env::set_var("__FD_TEST_PORT", "70000");
         assert_eq!(port("__FD_TEST_PORT", 1234), 1234);
-        std::env::remove_var("__FD_TEST_PORT");
     }
 
     #[test]
     fn 空环境变量当作没设置() {
-        std::env::set_var("__FD_TEST_STR", "   ");
+        let _g = EnvGuard::set(&[("__FD_TEST_STR", Some("   "))]);
         assert_eq!(str_or("__FD_TEST_STR", "默认"), "默认");
         assert_eq!(opt("__FD_TEST_STR"), None);
-        std::env::remove_var("__FD_TEST_STR");
     }
 
     #[test]
     fn 数值非法时退回默认值() {
-        std::env::set_var("__FD_TEST_NUM", "一百");
+        let _g = EnvGuard::set(&[("__FD_TEST_NUM", Some("一百"))]);
         assert_eq!(num::<u64>("__FD_TEST_NUM", 60), 60);
         std::env::set_var("__FD_TEST_NUM", "180");
         assert_eq!(num::<u64>("__FD_TEST_NUM", 60), 180);
-        std::env::remove_var("__FD_TEST_NUM");
     }
 
     #[test]
     fn 开关量没设时用默认值() {
-        std::env::remove_var("__FD_TEST_FLAG");
+        let _g = EnvGuard::set(&[("__FD_TEST_FLAG", None)]);
         assert!(flag("__FD_TEST_FLAG", true));
         assert!(!flag("__FD_TEST_FLAG", false));
         // 设了就只认真值写法，其他一律为假——包括默认值为 true 的情况，
@@ -158,7 +200,6 @@ mod tests {
         assert!(!flag("__FD_TEST_FLAG", true));
         std::env::set_var("__FD_TEST_FLAG", "YES");
         assert!(flag("__FD_TEST_FLAG", false));
-        std::env::remove_var("__FD_TEST_FLAG");
     }
 
     #[test]

@@ -91,14 +91,16 @@ impl CockpitTools {
         download::hint_mirror();
 
         // 临时目录放在 home 下而不是 /tmp：同一个文件系统，最后那步换文件才是
-        // 原子的 rename，而不是跨设备拷贝拷到一半断电。
-        let work = self.home.join(".tmp");
-        let _ = std::fs::remove_dir_all(&work);
-        std::fs::create_dir_all(&work)
-            .with_context(|| format!("建临时目录失败: {}", work.display()))?;
-        let tmp = work.join(&want.name);
+        // 原子的 rename；随机目录名避免并发踩踏并自动清理。
+        std::fs::create_dir_all(&self.home)
+            .with_context(|| format!("建目录失败: {}", self.home.display()))?;
+        let work = tempfile::Builder::new()
+            .prefix(".tmp-")
+            .tempdir_in(&self.home)
+            .with_context(|| format!("建临时目录失败: {}", self.home.display()))?;
+        let tmp = work.path().join(&want.name);
 
-        download::to_file(
+        let got_sha = download::to_file_sha256(
             &want.browser_download_url,
             &tmp,
             &format!("cockpit-tools {}", release.tag_name),
@@ -107,7 +109,7 @@ impl CockpitTools {
         let sums = release
             .checksums_url()
             .and_then(|u| download::get_text(u).ok());
-        download::verify(&tmp, sums.as_deref(), &want.name)?;
+        download::verify_hash(&got_sha, sums.as_deref(), &want.name)?;
 
         // 先加执行位再搬进去：反过来的话，中间存在一瞬间「文件在位但不可执行」，
         // 这时候点桌面入口得到的是一句 Permission denied。
@@ -115,7 +117,7 @@ impl CockpitTools {
         let dest = self.appimage();
         std::fs::create_dir_all(dest.parent().unwrap())?;
         std::fs::rename(&tmp, &dest).with_context(|| format!("放置失败: {}", dest.display()))?;
-        let _ = std::fs::remove_dir_all(&work);
+        drop(work);
 
         std::fs::write(self.version_file(), format!("{}\n", release.version()))
             .with_context(|| format!("写版本记录失败: {}", self.version_file().display()))?;
@@ -158,16 +160,24 @@ impl CockpitTools {
         let dir = path.parent().unwrap();
         std::fs::create_dir_all(dir).with_context(|| format!("建目录失败: {}", dir.display()))?;
 
+        let exec_raw = self.appimage().display().to_string();
+        let exec = if exec_raw.contains([' ', '\t', '"', '\\']) {
+            format!(
+                "\"{}\"",
+                exec_raw.replace('\\', "\\\\").replace('"', "\\\"")
+            )
+        } else {
+            exec_raw
+        };
         let entry = format!(
             "[Desktop Entry]\n\
              Type=Application\n\
              Name=Cockpit Tools\n\
              Comment=AI IDE account manager\n\
-             Exec={}\n\
+             Exec={exec}\n\
              Terminal=false\n\
              Categories=Development;Utility;\n\
              StartupNotify=true\n",
-            self.appimage().display()
         );
         std::fs::write(&path, entry).with_context(|| format!("写入失败: {}", path.display()))?;
 
@@ -221,6 +231,7 @@ impl Tool for CockpitTools {
     }
 
     fn uninstall(&self) -> Result<()> {
+        guard_removable(&self.home)?;
         ui::confirm_destructive(
             &format!(
                 "将删除 {} 和桌面入口 {}，确认？",
@@ -229,7 +240,6 @@ impl Tool for CockpitTools {
             ),
             &uninstall_env_var(self.name()),
         )?;
-        guard_removable(&self.home)?;
 
         if self.home.exists() {
             std::fs::remove_dir_all(&self.home)

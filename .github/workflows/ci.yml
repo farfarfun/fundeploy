@@ -18,9 +18,13 @@ env:
 
 jobs:
   lint:
-    name: fmt + clippy
-    runs-on: ubuntu-latest
+    name: fmt + clippy (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -28,6 +32,7 @@ jobs:
         run: rustup toolchain install stable --profile minimal --component rustfmt,clippy --no-self-update
 
       - id: rust
+        shell: bash
         run: echo "ver=$(rustc --version | tr ' /' '--')" >>"$GITHUB_OUTPUT"
 
       - uses: actions/cache@v4
@@ -36,12 +41,13 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: cargo-lint-${{ steps.rust.outputs.ver }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-lint-${{ steps.rust.outputs.ver }}-
+          key: cargo-lint-${{ runner.os }}-${{ steps.rust.outputs.ver }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-lint-${{ runner.os }}-${{ steps.rust.outputs.ver }}-
 
       # clippy 规则来自 Cargo.toml 的 [lints.clippy]（本机 warn），`-D warnings`
       # 只负责在 CI 把它们变成硬失败。规则本身不写在这儿：写在这儿本机就看不到。
-      - run: cargo fmt --all --check
+      - if: runner.os == 'Linux'
+        run: cargo fmt --all --check
       - run: cargo clippy --all-targets -- -D warnings
 
   msrv:
@@ -129,6 +135,7 @@ jobs:
           - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm }
           - { target: x86_64-apple-darwin, os: macos-latest }
           - { target: aarch64-apple-darwin, os: macos-latest }
+          - { target: x86_64-pc-windows-msvc, os: windows-latest }
     steps:
       - uses: actions/checkout@v4
 
@@ -145,6 +152,7 @@ jobs:
           rustup target add ${{ matrix.target }}
 
       - id: rust
+        shell: bash
         run: echo "ver=$(rustc --version | tr ' /' '--')" >>"$GITHUB_OUTPUT"
 
       - uses: actions/cache@v4

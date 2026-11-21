@@ -151,17 +151,14 @@ impl Airflow {
         // 第一次启动要初始化元数据库再把 api-server、scheduler、triggerer、
         // dag-processor 都拉起来，30 秒远远不够。
         .start_timeout(Duration::from_secs(env::num("AIRFLOW_START_TIMEOUT_SEC", 180)))
-        .entry(format!("http://{}:{port}", port::display_host(&host)));
+        .entry(port::http_url(&host, port));
 
         let dags = spec.home.join("dags");
         let spec = spec
             .note(format!("DAG 放在 {}", dags.display()))
             .note("还没有用户的话: fundeploy service airflow users-create");
 
-        let api_base = env::str_or(
-            "AIRFLOW_API_BASE",
-            &format!("http://{}:{port}", port::display_host(&host)),
-        );
+        let api_base = env::str_or("AIRFLOW_API_BASE", &port::http_url(&host, port));
 
         Self { spec, api_base }
     }
@@ -375,7 +372,7 @@ impl Venv for Airflow {
 
     fn extra_status(&self) -> Result<()> {
         let bin = self.spec.bin("airflow");
-        if !bin.is_file() {
+        if !bin.is_file() || !self.running() {
             return Ok(());
         }
         ui::blank();
@@ -451,20 +448,22 @@ impl Venv for Airflow {
     }
 }
 
-/// venv 里的 site-packages。
+/// venv 里的 site-packages（按 Python 主次版本号数值排序，避免 `python3.9 > python3.12`）。
 fn site_packages(venv: &Path) -> Option<PathBuf> {
-    let mut dirs: Vec<PathBuf> = std::fs::read_dir(venv.join("lib"))
+    let mut dirs: Vec<((u32, u32), PathBuf)> = std::fs::read_dir(venv.join("lib"))
         .ok()?
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("python"))
+        .filter_map(|p| {
+            let name = p.file_name()?.to_str()?;
+            let rest = name.strip_prefix("python")?;
+            let (maj, min) = rest.split_once('.')?;
+            let key = (maj.parse::<u32>().ok()?, min.parse::<u32>().ok()?);
+            Some((key, p))
         })
         .collect();
-    dirs.sort();
-    dirs.pop().map(|p| p.join("site-packages"))
+    dirs.sort_by_key(|(k, _)| *k);
+    dirs.pop().map(|(_, p)| p.join("site-packages"))
 }
 
 /// URL 路径片段的百分号编码。DAG id 里出现空格、斜杠、中文都是合法的。

@@ -11,18 +11,27 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::theme::{clip, paint, AMBER, BLUE, BORDER, LAVENDER, MINT, MUTED, SURFACE, TEXT};
 
-/// 该不该上色。
+fn color_allowed() -> bool {
+    // 按 no-color.org 约定，空字符串视同未设；非空才禁用颜色。
+    if std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()) {
+        return false;
+    }
+    if std::env::var("TERM").is_ok_and(|t| t == "dumb") {
+        return false;
+    }
+    true
+}
+
+/// stdout 该不该上色。
 fn color() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| {
-        if std::env::var_os("NO_COLOR").is_some() {
-            return false;
-        }
-        if std::env::var("TERM").is_ok_and(|t| t == "dumb") {
-            return false;
-        }
-        std::io::stdout().is_terminal()
-    })
+    *ON.get_or_init(|| color_allowed() && std::io::stdout().is_terminal())
+}
+
+/// stderr 该不该上色（避免仅重定向 stderr 时把 ANSI 码写进错误日志）。
+fn color_stderr() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| color_allowed() && std::io::stderr().is_terminal())
 }
 
 /// 能不能问人。重定向、CI、显式 NONINTERACTIVE 都算不能。
@@ -34,13 +43,7 @@ pub fn interactive() -> bool {
 }
 
 fn truthy_env(name: &str) -> bool {
-    matches!(
-        std::env::var(name)
-            .unwrap_or_default()
-            .to_ascii_lowercase()
-            .as_str(),
-        "1" | "y" | "yes" | "true" | "on"
-    )
+    crate::common::env::flag(name, false)
 }
 
 /// 一个步骤的开始。
@@ -84,7 +87,7 @@ pub fn hint(msg: impl AsRef<str>) {
 /// 错误。走 stderr，和 `warn` 一样不混进 stdout。
 pub fn error(msg: impl AsRef<str>) {
     let msg = msg.as_ref();
-    if color() {
+    if color_stderr() {
         eprintln!("{} {msg}", "错误:".red().bold());
     } else {
         eprintln!("错误: {msg}");
@@ -372,10 +375,10 @@ impl Card {
         let badge = self
             .badge
             .as_ref()
-            .map(|(st, label)| (*st, ellipsize(label, inner / 2 - 4)));
+            .map(|(st, label)| (*st, ellipsize(label, (inner / 2).saturating_sub(4))));
         let badge_width = badge.as_ref().map_or(0, |(_, label)| cols(label) + 5);
-        let title = ellipsize(&self.title, inner - badge_width - 3);
-        let rule = "─".repeat(inner - badge_width - cols(&title) - 3);
+        let title = ellipsize(&self.title, inner.saturating_sub(badge_width + 3));
+        let rule = "─".repeat(inner.saturating_sub(badge_width + cols(&title) + 3));
         let right = badge.map_or_else(String::new, |(st, label)| {
             format!(
                 "{}{}{}",
@@ -444,11 +447,11 @@ pub struct Spinner(indicatif::ProgressBar);
 
 impl Spinner {
     pub fn new(msg: impl Into<String>) -> Self {
-        let bar = if std::io::stderr().is_terminal() && color() {
+        let bar = if color_stderr() {
             let b = indicatif::ProgressBar::new_spinner();
             b.set_style(
                 indicatif::ProgressStyle::with_template("{spinner:.cyan} {msg} 已过 {elapsed}")
-                    .unwrap(),
+                    .expect("spinner 模板应始终合法"),
             );
             b
         } else {
@@ -589,7 +592,7 @@ pub fn ok(msg: impl AsRef<str>) {
 
 pub fn warn(msg: impl AsRef<str>) {
     let msg = msg.as_ref();
-    if color() {
+    if color_stderr() {
         eprintln!("{} {msg}", "警告:".yellow().bold());
     } else {
         eprintln!("警告: {msg}");
@@ -619,11 +622,9 @@ pub fn cols(s: &str) -> usize {
 /// 这个值决定盒绘的框宽。问不出来时**必须**给个保守的默认值而不是「不限宽」：
 /// 框线一旦比终端宽，每一行都会被硬折到下一行，右边框散落得满屏都是。
 pub fn term_cols() -> usize {
-    // SAFETY: ioctl 只往这个本地 winsize 里写，失败时我们不读它。
-    unsafe {
-        let mut ws: libc::winsize = std::mem::zeroed();
-        if libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws) == 0 && ws.ws_col > 2 {
-            return ws.ws_col as usize;
+    if let Ok((cols, _)) = crossterm::terminal::size() {
+        if cols > 2 {
+            return usize::from(cols);
         }
     }
     80
@@ -819,20 +820,22 @@ mod tests {
 
     #[test]
     fn 环境变量的真值形式都认() {
-        for v in ["1", "y", "yes", "true", "on", "YES", "True"] {
+        let _g = crate::common::env::test_env::EnvGuard::set(&[("__FD_TEST_TRUTHY", None)]);
+        for v in [
+            "1", "y", "yes", "true", "on", "YES", "True", " 1 ", " true ",
+        ] {
             std::env::set_var("__FD_TEST_TRUTHY", v);
             assert!(truthy_env("__FD_TEST_TRUTHY"), "没认出 {v}");
         }
-        for v in ["", "0", "no", "false", "off", "随便"] {
+        for v in ["", "   ", "0", "no", "false", "off", "随便"] {
             std::env::set_var("__FD_TEST_TRUTHY", v);
             assert!(!truthy_env("__FD_TEST_TRUTHY"), "误认了 {v}");
         }
-        std::env::remove_var("__FD_TEST_TRUTHY");
     }
 
     #[test]
     fn 未设置的环境变量是假值() {
-        std::env::remove_var("__FD_TEST_UNSET");
+        let _g = crate::common::env::test_env::EnvGuard::set(&[("__FD_TEST_UNSET", None)]);
         assert!(!truthy_env("__FD_TEST_UNSET"));
     }
 
@@ -840,36 +843,36 @@ mod tests {
     fn 无人值守下没给确认变量就报错而不是默认同意() {
         // 守的是「误把确认当同意」：测试环境里没有 tty，若实现把它当同意，
         // 这里就会返回 Ok，而真实场景下对应的是把东西直接卸掉。
-        std::env::set_var("NONINTERACTIVE", "1");
-        std::env::remove_var("__FD_TEST_YES");
+        let _g = crate::common::env::test_env::EnvGuard::set(&[
+            ("NONINTERACTIVE", Some("1")),
+            ("__FD_TEST_YES", None),
+        ]);
         let err = confirm_destructive("要删吗", "__FD_TEST_YES")
             .unwrap_err()
             .to_string();
         assert!(err.contains("__FD_TEST_YES=1"), "实际: {err}");
-        std::env::remove_var("NONINTERACTIVE");
     }
 
     #[test]
     fn 给了确认变量就不再询问() {
-        std::env::set_var("__FD_TEST_YES2", "1");
+        let _g = crate::common::env::test_env::EnvGuard::set(&[("__FD_TEST_YES2", Some("1"))]);
         confirm_destructive("要删吗", "__FD_TEST_YES2").unwrap();
-        std::env::remove_var("__FD_TEST_YES2");
     }
 
     #[test]
     fn 默认同意的那种确认在无人值守下就是同意() {
         // 跟上面那条正好相反，也必须相反：stop 收尾的强停走的是这条，在 cron 和 CI
         // 里停下来问（或者报错）等于让 restart 断在半路。
-        std::env::set_var("NONINTERACTIVE", "1");
-        std::env::remove_var("__FD_TEST_YES3");
+        let _g = crate::common::env::test_env::EnvGuard::set(&[
+            ("NONINTERACTIVE", Some("1")),
+            ("__FD_TEST_YES3", None),
+        ]);
         assert!(confirm_default_yes("要停吗", "__FD_TEST_YES3"));
-        std::env::remove_var("NONINTERACTIVE");
     }
 
     #[test]
     fn 默认同意的那种确认也认跳过变量() {
-        std::env::set_var("__FD_TEST_YES4", "1");
+        let _g = crate::common::env::test_env::EnvGuard::set(&[("__FD_TEST_YES4", Some("1"))]);
         assert!(confirm_default_yes("要停吗", "__FD_TEST_YES4"));
-        std::env::remove_var("__FD_TEST_YES4");
     }
 }

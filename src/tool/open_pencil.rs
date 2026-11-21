@@ -81,30 +81,37 @@ impl OpenPencil {
 
     /// 装或升两个包。`version` 为 None 时跟最新版。
     fn provision(&self, version: Option<&str>) -> Result<()> {
+        let mut tools = Vec::new();
         for pkg in self.packages() {
-            let npm = Npm::for_package(pkg, self.npm_bin.as_deref())?;
-            if let Some(w) = npm.shadow_warning(pkg) {
+            let lookup = Npm::lookup_package(pkg, self.npm_bin.as_deref())?;
+            if let Some(w) = lookup.shadow_warning {
                 ui::warn(w);
             }
+            let npm = lookup.tool;
             let spec = npm.spec(pkg, version);
             ui::step(format!("{} 安装 {spec}", npm.name()));
             npm.install_global(&spec)
                 .with_context(|| format!("装 {spec} 失败。权限不够的话用 nvm/volta 这类无需 sudo 的 Node 版本管理器，别 sudo npm -g"))?;
+            tools.push((pkg, npm));
         }
         ui::blank();
-        self.print_versions();
+        for (pkg, npm) in tools {
+            ui::kv(pkg, npm.installed_version(pkg).as_deref());
+        }
         Ok(())
     }
 
     fn installed_version(&self, pkg: &str) -> Option<String> {
-        Npm::for_package(pkg, self.npm_bin.as_deref())
+        Npm::lookup_package(pkg, self.npm_bin.as_deref())
             .ok()?
-            .installed_version(pkg)
+            .installed
     }
 
     fn print_versions(&self) {
-        for pkg in self.packages() {
-            ui::kv(pkg, self.installed_version(pkg).as_deref());
+        let pkgs = self.packages();
+        let vers = crate::common::par::map(&pkgs, pkgs.len(), |pkg| self.installed_version(pkg));
+        for (pkg, ver) in pkgs.into_iter().zip(vers) {
+            ui::kv(pkg, ver.as_deref());
         }
     }
 
@@ -211,6 +218,7 @@ impl Tool for OpenPencil {
     }
 
     fn uninstall(&self) -> Result<()> {
+        guard_removable(&self.home)?;
         ui::confirm_destructive(
             &format!(
                 "将卸载 {} 与 {}，并删除 {}（含已下载的桌面安装包），确认？",
@@ -220,7 +228,6 @@ impl Tool for OpenPencil {
             ),
             &uninstall_env_var(self.name()),
         )?;
-        guard_removable(&self.home)?;
 
         // 先 MCP 后 CLI：装的时候 CLI 在前，卸的时候倒过来，免得中途失败留下一个
         // 「CLI 没了、MCP 还在」的状态——客户端拉起 MCP 时才会发现。
@@ -342,22 +349,22 @@ mod tests {
     fn 旧的_home_变量名仍然认() {
         // Bash 时代把 open-pencil 当服务管，机器上已经有的 dist/ 不该因为改了个
         // 变量名就找不到。
-        std::env::remove_var("OPEN_PENCIL_HOME");
-        std::env::set_var("OPEN_PENCIL_SERVICE_HOME", "/opt/旧地方");
+        let _g = crate::common::env::test_env::EnvGuard::set(&[
+            ("OPEN_PENCIL_HOME", None),
+            ("OPEN_PENCIL_SERVICE_HOME", Some("/opt/旧地方")),
+        ]);
         assert_eq!(OpenPencil::from_env().home, PathBuf::from("/opt/旧地方"));
         // 两个都设的时候新名字说了算。
         std::env::set_var("OPEN_PENCIL_HOME", "/opt/新地方");
         assert_eq!(OpenPencil::from_env().home, PathBuf::from("/opt/新地方"));
-        std::env::remove_var("OPEN_PENCIL_HOME");
-        std::env::remove_var("OPEN_PENCIL_SERVICE_HOME");
     }
 
     #[test]
     fn 字面量_latest_等同于不钉版本() {
-        std::env::set_var("OPEN_PENCIL_VERSION", "latest");
+        let _g =
+            crate::common::env::test_env::EnvGuard::set(&[("OPEN_PENCIL_VERSION", Some("latest"))]);
         assert_eq!(OpenPencil::from_env().version, None);
         std::env::set_var("OPEN_PENCIL_VERSION", "0.15.1");
         assert_eq!(OpenPencil::from_env().version.as_deref(), Some("0.15.1"));
-        std::env::remove_var("OPEN_PENCIL_VERSION");
     }
 }

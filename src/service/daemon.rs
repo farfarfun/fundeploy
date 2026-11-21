@@ -89,7 +89,7 @@ impl Proc {
 
     /// 监听地址在本机之外也能到吗。
     fn is_public(&self) -> bool {
-        !matches!(self.host.as_str(), "127.0.0.1" | "localhost" | "::1")
+        port::is_public(&self.host)
     }
 }
 
@@ -201,6 +201,11 @@ pub trait Daemon {
         false
     }
 
+    /// 切换 `app/` 之前校验解包内容。校验失败时原安装毫发无损。
+    fn validate_staging(&self, _staging: &Path) -> Result<()> {
+        Ok(())
+    }
+
     // ------------------------------------------------------------ 生命周期
 
     fn install(&self, version: Option<&str>) -> Result<()> {
@@ -238,14 +243,17 @@ pub trait Daemon {
         ));
 
         // 临时目录放在 home 下而不是 /tmp：同一个文件系统，最后那步换目录才是
-        // 原子的 rename，而不是跨设备拷贝拷到一半断电。
-        let work = spec.home.join(".tmp");
-        let _ = std::fs::remove_dir_all(&work);
-        std::fs::create_dir_all(&work)
-            .with_context(|| format!("建临时目录失败: {}", work.display()))?;
+        // 原子的 rename，且随机名避免并发安装互相踩踏、出错自动清理。
+        std::fs::create_dir_all(&spec.home)
+            .with_context(|| format!("建目录失败: {}", spec.home.display()))?;
+        let work_dir = tempfile::Builder::new()
+            .prefix(".tmp-")
+            .tempdir_in(&spec.home)
+            .with_context(|| format!("建临时目录失败: {}", spec.home.display()))?;
+        let work = work_dir.path();
 
         let downloaded = work.join(&asset_name);
-        download::to_file(&url, &downloaded, &asset_name)?;
+        let got_sha = download::to_file_sha256(&url, &downloaded, &asset_name)?;
 
         let checksums = release
             .checksums_url()
@@ -258,7 +266,7 @@ pub trait Daemon {
         {
             bail!("{asset_name} 缺少可用的上游 SHA-256 校验和，已取消安装");
         }
-        download::verify(&downloaded, checksums.as_deref(), &asset_name)?;
+        download::verify_hash(&got_sha, checksums.as_deref(), &asset_name)?;
 
         let staging = work.join("app");
         unpack(&downloaded, &asset_name, &staging, src)?;
@@ -276,13 +284,21 @@ pub trait Daemon {
             }
             archive::make_executable(&bin)?;
         }
+        self.validate_staging(&staging)?;
 
-        swap_in(&spec.app_dir(), &staging, &work)?;
+        let app = spec.app_dir();
+        let old = swap_in(&app, &staging, work)?;
+        if let Err(e) = self.post_install() {
+            // post_install 失败时把旧 app 还原回来，不让一次坏包毁掉原安装。
+            if let Some(old_path) = &old {
+                let _ = std::fs::remove_dir_all(&app);
+                let _ = std::fs::rename(old_path, &app);
+            }
+            return Err(e);
+        }
         std::fs::write(spec.version_file(), format!("{}\n", release.version()))
             .with_context(|| format!("写版本记录失败: {}", spec.version_file().display()))?;
-        let _ = std::fs::remove_dir_all(&work);
-
-        self.post_install()?;
+        drop(work_dir);
 
         ui::blank();
         ui::heading("已安装版本");
@@ -339,6 +355,7 @@ pub trait Daemon {
 
     fn rollback(&self, version: &str) -> Result<()> {
         let spec = self.spec();
+        spec.validate()?;
         let v = version.trim().trim_start_matches(['v', 'V']);
         if v.is_empty() {
             bail!(
@@ -517,9 +534,11 @@ pub trait Daemon {
             }
         }
 
+        let ports: Vec<u16> = spec.procs.iter().map(|p| self.effective_port(p)).collect();
+        let holders_map = port::holders_many(&ports);
+
         let mut up = 0usize;
-        for p in &spec.procs {
-            let port = self.effective_port(p);
+        for (p, &port) in spec.procs.iter().zip(&ports) {
             let at = format!("{}:{port}", p.host);
             let pid = proc::read_pid_file(&spec.pid_file(p)).filter(|&pid| {
                 proc::managed_process(pid, &spec.pid_file(p), &spec.app_dir()) == Some(true)
@@ -538,28 +557,36 @@ pub trait Daemon {
                 }
                 // 端口有人但 PID 文件对不上。是手工起的本服务，还是别的程序正好占了
                 // 这个端口，差别很大——后者意味着 start 会起不来、stop 不会去碰它。
-                (None, true) => match port::listener_pid(port) {
-                    Some(other) => {
-                        match proc::managed_process(other, &spec.pid_file(p), &spec.app_dir()) {
-                            Some(true) => {
-                                up += 1;
-                                (
-                                    ui::State::Up,
-                                    format!("在运行 · PID {other}（不是 fundeploy 起的）· {at}"),
-                                )
+                (None, true) => {
+                    let listener = holders_map
+                        .get(&port)
+                        .and_then(|hs| hs.iter().find(|h| h.protos.contains(&"tcp")))
+                        .map(|h| h.pid);
+                    match listener {
+                        Some(other) => {
+                            match proc::managed_process(other, &spec.pid_file(p), &spec.app_dir()) {
+                                Some(true) => {
+                                    up += 1;
+                                    (
+                                        ui::State::Up,
+                                        format!(
+                                            "在运行 · PID {other}（不是 fundeploy 起的）· {at}"
+                                        ),
+                                    )
+                                }
+                                Some(false) => (
+                                    ui::State::Down,
+                                    format!("{at} 被 PID {other} 占着，跑的不是本服务"),
+                                ),
+                                None => (
+                                    ui::State::Down,
+                                    format!("{at} 被 PID {other} 占着，认不出是不是本服务"),
+                                ),
                             }
-                            Some(false) => (
-                                ui::State::Down,
-                                format!("{at} 被 PID {other} 占着，跑的不是本服务"),
-                            ),
-                            None => (
-                                ui::State::Down,
-                                format!("{at} 被 PID {other} 占着，认不出是不是本服务"),
-                            ),
                         }
+                        None => (ui::State::Partial, format!("端口已监听 · 归属未知 · {at}")),
                     }
-                    None => (ui::State::Partial, format!("端口已监听 · 归属未知 · {at}")),
-                },
+                }
                 (None, false) => (ui::State::Idle, format!("没在运行 · {at}")),
             };
             card = card.row_state(&p.label, st, text);
@@ -584,6 +611,8 @@ pub trait Daemon {
 
     fn uninstall(&self) -> Result<()> {
         let spec = self.spec();
+        guard_removable(&spec.home)?;
+
         ui::confirm_destructive(
             &format!(
                 "将停止服务并删除整个 {}（含 data/ 下的数据，不可逆），确认？",
@@ -591,8 +620,6 @@ pub trait Daemon {
             ),
             &uninstall_env_var(&spec.name),
         )?;
-
-        guard_removable(&spec.home)?;
 
         self.stop()?;
         ui::blank();
@@ -670,25 +697,37 @@ pub trait Daemon {
             Some(spec.pid_file(p).display().to_string()),
         ));
         let pid = proc::spawn_detached(&argv, &p.cwd, &env, &log)?;
-        proc::write_pid_file(&spec.pid_file(p), pid)?;
+        let pid_file = spec.pid_file(p);
+        proc::write_pid_file(&pid_file, pid)?;
 
-        let sp = ui::Spinner::new(format!("等 {} 监听 {}:{port}", p.label, p.host));
-        let listening = port::wait_for_listener_ticking(&p.host, port, START_TIMEOUT, || sp.tick());
-        if listening {
-            sp.done(format!("{} 起来了，{}:{port} 在听", p.label, p.host));
-            return Ok(());
+        match super::wait_for_pid_listener(&p.label, pid, &p.host, port, START_TIMEOUT) {
+            super::ListenWait::Listening => Ok(()),
+            super::ListenWait::Exited => {
+                let _ = std::fs::remove_file(&pid_file);
+                bail!(
+                    "{} 起来之后就退了（PID {pid} 已经没了）。\n日志 {}:\n{}",
+                    p.label,
+                    log.display(),
+                    super::format_tail(&log, 20)
+                )
+            }
+            super::ListenWait::TimedOut => {
+                let why = if proc::is_alive(pid) {
+                    format!(
+                        "{} 起来了（PID {pid}）但端口 {port} 迟迟没被监听。",
+                        p.label
+                    )
+                } else {
+                    let _ = std::fs::remove_file(&pid_file);
+                    format!("{} 起来之后就退了（PID {pid} 已经没了）。", p.label)
+                };
+                bail!(
+                    "{why}\n日志 {}:\n{}",
+                    log.display(),
+                    super::format_tail(&log, 20)
+                )
+            }
         }
-        sp.give_up();
-
-        let why = if proc::is_alive(pid) {
-            format!(
-                "{} 起来了（PID {pid}）但端口 {port} 迟迟没被监听。",
-                p.label
-            )
-        } else {
-            format!("{} 起来之后就退了（PID {pid} 已经没了）。", p.label)
-        };
-        bail!("{why}\n日志 {}:\n{}", log.display(), tail(&log, 20));
     }
 
     fn kill(&self, p: &Proc) -> Result<()> {
@@ -737,13 +776,14 @@ fn unpack(downloaded: &Path, asset_name: &str, staging: &Path, src: &Github) -> 
     }
 }
 
-/// 用新解出来的目录换掉 `app/`。
+/// 用新解出来的目录换掉 `app/`，返回旧版本的备份路径（随 `work` 一起清理或回滚）。
 ///
 /// 先把旧的挪开再把新的改名过去，两步都是同一文件系统上的 rename。中间那一瞬
 /// `app/` 不存在，但服务此刻已经停了，没人会读到。
-fn swap_in(app: &Path, staging: &Path, work: &Path) -> Result<()> {
+fn swap_in(app: &Path, staging: &Path, work: &Path) -> Result<Option<PathBuf>> {
     let old = work.join("app.old");
-    if app.exists() {
+    let had_old = app.exists();
+    if had_old {
         std::fs::rename(app, &old).with_context(|| format!("挪开旧版本失败: {}", app.display()))?;
     }
     if let Some(parent) = app.parent() {
@@ -752,25 +792,17 @@ fn swap_in(app: &Path, staging: &Path, work: &Path) -> Result<()> {
     }
     if let Err(e) = std::fs::rename(staging, app) {
         // 新的没铺上去，把旧的放回来——总比两头落空好。
-        if old.exists() {
+        if had_old && old.exists() {
             let _ = std::fs::rename(&old, app);
         }
         return Err(anyhow!("启用新版本失败: {e}（已退回原来那份）"));
     }
-    let _ = std::fs::remove_dir_all(&old);
-    Ok(())
+    Ok(had_old.then_some(old))
 }
 
-/// 日志末尾若干行。启动失败时贴出来，省得人再去找日志路径。
+#[cfg(test)]
 fn tail(path: &Path, lines: usize) -> String {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return "（读不到日志）".into();
-    };
-    let all: Vec<&str> = text.lines().collect();
-    if all.is_empty() {
-        return "（日志是空的）".into();
-    }
-    all[all.len().saturating_sub(lines)..].join("\n")
+    super::format_tail(path, lines)
 }
 
 // ---------------------------------------------------------------- 适配

@@ -24,17 +24,52 @@ pub fn write_pid_file(path: &Path, pid: i32) -> Result<()> {
         .with_context(|| format!("写不了 PID 文件: {}", path.display()))
 }
 
-/// 进程是否活着。等价于 `kill -0 <pid>`。
+/// 进程是否活着。
 ///
-/// 注意这回答的是「这个 PID 当前有进程」，不是「还是原来那个进程」：PID 会被系统回收，
-/// 一个停了很久的服务留下的 PID 文件可能指向一个毫不相干的新进程。调用方在要据此
-/// 发信号时，应当同时核对端口是否真的被这个 PID 监听（见 port::listener_pid）。
+/// 等价于 `kill -0 <pid>`，但额外修正两个常见陷阱：
+/// - 返回 `EPERM`（进程属于别的用户，如 root）时仍算存活，不能误删其 PID 文件；
+/// - 已退出待父进程回收的僵尸进程（Zombie）不算存活，否则 `stop_pid` 会空等完整超时。
+///
+/// 注意这回答的是「这个 PID 当前有活进程」，不是「还是原来那个进程」：PID 会被系统回收，
+/// 调用方在要据此发信号时，应当同时核对进程归属或端口（见 `managed_process` / `StopTarget`）。
 pub fn is_alive(pid: i32) -> bool {
     if pid <= 0 {
         return false;
     }
     // signal 0 不投递信号，只做权限与存在性检查。
-    unsafe { libc::kill(pid, 0) == 0 }
+    let r = unsafe { libc::kill(pid, 0) };
+    if r != 0 {
+        return std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+    }
+    !is_zombie(pid)
+}
+
+#[cfg(target_os = "linux")]
+fn is_zombie(pid: i32) -> bool {
+    let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+        return false;
+    };
+    // `/proc/<pid>/stat` 格式：`pid (comm) state ...`，comm 里可能有空格和括号，
+    // 所以从最后一个 `)` 往后找状态字节。
+    let Some((_, rest)) = stat.rsplit_once(')') else {
+        return false;
+    };
+    matches!(rest.trim_start().as_bytes().first(), Some(b'Z' | b'X'))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn is_zombie(pid: i32) -> bool {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System};
+    let pid = Pid::from_u32(pid as u32);
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[pid]),
+        false,
+        ProcessRefreshKind::nothing(),
+    );
+    system
+        .process(pid)
+        .is_some_and(|p| matches!(p.status(), ProcessStatus::Zombie | ProcessStatus::Dead))
 }
 
 /// 绝不能发信号的 PID，`Some` 里是为什么。
@@ -133,7 +168,7 @@ pub(crate) struct StopTarget {
 }
 
 impl StopTarget {
-    fn snapshot(pid: i32) -> Option<Self> {
+    pub(crate) fn snapshot(pid: i32) -> Option<Self> {
         use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
         let pid = Pid::from_u32(pid as u32);
         let mut system = System::new();

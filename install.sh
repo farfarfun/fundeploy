@@ -98,9 +98,17 @@ fetch() {
   # 加速前缀只往 GitHub 的地址上套。它是为 GitHub 配的，拿去套 Gitee 只会把一个
   # 本来通的地址绕坏——而走到 Gitee 的人，多半正是设了这个前缀的那批。
   if [ -n "${PROXY}" ]; then
-    case "${_url}" in
-      https://github.com/* | https://raw.githubusercontent.com/*)
-        _url="${PROXY}${_url}"
+    case "${PROXY}" in
+      https://*)
+        _prefix="${PROXY%/}/"
+        case "${_url}" in
+          https://github.com/* | https://raw.githubusercontent.com/*)
+            _url="${_prefix}${_url}"
+            ;;
+        esac
+        ;;
+      *)
+        printf '警告: FUNDEPLOY_GITHUB_HUB_PROXY_PREFIX 必须以 https:// 开头，已忽略。\n' >&2
         ;;
     esac
   fi
@@ -169,8 +177,14 @@ sha256_of() {
 }
 
 TMP="$(mktemp -d)"
-STAGED="${BIN_DIR}/.fundeploy.new.$$"
-trap 'rm -rf -- "${TMP}" "${STAGED}"' EXIT INT TERM
+STAGED=""
+cleanup() {
+  rm -rf -- "${TMP}"
+  [ -n "${STAGED}" ] && rm -f -- "${STAGED}"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 printf '==> 下载 %s\n' "${ASSET}"
 if [ -n "${SOURCE}" ]; then
@@ -201,8 +215,8 @@ RETRY=3
 # 校验。取不到清单或者本机没有 sha256 工具时只提醒不拦——那会让完全正常的安装
 # 失败；对得上却不匹配则必须停下。
 if fetch "${BASE}/SHA256SUMS" "${TMP}/SHA256SUMS" 2>/dev/null; then
-  WANT="$(awk -v n="${ASSET}" '$2 == n || $2 == "*" n {print $1; exit}' "${TMP}/SHA256SUMS")"
-  GOT="$(sha256_of "${TMP}/${ASSET}")"
+  WANT="$(tr -d '\r' <"${TMP}/SHA256SUMS" | awk -v n="${ASSET}" '$2 == n || $2 == "*" n {print tolower($1); exit}')"
+  GOT="$(sha256_of "${TMP}/${ASSET}" | tr '[:upper:]' '[:lower:]')"
   if [ -z "${WANT}" ]; then
     printf '警告: SHA256SUMS 里没有 %s，跳过校验。\n' "${ASSET}" >&2
   elif [ -z "${GOT}" ]; then
@@ -217,11 +231,11 @@ else
 fi
 
 tar -xzf "${TMP}/${ASSET}" -C "${TMP}" || die "${ASSET} 解不开"
-[ -f "${TMP}/fundeploy" ] || die "${ASSET} 里没有 fundeploy"
+[ -f "${TMP}/fundeploy" ] && [ ! -L "${TMP}/fundeploy" ] || die "${ASSET} 里没有有效的 fundeploy"
 
 mkdir -p "${BIN_DIR}"
-# 中转一次落在 BIN_DIR 里，最后那一步是同目录 rename。直接覆盖的话，正在跑的
-# fundeploy 会在写到一半时被读到。
+# 中转一次落在 BIN_DIR 里，最后那一步是同目录 rename。用 mktemp 避免可预测路径。
+STAGED="$(mktemp "${BIN_DIR}/.fundeploy.new.XXXXXX")"
 cp "${TMP}/fundeploy" "${STAGED}"
 chmod 0755 "${STAGED}"
 "${STAGED}" --version >/dev/null 2>&1 || die "下下来的二进制跑不起来，没有装上去。"

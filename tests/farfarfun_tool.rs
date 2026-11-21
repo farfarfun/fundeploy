@@ -45,6 +45,6 @@ fn upgrade_keeps_the_installed_homebrew_channel() {
     assert!(output.status.success(), "{output:?}");
     assert_eq!(
         std::fs::read_to_string(calls).unwrap(),
-        "brew install funget\n"
+        "brew upgrade funget\n"
     );
 }

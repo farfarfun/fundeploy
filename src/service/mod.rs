@@ -34,9 +34,10 @@ pub mod spec;
 pub mod upstream;
 pub mod venv;
 
-use std::time::Duration;
+use std::path::Path;
+use std::time::{Duration, Instant};
 
-use crate::common::{port, proc};
+use crate::common::{fs, port, proc};
 use crate::ui;
 
 /// 等端口监听起来的上限。
@@ -170,6 +171,54 @@ fn describe(h: &port::Holder) -> String {
     }
 }
 
+/// 等待刚启动的进程把端口监听起来；若期间进程已提前退出则立刻中止，避免干等满超时。
+pub(crate) enum ListenWait {
+    Listening,
+    Exited,
+    TimedOut,
+}
+
+pub(crate) fn wait_for_pid_listener(
+    label: &str,
+    pid: i32,
+    host: &str,
+    port: u16,
+    timeout: Duration,
+) -> ListenWait {
+    let sp = ui::Spinner::new(format!("等 {label} 监听 {host}:{port}"));
+    let deadline = Instant::now() + timeout;
+    loop {
+        if port::is_listening(host, port) {
+            sp.done(format!("{label} 起来了，{host}:{port} 在听"));
+            return ListenWait::Listening;
+        }
+        if !proc::is_alive(pid) {
+            // 进程虽退，极少数 daemon 会 fork 后退出父进程，补查一次端口防误判。
+            if port::is_listening(host, port) {
+                sp.done(format!("{label} 起来了，{host}:{port} 在听"));
+                return ListenWait::Listening;
+            }
+            sp.give_up();
+            return ListenWait::Exited;
+        }
+        if Instant::now() >= deadline {
+            sp.give_up();
+            return ListenWait::TimedOut;
+        }
+        sp.tick();
+        std::thread::sleep(Duration::from_millis(300));
+    }
+}
+
+/// 读取服务日志末尾若干行（256 KiB 窗口，大日志不 OOM，非 UTF-8 不崩）。
+pub(crate) fn format_tail(path: &Path, lines: usize) -> String {
+    match fs::tail_lines(path, lines) {
+        None => "（读不到日志）".into(),
+        Some(s) if s.is_empty() => "（日志是空的）".into(),
+        Some(s) => s,
+    }
+}
+
 /// 卸载确认的跳过开关。实现和 tool 那边共用一份（见
 /// [`crate::common::env::uninstall_yes_var`]）：变量名是对外承诺，两份实现漂开
 /// 一点，无人值守脚本就会静默卡在确认上。
@@ -225,6 +274,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn 停止后按端口关闭残留监听进程() {
+        let _g = crate::common::env::test_env::EnvGuard::set(&[("NONINTERACTIVE", Some("1"))]);
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         // 只传入本测试的监听 socket，避免子进程持有并行测试的端口。

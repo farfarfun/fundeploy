@@ -61,14 +61,20 @@ impl FarfarfunTool {
         out.stdout.split_whitespace().nth(1).map(str::to_string)
     }
 
-    fn provision(&self, pm: Pm) -> Result<()> {
-        ui::step(format!("用 {} 安装 {}", pm.name(), self.name));
-        pm.install(&[self.name]).with_context(|| match pm {
+    fn provision(&self, pm: Pm, upgrade: bool) -> Result<()> {
+        let verb = if upgrade { "升级" } else { "安装" };
+        ui::step(format!("用 {} {verb} {}", pm.name(), self.name));
+        let res = if upgrade {
+            pm.upgrade(&[self.name])
+        } else {
+            pm.install(&[self.name])
+        };
+        res.with_context(|| match pm {
             Pm::Apt => "请先按 README 添加 farfarfun 的 apt 源".to_string(),
             Pm::Brew => "请先运行 brew tap farfarfun/packages https://github.com/farfarfun/packages，再运行 brew trust farfarfun/packages".to_string(),
             _ => unreachable!(),
         })?;
-        ui::ok(format!("{} 已安装", self.name));
+        ui::ok(format!("{} 已{verb}", self.name));
         Ok(())
     }
 }
@@ -86,7 +92,7 @@ impl Tool for FarfarfunTool {
         if let Some(version) = version {
             bail!("{} 的包管理器安装不支持指定版本 {version}", self.name);
         }
-        self.provision(self.package_manager()?)
+        self.provision(self.package_manager()?, false)
     }
 
     fn upgrade(&self) -> Result<()> {
@@ -99,10 +105,10 @@ impl Tool for FarfarfunTool {
             );
         }
         if apt {
-            self.provision(Pm::Apt)?;
+            self.provision(Pm::Apt, true)?;
         }
         if brew {
-            self.provision(Pm::Brew)?;
+            self.provision(Pm::Brew, true)?;
         }
         if !apt && !brew {
             self.install(None)?;

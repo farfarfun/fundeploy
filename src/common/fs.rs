@@ -1,10 +1,55 @@
 //! 文件系统上那几件需要先想一下再做的事。
 
-use std::path::{Path, PathBuf};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
 use super::env;
+
+/// 还原 macOS 的 firmlink（`/System/Volumes/Data/<原路径>`）。
+pub(crate) fn unfirmlink(p: PathBuf) -> PathBuf {
+    match p.strip_prefix("/System/Volumes/Data") {
+        Ok(rest) => Path::new("/").join(rest),
+        Err(_) => p,
+    }
+}
+
+/// 拒绝路径里的 `..`，并对最近已存在的祖先目录解析符号链接与 firmlink。
+///
+/// 词法 `starts_with` 挡不住 `~/opt/../../etc` 或指向 `/` 的符号链接；在真正删目录
+/// 前先把真实路径落下来再判定。
+pub(crate) fn resolve_no_parent_dir(p: &Path) -> Result<PathBuf> {
+    if p.components().any(|c| matches!(c, Component::ParentDir)) {
+        bail!("路径不允许包含 `..`: {}", p.display());
+    }
+    let mut existing = p;
+    let mut tail: Vec<&std::ffi::OsStr> = Vec::new();
+    while !existing.exists() {
+        let Some(name) = existing.file_name() else {
+            break;
+        };
+        tail.push(name);
+        let Some(parent) = existing.parent() else {
+            break;
+        };
+        existing = parent;
+    }
+    let mut base = if existing.exists() {
+        unfirmlink(
+            existing
+                .canonicalize()
+                .unwrap_or_else(|_| existing.to_path_buf()),
+        )
+    } else {
+        existing.to_path_buf()
+    };
+    for part in tail.into_iter().rev() {
+        base.push(part);
+    }
+    Ok(base)
+}
 
 /// 拦住明显不该被递归删除的路径。
 ///
@@ -12,11 +57,13 @@ use super::env;
 /// `rm -rf $HOME` 这种事只会发生一次，所以在真正动手之前先问一句这像不像一个
 /// 安装目录。
 pub fn guard_removable(p: &Path) -> Result<()> {
-    let home = env::home();
-    if p == Path::new("/") || p == home {
+    let real = resolve_no_parent_dir(p)?;
+    let home_raw = env::home();
+    let home = unfirmlink(home_raw.canonicalize().unwrap_or(home_raw));
+    if real == Path::new("/") || real == home || real == Path::new("/opt") {
         bail!("拒绝删除 {}：这不像是安装目录。", p.display());
     }
-    if !p.starts_with(&home) && !p.starts_with("/opt") {
+    if !real.starts_with(&home) && !real.starts_with("/opt") {
         bail!(
             "{} 既不在 {} 下也不在 /opt 下，拒绝自动删除。确认无误的话手工处理。",
             p.display(),
@@ -26,13 +73,95 @@ pub fn guard_removable(p: &Path) -> Result<()> {
     Ok(())
 }
 
+/// 原子写文件（先写同目录临时文件再 rename），避免半写入破坏配置文件。
+///
+/// 若 `path` 是符号链接，沿链接指向的真实目标原子替换，不破坏用户的 dotfiles 链接。
+/// `mode` 为 `Some(m)` 时在写入内容前就设为该权限（适合含密钥的配置）；为 `None` 时
+/// 若目标文件已存在则保留其原权限，否则按默认 `0o644`（受进程 umask 约束的常规预期）。
+pub fn write_atomic_mode(path: &Path, content: &str, mode: Option<u32>) -> Result<()> {
+    let display = path.display();
+    let target = if path.is_symlink() {
+        path.canonicalize()
+            .with_context(|| format!("无法解析符号链接 {display}"))?
+    } else {
+        path.to_path_buf()
+    };
+    let dir = target
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(dir).with_context(|| format!("建目录失败: {}", dir.display()))?;
+
+    let keep_mode = match mode {
+        Some(m) => Some(m),
+        None => std::fs::metadata(&target)
+            .ok()
+            .map(|m| m.permissions().mode() & 0o777),
+    };
+    let mut staged = tempfile::NamedTempFile::new_in(dir)
+        .with_context(|| format!("建临时文件失败: {}", dir.display()))?;
+    // NamedTempFile 默认 0600；写入前就按目标权限设定，含密钥的文件不会经过 0644 窗口。
+    if let Some(m) = keep_mode {
+        staged
+            .as_file()
+            .set_permissions(std::fs::Permissions::from_mode(m))
+            .with_context(|| format!("设置权限失败: {display}"))?;
+    } else {
+        let _ = staged
+            .as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o644));
+    }
+    staged
+        .write_all(content.as_bytes())
+        .with_context(|| format!("写不了 {display}"))?;
+    staged
+        .as_file()
+        .flush()
+        .with_context(|| format!("刷盘失败: {display}"))?;
+    staged
+        .persist(&target)
+        .map_err(|e| e.error)
+        .with_context(|| format!("写不了 {display}"))?;
+    Ok(())
+}
+
+/// 原子写常规配置文件。
+pub fn write_atomic(path: &Path, content: &str) -> Result<()> {
+    write_atomic_mode(path, content, None)
+}
+
+/// 从文件末尾读取最后 `max` 行（最多读最后 256 KiB，遇到非 UTF-8 字节按 lossy 降级）。
+///
+/// 服务日志长期运行可能涨到数 GB，整文件 `read_to_string` 会直接 OOM 或被单字节乱码
+/// 拦住；固定窗口既省内存也能稳定打印出报错上下文。
+pub fn tail_lines(path: &Path, max: usize) -> Option<String> {
+    const WINDOW: u64 = 256 * 1024;
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    let start = len.saturating_sub(WINDOW);
+    f.seek(SeekFrom::Start(start)).ok()?;
+    let mut buf = Vec::with_capacity((len - start) as usize);
+    f.read_to_end(&mut buf).ok()?;
+    let text = String::from_utf8_lossy(&buf);
+    // 窗口从文件中间切进去时，首行可能是截断的半行，丢掉以免打出残片。
+    let text = if start > 0 {
+        text.split_once('\n')
+            .map_or(text.as_ref(), |(_, rest)| rest)
+    } else {
+        text.as_ref()
+    };
+    let mut kept: Vec<&str> = text.lines().rev().take(max).collect();
+    kept.reverse();
+    Some(kept.join("\n"))
+}
+
 /// 一次性的工作目录，用完即删。
 ///
 /// 放在用户缓存目录下而不是 `/tmp`：`/tmp` 是所有人都能写的，往里放一个名字可
 /// 预测的脚本文件再执行它，等于把「谁先建出这个路径谁说了算」交给了别人。缓存
 /// 目录只有本人能写，这条路就堵死了。
 pub struct Scratch {
-    dir: PathBuf,
+    dir: tempfile::TempDir,
 }
 
 impl Scratch {
@@ -42,29 +171,15 @@ impl Scratch {
             .join("fundeploy");
         std::fs::create_dir_all(&base)
             .with_context(|| format!("建目录失败: {}", base.display()))?;
-
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos())
-            .unwrap_or(0);
-        // 进程号防别人、纳秒防上一次运行、计数器防同一个进程里连着建两个——
-        // 时钟精度粗的机器上，连续两次取到的纳秒数可能一模一样。
-        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir = base.join(format!("{label}-{}-{nanos}-{n}", std::process::id()));
-        // create_dir 而不是 create_dir_all：路径已存在就失败，不复用别人留下的目录。
-        std::fs::create_dir(&dir).with_context(|| format!("建临时目录失败: {}", dir.display()))?;
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("{label}-"))
+            .tempdir_in(&base)
+            .with_context(|| format!("建临时目录失败: {}", base.display()))?;
         Ok(Self { dir })
     }
 
     pub fn path(&self) -> &Path {
-        &self.dir
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
+        self.dir.path()
     }
 }
 
@@ -137,6 +252,38 @@ mod tests {
     fn 拒绝删除根目录和家目录() {
         assert!(guard_removable(Path::new("/")).is_err());
         assert!(guard_removable(&env::home()).is_err());
+        assert!(guard_removable(Path::new("/opt")).is_err());
+    }
+
+    #[test]
+    fn 拒绝包含路径穿越的目录() {
+        assert!(guard_removable(&env::home().join("opt/../../etc")).is_err());
+        assert!(guard_removable(&env::home().join("opt/..")).is_err());
+        assert!(guard_removable(Path::new("/opt/../etc")).is_err());
+    }
+
+    #[test]
+    fn 原子写支持权限与符号链接目标() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("real.conf");
+        let link = dir.path().join("link.conf");
+        std::fs::write(&target, "old\n").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        write_atomic_mode(&link, "secret=1\n", Some(0o600)).unwrap();
+        assert!(link.is_symlink());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "secret=1\n");
+        let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn tail_lines_只取末尾行且容忍非_utf8() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("app.log");
+        std::fs::write(&log, b"a\n\xffbad\nc\nd\n").unwrap();
+        assert_eq!(tail_lines(&log, 2).as_deref(), Some("c\nd"));
+        assert!(tail_lines(&dir.path().join("missing.log"), 5).is_none());
     }
 
     #[test]

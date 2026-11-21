@@ -89,7 +89,7 @@ impl Ini {
         values.next().is_none().then_some(value)
     }
 
-    /// 设一个键。已有就改那一行，没有就插进对应的节末尾。
+    /// 设一个键。已有就改那一行，没有就插进对应的节末尾（无节则插在首个节标题之前）。
     pub fn set(&mut self, section: Option<&str>, key: &str, value: &str) {
         let entry = format!("{key} = {value}");
         if let Some(i) = self.locate(section, key) {
@@ -97,7 +97,15 @@ impl Ini {
             return;
         }
         let Some(section) = section else {
-            self.lines.push(entry);
+            // 文件里已经有 `[section]` 时不能 push 到末尾，否则该键会落入最后一节里。
+            match self
+                .lines
+                .iter()
+                .position(|l| matches!(classify(l), Line::Section(_)))
+            {
+                Some(first_sec) => self.lines.insert(first_sec, entry),
+                None => self.lines.push(entry),
+            }
             return;
         };
         match self.section_end(section) {
@@ -146,15 +154,11 @@ impl Ini {
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)
-                .with_context(|| format!("建目录失败: {}", dir.display()))?;
-        }
         let mut text = self.lines.join("\n");
         if !text.is_empty() {
             text.push('\n');
         }
-        std::fs::write(path, text).with_context(|| format!("写不了 {}", path.display()))
+        crate::common::fs::write_atomic(path, &text)
     }
 }
 
@@ -282,6 +286,14 @@ mod tests {
             i.get(None, "registry").as_deref(),
             Some("https://r/?a=1&b=2")
         );
+    }
+
+    #[test]
+    fn 无节新键插在首个节之前而不是落入最后一节() {
+        let mut i = ini("[global]\ntimeout = 60\n");
+        i.set(None, "registry", "https://r/");
+        assert_eq!(i.get(None, "registry").as_deref(), Some("https://r/"));
+        assert_eq!(i.get(Some("global"), "registry"), None);
     }
 
     #[test]

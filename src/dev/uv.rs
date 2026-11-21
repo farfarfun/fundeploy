@@ -103,21 +103,19 @@ mod tests {
 
     #[test]
     fn 安装脚本地址可以改() {
-        static M: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _g = M.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::common::env::test_env::EnvGuard::set(&[("FUNDEPLOY_UV_INSTALL_URL", None)]);
         assert_eq!(install_url(), "https://astral.sh/uv/install.sh");
         std::env::set_var("FUNDEPLOY_UV_INSTALL_URL", "https://example.com/i.sh");
         assert_eq!(install_url(), "https://example.com/i.sh");
-        std::env::remove_var("FUNDEPLOY_UV_INSTALL_URL");
     }
 
     #[test]
     fn 没装的时候问不出_bin_目录() {
         // 目录不在就该是 None，而不是一个指向空气的路径——报出去人会照着配 PATH。
-        static M: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _g = M.lock().unwrap_or_else(|e| e.into_inner());
-        std::env::set_var("FUNDEPLOY_UV_ROOT", "/nonexistent/fundeploy/uv");
+        let _g = crate::common::env::test_env::EnvGuard::set(&[(
+            "FUNDEPLOY_UV_ROOT",
+            Some("/nonexistent/fundeploy/uv"),
+        )]);
         assert!(Uv.bin_dir().is_none());
-        std::env::remove_var("FUNDEPLOY_UV_ROOT");
     }
 }

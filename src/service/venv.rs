@@ -264,24 +264,22 @@ impl VenvSpec {
         if !py.is_file() {
             return None;
         }
-        let code = format!(
-            "import importlib.metadata as m; print(m.version({:?}))",
-            self.dist
-        );
-        let v = cmd::capture([py.to_string_lossy().as_ref(), "-c", &code]).ok()?;
+        const CODE: &str = "import importlib.metadata as m, sys; print(m.version(sys.argv[1]))";
+        let v = cmd::capture([py.to_string_lossy().as_ref(), "-c", CODE, &self.dist]).ok()?;
         let v = v.trim().to_string();
         (!v.is_empty()).then_some(v)
     }
 
     /// `run` 时放前台的那个进程的下标。
     fn fg_index(&self) -> usize {
+        let last = self.procs.len().saturating_sub(1);
         match &self.foreground {
             Some(key) => self
                 .procs
                 .iter()
                 .position(|p| &p.key == key)
-                .unwrap_or(self.procs.len() - 1),
-            None => self.procs.len() - 1,
+                .unwrap_or(last),
+            None => last,
         }
     }
 
@@ -415,6 +413,8 @@ pub trait Venv {
 
     fn rollback(&self, version: &str) -> Result<()> {
         let spec = self.spec();
+        spec.validate()?;
+        self.require_installed()?;
         let v = version.trim().trim_start_matches(['v', 'V']);
         if v.is_empty() {
             bail!(
@@ -456,6 +456,28 @@ pub trait Venv {
         }
     }
 
+    fn start_proc(&self, p: &Proc) -> Result<()> {
+        let spec = self.spec();
+        if let Some((host, port)) = &p.listen {
+            if port::is_listening(host, *port) {
+                if port::listener_pid(*port)
+                    .and_then(|pid| proc::managed_process(pid, &spec.pid_file(p), &spec.venv))
+                    != Some(true)
+                {
+                    bail!("{host}:{port} 已有监听，无法确认归属，启动中止");
+                }
+                ui::info(format!("{} {host}:{port} 已在运行，跳过。", p.label));
+                return Ok(());
+            }
+        } else if proc::read_pid_file(&spec.pid_file(p)).is_some_and(|pid| {
+            proc::managed_process(pid, &spec.pid_file(p), &spec.venv) == Some(true)
+        }) {
+            ui::info(format!("{} 已在运行，跳过。", p.label));
+            return Ok(());
+        }
+        self.spawn(p)
+    }
+
     fn start(&self) -> Result<()> {
         let spec = self.spec();
         spec.validate()?;
@@ -464,24 +486,7 @@ pub trait Venv {
         self.ensure_config()?;
 
         for p in &spec.procs {
-            if let Some((host, port)) = &p.listen {
-                if port::is_listening(host, *port) {
-                    if port::listener_pid(*port)
-                        .and_then(|pid| proc::managed_process(pid, &spec.pid_file(p), &spec.venv))
-                        != Some(true)
-                    {
-                        bail!("{host}:{port} 已有监听，无法确认归属，启动中止");
-                    }
-                    ui::info(format!("{} {host}:{port} 已在运行，跳过。", p.label));
-                    continue;
-                }
-            } else if proc::read_pid_file(&spec.pid_file(p)).is_some_and(|pid| {
-                proc::managed_process(pid, &spec.pid_file(p), &spec.venv) == Some(true)
-            }) {
-                ui::info(format!("{} 已在运行，跳过。", p.label));
-                continue;
-            }
-            self.spawn(p)?;
+            self.start_proc(p)?;
         }
 
         ui::ok("已启动。");
@@ -513,8 +518,9 @@ pub trait Venv {
                     );
                 }
             }
-            if let Some(pid) = proc::read_pid_file(&spec.pid_file(p)).filter(|&x| proc::is_alive(x))
-            {
+            if let Some(pid) = proc::read_pid_file(&spec.pid_file(p)).filter(|&pid| {
+                proc::managed_process(pid, &spec.pid_file(p), &spec.venv) == Some(true)
+            }) {
                 bail!(
                     "{} 已经在跑（PID {pid}）；run 不接管已有进程。\n\
                      要前台跑，先 `fundeploy service {} stop`。",
@@ -611,6 +617,9 @@ pub trait Venv {
             }
         }
 
+        let ports: Vec<u16> = spec.procs.iter().filter_map(Proc::port).collect();
+        let holders_map = port::holders_many(&ports);
+
         let mut up = 0usize;
         for p in &spec.procs {
             let pid = proc::read_pid_file(&spec.pid_file(p)).filter(|&pid| {
@@ -638,30 +647,44 @@ pub trait Venv {
                         }
                         // 端口有人但 PID 文件对不上。是手工起的本服务，还是别的程序
                         // 正好占了这个端口，差别很大。
-                        (None, true) => match port::listener_pid(*port) {
-                            Some(other) => {
-                                match proc::managed_process(other, &spec.pid_file(p), &spec.venv) {
-                                    Some(true) => {
-                                        up += 1;
-                                        (
-                                            ui::State::Up,
+                        (None, true) => {
+                            let listener = holders_map
+                                .get(port)
+                                .and_then(|hs| hs.iter().find(|h| h.protos.contains(&"tcp")))
+                                .map(|h| h.pid);
+                            match listener {
+                                Some(other) => {
+                                    match proc::managed_process(
+                                        other,
+                                        &spec.pid_file(p),
+                                        &spec.venv,
+                                    ) {
+                                        Some(true) => {
+                                            up += 1;
+                                            (
+                                                ui::State::Up,
+                                                format!(
+                                                    "在运行 · PID {other}（不是 fundeploy 起的）· {at}"
+                                                ),
+                                            )
+                                        }
+                                        Some(false) => (
+                                            ui::State::Down,
                                             format!(
-                                                "在运行 · PID {other}（不是 fundeploy 起的）· {at}"
+                                                "{at} 被 PID {other} 占着，不是这个 venv 里的东西"
                                             ),
-                                        )
+                                        ),
+                                        None => (
+                                            ui::State::Down,
+                                            format!("{at} 被 PID {other} 占着，认不出是不是本服务"),
+                                        ),
                                     }
-                                    Some(false) => (
-                                        ui::State::Down,
-                                        format!("{at} 被 PID {other} 占着，不是这个 venv 里的东西"),
-                                    ),
-                                    None => (
-                                        ui::State::Down,
-                                        format!("{at} 被 PID {other} 占着，认不出是不是本服务"),
-                                    ),
+                                }
+                                None => {
+                                    (ui::State::Partial, format!("端口已监听 · 归属未知 · {at}"))
                                 }
                             }
-                            None => (ui::State::Partial, format!("端口已监听 · 归属未知 · {at}")),
-                        },
+                        }
                         (None, false) => (ui::State::Idle, format!("没在运行 · {at}")),
                     }
                 }
@@ -754,7 +777,7 @@ pub trait Venv {
         self.ensure_config()?;
 
         if action == "start-one" {
-            return self.spawn(p);
+            return self.start_proc(p);
         }
 
         // run-one：和 run 一样不接管已有进程，不然 Ctrl+C 会把别人起的那份带走。
@@ -915,42 +938,52 @@ pub trait Venv {
         }
 
         let log = spec.log_file(p);
+        let pid_file = spec.pid_file(p);
         let pid = proc::spawn_detached(&self.argv(p), &p.cwd, &self.proc_env(p), &log)?;
-        proc::write_pid_file(&spec.pid_file(p), pid)?;
+        proc::write_pid_file(&pid_file, pid)?;
 
         match &p.listen {
             Some((host, port)) => {
-                let sp = ui::Spinner::new(format!("等 {} 监听 {host}:{port}", p.label));
-                let listening =
-                    port::wait_for_listener_ticking(host, *port, spec.start_timeout, || sp.tick());
-                if listening {
-                    sp.done(format!("{} 起来了，{host}:{port} 在听", p.label));
-                } else {
-                    sp.give_up();
+                match super::wait_for_pid_listener(&p.label, pid, host, *port, spec.start_timeout) {
+                    super::ListenWait::Listening => Ok(()),
+                    super::ListenWait::Exited => {
+                        let _ = std::fs::remove_file(&pid_file);
+                        bail!(
+                            "{} 起来之后就退了（PID {pid} 已经没了）。\n日志 {}:\n{}",
+                            p.label,
+                            log.display(),
+                            super::format_tail(&log, 20)
+                        )
+                    }
+                    super::ListenWait::TimedOut => {
+                        let why = if proc::is_alive(pid) {
+                            format!(
+                                "{} 起来了（PID {pid}）但端口 {port} 迟迟没被监听。",
+                                p.label
+                            )
+                        } else {
+                            let _ = std::fs::remove_file(&pid_file);
+                            format!("{} 起来之后就退了（PID {pid} 已经没了）。", p.label)
+                        };
+                        bail!(
+                            "{why}\n日志 {}:\n{}",
+                            log.display(),
+                            super::format_tail(&log, 20)
+                        )
+                    }
                 }
-                if listening {
-                    return Ok(());
-                }
-                let why = if proc::is_alive(pid) {
-                    format!(
-                        "{} 起来了（PID {pid}）但端口 {port} 迟迟没被监听。",
-                        p.label
-                    )
-                } else {
-                    format!("{} 起来之后就退了（PID {pid} 已经没了）。", p.label)
-                };
-                bail!("{why}\n日志 {}:\n{}", log.display(), tail(&log, 20));
             }
             None => {
                 std::thread::sleep(SETTLE);
                 if proc::is_alive(pid) {
                     return Ok(());
                 }
+                let _ = std::fs::remove_file(&pid_file);
                 bail!(
                     "{} 起来之后就退了（PID {pid} 已经没了）。\n日志 {}:\n{}",
                     p.label,
                     log.display(),
-                    tail(&log, 20)
+                    super::format_tail(&log, 20)
                 );
             }
         }
@@ -1112,18 +1145,6 @@ fn pip_install(
         argv.push(c.into());
     }
     cmd::run(&argv)
-}
-
-/// 日志末尾若干行。启动失败时贴出来，省得人再去找日志路径。
-fn tail(path: &Path, lines: usize) -> String {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return "（读不到日志）".into();
-    };
-    let all: Vec<&str> = text.lines().collect();
-    if all.is_empty() {
-        return "（日志是空的）".into();
-    }
-    all[all.len().saturating_sub(lines)..].join("\n")
 }
 
 // ---------------------------------------------------------------- 适配

@@ -6,7 +6,7 @@
 use anyhow::{bail, Context, Result};
 use flate2::read::GzDecoder;
 use std::fs::File;
-use std::io::{BufReader, Seek};
+use std::io::BufReader;
 use std::path::{Component, Path, PathBuf};
 
 /// 解 tar.gz 到 `dest`。
@@ -22,10 +22,22 @@ pub fn untar_gz(archive: &Path, dest: &Path, strip: usize) -> Result<()> {
     let mut count = 0usize;
     for entry in tar.entries().context("读取 tar 条目失败")? {
         let mut entry = entry.context("读取 tar 条目失败")?;
+        let et = entry.header().entry_type();
+        if et.is_fifo() || et.is_character_special() || et.is_block_special() {
+            bail!("归档里包含不允许的特殊设备条目");
+        }
         let path = entry.path().context("tar 条目路径无效")?.into_owned();
         let Some(rel) = strip_safe(&path, strip)? else {
             continue;
         };
+        if et.is_symlink() || et.is_hard_link() {
+            let link = entry
+                .link_name()
+                .context("tar 链接目标无效")?
+                .ok_or_else(|| anyhow::anyhow!("tar 链接条目缺少目标: {}", rel.display()))?;
+            validate_link_target(&rel, &link, et.is_hard_link(), strip)?;
+        }
+        ensure_no_symlink_parent(dest, &rel)?;
         let out = dest.join(&rel);
         if let Some(parent) = out.parent() {
             std::fs::create_dir_all(parent)
@@ -41,6 +53,82 @@ pub fn untar_gz(archive: &Path, dest: &Path, strip: usize) -> Result<()> {
             "{} 解出来是空的（strip={strip} 可能剥多了）",
             archive.display()
         );
+    }
+    Ok(())
+}
+
+/// 校验 tar 里的符号链接/硬链接目标不会跳出解压根目录。
+fn validate_link_target(
+    entry_rel: &Path,
+    target: &Path,
+    is_hard_link: bool,
+    strip: usize,
+) -> Result<()> {
+    if target.is_absolute() {
+        bail!(
+            "归档里的链接 {} 指向绝对路径 {}，已拒绝",
+            entry_rel.display(),
+            target.display()
+        );
+    }
+    if is_hard_link {
+        // 硬链接目标在 tar 中相对于归档根（受 strip 影响）。
+        if strip_safe(target, strip)?.is_none() {
+            bail!(
+                "归档里的硬链接 {} 目标 {} 越界，已拒绝",
+                entry_rel.display(),
+                target.display()
+            );
+        }
+        return Ok(());
+    }
+    // 符号链接目标相对于当前条目的父目录：追踪层级深度，绝不允许退到解压根目录之上。
+    let mut depth: isize = entry_rel
+        .parent()
+        .map(|p| p.components().count() as isize)
+        .unwrap_or(0);
+    for c in target.components() {
+        match c {
+            Component::Normal(_) => depth += 1,
+            Component::CurDir => {}
+            Component::ParentDir => {
+                depth -= 1;
+                if depth < 0 {
+                    bail!(
+                        "归档里的符号链接 {} 目标 {} 逃逸出解压目录，已拒绝",
+                        entry_rel.display(),
+                        target.display()
+                    );
+                }
+            }
+            Component::RootDir | Component::Prefix(_) => {
+                bail!(
+                    "归档里的符号链接 {} 目标 {} 不安全，已拒绝",
+                    entry_rel.display(),
+                    target.display()
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 防止前一个条目解出的符号链接被后续条目穿过写到目标目录之外。
+fn ensure_no_symlink_parent(dest: &Path, rel: &Path) -> Result<()> {
+    let mut cur = dest.to_path_buf();
+    if let Some(parent) = rel.parent() {
+        for c in parent.components() {
+            cur.push(c);
+            if let Ok(meta) = std::fs::symlink_metadata(&cur) {
+                if meta.file_type().is_symlink() {
+                    bail!(
+                        "归档解压路径 {} 经过符号链接 {}，已拒绝",
+                        rel.display(),
+                        cur.display()
+                    );
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -77,7 +165,8 @@ pub fn unzip(archive: &Path, dest: &Path, strip: usize) -> Result<()> {
         #[cfg(unix)]
         if let Some(mode) = item.unix_mode() {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&out, std::fs::Permissions::from_mode(mode)).ok();
+            // 屏蔽 setuid/setgid/sticky 位，只保留常规读写执行权限。
+            std::fs::set_permissions(&out, std::fs::Permissions::from_mode(mode & 0o777)).ok();
         }
         count += 1;
     }
@@ -133,7 +222,7 @@ impl Kind {
     }
 }
 
-/// 按格式解包；裸二进制则原样复制过去并加执行位。
+/// 按格式解包；非归档（裸二进制）会报错，由调用方直接放置。
 pub fn extract(archive: &Path, filename: &str, dest: &Path, strip: usize) -> Result<()> {
     match Kind::of(filename) {
         Kind::TarGz => untar_gz(archive, dest, strip),
@@ -145,6 +234,7 @@ pub fn extract(archive: &Path, filename: &str, dest: &Path, strip: usize) -> Res
 /// 在目录树里找一个名字叫 `name` 的可执行文件。
 ///
 /// 上游把二进制放在哪一层不固定（有的在根，有的在 `bin/`），装完要能定位到它。
+/// 遍历时不跟随符号链接，避免归档里的循环链接导致死循环。
 pub fn find_file(root: &Path, name: &str) -> Option<PathBuf> {
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -152,8 +242,9 @@ pub fn find_file(root: &Path, name: &str) -> Option<PathBuf> {
             continue;
         };
         for e in entries.flatten() {
+            let Ok(ft) = e.file_type() else { continue };
             let p = e.path();
-            if p.is_dir() {
+            if ft.is_dir() {
                 stack.push(p);
             } else if p.file_name().and_then(|s| s.to_str()) == Some(name) {
                 return Some(p);
@@ -186,9 +277,7 @@ pub fn looks_gzip(path: &Path) -> bool {
     };
     let mut magic = [0u8; 2];
     use std::io::Read;
-    let ok = f.read_exact(&mut magic).is_ok();
-    let _ = f.rewind();
-    ok && magic == [0x1f, 0x8b]
+    f.read_exact(&mut magic).is_ok() && magic == [0x1f, 0x8b]
 }
 
 #[cfg(test)]
@@ -293,5 +382,22 @@ mod tests {
         let found = find_file(out.path(), "sub2api").unwrap();
         assert!(found.ends_with("a/b/sub2api"));
         assert!(find_file(out.path(), "没有这个").is_none());
+    }
+
+    #[test]
+    fn 归档里逃逸目标目录的符号链接被拒() {
+        assert!(validate_link_target(Path::new("bin/x"), Path::new("../lib/y"), false, 0).is_ok());
+        assert!(
+            validate_link_target(Path::new("bin/x"), Path::new("../../etc/passwd"), false, 0)
+                .is_err()
+        );
+        assert!(validate_link_target(Path::new("x"), Path::new("/etc/passwd"), false, 0).is_err());
+    }
+
+    #[test]
+    fn 目录树存在循环符号链接时_find_file_不会死循环() {
+        let out = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(out.path(), out.path().join("loop")).unwrap();
+        assert!(find_file(out.path(), "nope").is_none());
     }
 }

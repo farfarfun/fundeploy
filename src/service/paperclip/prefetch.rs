@@ -623,13 +623,14 @@ impl Paperclip {
     }
 
     fn prefetch_now(&self, ch: Channel) -> Result<()> {
-        cmd::require("npm", "它随 Node.js 一起装：https://nodejs.org/")?;
+        let (npm, node_env) = self.npm_command()?;
         let registry = self.prefetch_registry();
         let npmrc = Npmrc::write(&registry);
-        let env = self.npm_env(npmrc.as_ref());
+        let mut env = self.npm_env(npmrc.as_ref());
+        env.extend(node_env);
 
-        let version = self.prefetch_target(ch, &env, &registry)?;
-        let lock = self.resolve_tree(&version, &env, &registry)?;
+        let version = self.prefetch_target(&npm, ch, &env, &registry)?;
+        let lock = self.resolve_tree(&npm, &version, &env, &registry)?;
         let picked = prefetch_specs(&lock, &NpmPlatform::current(), &registry);
         if !picked.foreign.is_empty() {
             // 一个都不该有：这棵树里 539 个 resolved 全在钉死的那个 registry 上。真冒
@@ -650,11 +651,17 @@ impl Paperclip {
             picked.other_platform,
             picked.bundled
         ));
-        self.fill_cache(&picked.specs, &env, &registry)
+        self.fill_cache(&npm, &picked.specs, &env, &registry)
     }
 
     /// 一批批灌缓存，并把进度报出来。
-    fn fill_cache(&self, specs: &[String], env: &[EnvEdit], registry: &str) -> Result<()> {
+    fn fill_cache(
+        &self,
+        npm: &str,
+        specs: &[String],
+        env: &[EnvEdit],
+        registry: &str,
+    ) -> Result<()> {
         let total = specs.len();
         let cache = npm_cacache();
         let before = dir_size(&cache);
@@ -672,7 +679,7 @@ impl Paperclip {
 
         for chunk in specs.chunks(PREFETCH_BATCH) {
             let mut argv = vec![
-                "npm".to_string(),
+                npm.to_string(),
                 "cache".to_string(),
                 "add".to_string(),
                 "--registry".to_string(),
@@ -742,7 +749,13 @@ impl Paperclip {
     }
 
     /// 通道当前指向的版本。
-    fn prefetch_target(&self, ch: Channel, env: &[EnvEdit], registry: &str) -> Result<String> {
+    fn prefetch_target(
+        &self,
+        npm: &str,
+        ch: Channel,
+        env: &[EnvEdit],
+        registry: &str,
+    ) -> Result<String> {
         // 已安装时先问当前安装源：`update_check` 给的 target，就是 upgrade 要去装的版本。
         if let Some(c) = self.update_check(ch) {
             let v = if c.target.is_empty() {
@@ -761,7 +774,7 @@ impl Paperclip {
         let spec = format!("paperclipai@{}", ch.dist_tag());
         let out = cmd::try_run_with(
             [
-                "npm",
+                npm,
                 "view",
                 &spec,
                 "version",
@@ -808,6 +821,7 @@ impl Paperclip {
     /// `resolved` 的主机名，不在钉死的 registry 上的一个都不灌。
     fn resolve_tree(
         &self,
+        npm: &str,
         version: &str,
         env: &[EnvEdit],
         registry: &str,
@@ -825,7 +839,7 @@ impl Paperclip {
         bar.enable_steady_tick(STEADY_TICK);
         let code = cmd::spawn_status_in(
             [
-                "npm",
+                npm,
                 "install",
                 "--prefix",
                 &scratch.path().display().to_string(),
@@ -868,7 +882,11 @@ impl Paperclip {
         let exe = std::env::current_exe().context("取不到 fundeploy 自己的路径")?;
         let log = self.run_dir.join("prefetch.log");
         let pid_file = self.run_dir.join("prefetch.pid");
-        if let Some(pid) = proc::read_pid_file(&pid_file).filter(|p| proc::is_alive(*p)) {
+        if let Some(pid) = proc::read_pid_file(&pid_file).filter(|&p| {
+            proc::is_alive(p)
+                && process_cmdline(p)
+                    .is_some_and(|c| c.contains("paperclip") && c.contains("prefetch"))
+        }) {
             bail!(
                 "已经有一个预热在后台跑着（PID {pid}）。看进度: tail -f {}",
                 log.display()

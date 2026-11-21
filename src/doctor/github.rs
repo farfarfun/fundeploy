@@ -16,7 +16,7 @@ use anyhow::{anyhow, Context, Result};
 use clap::ValueEnum;
 
 use crate::common::block::Marker;
-use crate::common::{cmd, env};
+use crate::common::{cmd, env, fs, par};
 use crate::ui;
 
 /// 探一条通道最多等多久。
@@ -177,21 +177,7 @@ impl Verdict {
 
 /// 三条一起探。串行的话最坏要等满三次超时。
 fn probe_all() -> Vec<(Channel, Verdict)> {
-    std::thread::scope(|s| {
-        let running: Vec<_> = Channel::ALL
-            .iter()
-            .map(|&ch| (ch, s.spawn(move || probe(ch))))
-            .collect();
-        running
-            .into_iter()
-            .map(|(ch, h)| {
-                let v = h
-                    .join()
-                    .unwrap_or_else(|_| Verdict::Blocked("探测线程挂了".into()));
-                (ch, v)
-            })
-            .collect()
-    })
+    par::map(&Channel::ALL, Channel::ALL.len(), |&ch| (ch, probe(ch)))
 }
 
 fn probe(ch: Channel) -> Verdict {
@@ -408,7 +394,7 @@ pub fn fix(which: Fix) -> Result<()> {
 fn apply(ch: Channel) -> Result<()> {
     // 先把 fundeploy 管的规则全清掉再写。只加不清的话，从 SSH 换回 HTTPS 之后
     // 两套规则同时在，谁生效取决于 git 匹配到哪条前缀更长——换完通道还是老样子。
-    clear_rewrites();
+    clear_rewrites()?;
 
     let (base, from) = ch.rewrites();
     for f in from {
@@ -420,8 +406,12 @@ fn apply(ch: Channel) -> Result<()> {
     // 所有发往 github.com 的 ssh 还是会被导到 443 去，改了等于没改。
     let path = ssh_config_path();
     if ch == Channel::Ssh443 {
-        marker().write(&path, &ssh443_block())?;
-        harden(&path, 0o600)?;
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)
+                .with_context(|| format!("建目录失败: {}", dir.display()))?;
+            harden(dir, 0o700)?;
+        }
+        marker().write_mode(&path, &ssh443_block(), 0o600)?;
         ui::ok(format!("已写入 {}", path.display()));
     } else if marker().remove(&path)? {
         ui::ok(format!("已移除 {} 里的 443 区块", path.display()));
@@ -449,17 +439,20 @@ fn add_argv(base: &str, from: &str) -> Vec<String> {
 }
 
 /// 清掉 fundeploy 写的全部改写规则。
-fn clear_rewrites() {
+fn clear_rewrites() -> Result<()> {
     for base in MANAGED_BASES {
-        // 键本来就不存在时 git 退出 5，那不是错误，是「没什么可清的」。
-        let _ = cmd::try_run([
-            "git",
-            "config",
-            "--global",
-            "--unset-all",
-            &format!("url.{base}.insteadOf"),
-        ]);
+        let key = format!("url.{base}.insteadOf");
+        let out = cmd::try_run(["git", "config", "--global", "--unset-all", &key])?;
+        // 键本来就不存在时 git 退出 5，那不是错误；其余失败（如 ~/.gitconfig 只读或被锁）不能静默吞掉。
+        if !out.success() && out.code != Some(5) {
+            anyhow::bail!(
+                "清理 git 配置 {key} 失败（退出码 {:?}）: {}",
+                out.code,
+                out.stderr.trim()
+            );
+        }
     }
+    Ok(())
 }
 
 /// 读出某个 base 下现有的改写规则。
@@ -510,7 +503,7 @@ fn trust(host: &str, port: u16) -> Result<()> {
     };
     let line = format!("{who} {GITHUB_ED25519}");
     let path = known_hosts_path();
-    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let existing = read_optional(&path)?;
 
     if existing.lines().any(|l| l.trim() == line) {
         return Ok(());
@@ -529,7 +522,6 @@ fn trust(host: &str, port: u16) -> Result<()> {
     }
 
     append_line(&path, &line)?;
-    harden(&path, 0o600)?;
     ui::ok(format!("已记下 {who} 的主机公钥，指纹 {GITHUB_ED25519_FP}"));
     Ok(())
 }
@@ -579,7 +571,7 @@ fn verify(ch: Channel) {
 pub fn undo() -> Result<()> {
     cmd::require("git", "先装 git。")?;
 
-    clear_rewrites();
+    clear_rewrites()?;
     ui::ok("已清掉 fundeploy 写的 git 地址改写规则。");
 
     let path = ssh_config_path();
@@ -613,7 +605,16 @@ fn known_hosts_path() -> PathBuf {
     }
 }
 
-/// 追加一行。
+/// 读文件；只有文件不存在才按空处理，权限错误或非 UTF-8 内容一律报错，避免静默清空原文件。
+fn read_optional(path: &Path) -> Result<String> {
+    match std::fs::read_to_string(path) {
+        Ok(s) => Ok(s),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(e).with_context(|| format!("读不了 {}", path.display())),
+    }
+}
+
+/// 追加一行并原子落盘（0600）。
 ///
 /// 整个读出来再写回去，而不是用 append 模式：原文件末尾缺换行时直接追加会把新
 /// 内容粘在最后一行屁股上，两行一起失效，而 known_hosts 坏掉的表现是下次连接
@@ -623,13 +624,13 @@ fn append_line(path: &Path, line: &str) -> Result<()> {
         std::fs::create_dir_all(dir).with_context(|| format!("建目录失败: {}", dir.display()))?;
         harden(dir, 0o700)?;
     }
-    let mut text = std::fs::read_to_string(path).unwrap_or_default();
+    let mut text = read_optional(path)?;
     if !text.is_empty() && !text.ends_with('\n') {
         text.push('\n');
     }
     text.push_str(line);
     text.push('\n');
-    std::fs::write(path, text).with_context(|| format!("写不了 {}", path.display()))
+    fs::write_atomic_mode(path, &text, Some(0o600))
 }
 
 /// 收紧权限。ssh 会直接拒绝读组内或其他人可写的配置，宁可报错也不连。
@@ -646,8 +647,7 @@ mod tests {
     /// 这些用例要改 `FUNDEPLOY_SSH_CONFIG` / `FUNDEPLOY_KNOWN_HOSTS`，而进程
     /// 环境是全局的，cargo test 默认并发跑。
     fn 排队() -> std::sync::MutexGuard<'static, ()> {
-        static M: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        M.lock().unwrap_or_else(|e| e.into_inner())
+        crate::common::env::test_env::EnvGuard::lock()
     }
 
     #[test]

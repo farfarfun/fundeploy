@@ -15,11 +15,7 @@ use std::time::{Duration, Instant};
 pub fn is_listening(host: &str, port: u16) -> bool {
     // 0.0.0.0 / :: 是「监听所有网卡」的写法，不是可连接的目的地址。
     // 真去连它在部分平台上会直接 ECONNREFUSED，所以换成回环再连。
-    let host = match host {
-        "0.0.0.0" | "*" | "" => "127.0.0.1",
-        "::" | "[::]" => "::1",
-        h => h,
-    };
+    let host = display_host(host);
 
     let Ok(addrs) = (host, port).to_socket_addrs() else {
         return false;
@@ -36,18 +32,34 @@ pub fn is_listening(host: &str, port: u16) -> bool {
 ///
 /// 用来决定要不要就「这东西暴露在网上了」提醒一句。
 pub fn is_public(host: &str) -> bool {
-    !matches!(host, "127.0.0.1" | "localhost" | "::1")
+    !matches!(host, "127.0.0.1" | "localhost" | "::1" | "[::1]" | "")
 }
 
-/// 给人看的主机名。
+/// 给人看的主机名（不含方括号，适合传给 `ToSocketAddrs`）。
 ///
 /// `0.0.0.0` 是绑定时的写法，贴进浏览器地址栏打不开；入口地址要给回环。
 pub fn display_host(host: &str) -> &str {
     match host {
         "0.0.0.0" | "*" | "" => "127.0.0.1",
         "::" | "[::]" => "::1",
+        "[::1]" => "::1",
         h => h,
     }
+}
+
+/// 适合放进 URL authority 的主机名（对裸 IPv6 地址补上方括号）。
+pub fn url_host(host: &str) -> String {
+    let h = display_host(host);
+    if h.contains(':') && !h.starts_with('[') {
+        format!("[{h}]")
+    } else {
+        h.to_string()
+    }
+}
+
+/// 拼成可直接访问的 `http://<host>:<port>`，自动处理通配地址与 IPv6 方括号。
+pub fn http_url(host: &str, port: u16) -> String {
+    format!("http://{}:{port}", url_host(host))
 }
 
 /// 轮询等端口起来。返回是否在 `timeout` 内等到了。
@@ -124,15 +136,20 @@ pub fn holders_many(ports: &[u16]) -> BTreeMap<u16, Vec<Holder>> {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        // macOS 这边一个端口一次 lsof。代价的大头是起进程，不是扫描本身，
-        // 所以合并成一次调用省不下什么，却要去解析 lsof 的地址字段才能知道
-        // 哪个 pid 对应哪个端口——那个格式在 IPv4/IPv6 下还不一样。
-        ports
+        // macOS 这边一个端口一次 lsof，并发探减少多端口时的串行等待。
+        let unique: Vec<u16> = ports
             .iter()
-            .filter_map(|&p| {
-                let hs = lsof::holders(p, false);
-                (!hs.is_empty()).then_some((p, hs))
-            })
+            .copied()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let results = crate::common::par::map(&unique, crate::common::par::JOBS, |&p| {
+            lsof::holders(p, false)
+        });
+        unique
+            .into_iter()
+            .zip(results)
+            .filter(|(_, hs)| !hs.is_empty())
             .collect()
     }
 }
@@ -170,12 +187,19 @@ fn bound_ports(ports: &[u16], tcp_only: bool) -> BTreeSet<u16> {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        ports
+        let unique: Vec<u16> = ports
             .iter()
             .copied()
-            .filter(|&p| {
-                !lsof::holders(p, tcp_only).is_empty() || (tcp_only && is_listening("127.0.0.1", p))
-            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let hits = crate::common::par::map(&unique, crate::common::par::JOBS, |&p| {
+            !lsof::holders(p, tcp_only).is_empty() || (tcp_only && is_listening("127.0.0.1", p))
+        });
+        unique
+            .into_iter()
+            .zip(hits)
+            .filter_map(|(p, ok)| ok.then_some(p))
             .collect()
     }
 }
@@ -225,16 +249,20 @@ mod linux {
                 // 格式（空格分隔，前十列的布局 tcp 与 udp 一致）：
                 //   sl  local_address rem_address st ... uid timeout inode ...
                 //    0: 0100007F:1F90 00000000:0000 0A  ... 1000      0  12345
-                let f: Vec<&str> = line.split_whitespace().collect();
-                if f.len() < 10 {
+                // 按迭代器直取所需列，避免每行都分配一个 Vec。
+                let mut cols = line.split_whitespace();
+                let Some(local_addr) = cols.nth(1) else {
                     continue;
-                }
-                if listen_only && f[3] != TCP_LISTEN {
+                };
+                let Some(state) = cols.nth(1) else {
+                    continue;
+                };
+                if listen_only && state != TCP_LISTEN {
                     continue;
                 }
                 // local_address 是 HEX_IP:HEX_PORT，只取端口。IP 不比对：
                 // 同一个端口可能被 0.0.0.0 或某个具体网卡监听，调用方问的是「端口被谁占了」。
-                let Some((_, hex_port)) = f[1].rsplit_once(':') else {
+                let Some((_, hex_port)) = local_addr.rsplit_once(':') else {
                     continue;
                 };
                 let Ok(p) = u16::from_str_radix(hex_port, 16) else {
@@ -243,9 +271,12 @@ mod linux {
                 if !ports.contains(&p) {
                     continue;
                 }
+                let Some(inode_col) = cols.nth(5) else {
+                    continue;
+                };
                 // inode 0 是没有属主的 socket（TIME_WAIT 之类），既反查不到进程，
                 // 也不该让 is_taken 报出一个谁都腾不掉的占用。
-                match f[9].parse::<u64>() {
+                match inode_col.parse::<u64>() {
                     Ok(inode) if inode != 0 => {
                         out.insert(inode, (p, proto));
                     }

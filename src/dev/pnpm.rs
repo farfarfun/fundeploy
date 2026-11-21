@@ -151,13 +151,15 @@ mod tests {
 
     #[test]
     fn corepack_装在_node_的_bin_里也算装了() {
-        static M: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _g = M.lock().unwrap_or_else(|e| e.into_inner());
         let d = tempfile::tempdir().unwrap();
         let npm = d.path().join("npm");
         let node = d.path().join("node");
-        std::env::set_var("FUNDEPLOY_NPM_GLOBAL_ROOT", &npm);
-        std::env::set_var("FUNDEPLOY_NODE_ROOT", &node);
+        let npm_s = npm.to_string_lossy().into_owned();
+        let node_s = node.to_string_lossy().into_owned();
+        let _g = crate::common::env::test_env::EnvGuard::set(&[
+            ("FUNDEPLOY_NPM_GLOBAL_ROOT", Some(&npm_s)),
+            ("FUNDEPLOY_NODE_ROOT", Some(&node_s)),
+        ]);
 
         assert!(Pnpm.bin_dir().is_none(), "两处都没有时该是 None");
 
@@ -169,9 +171,6 @@ mod tests {
         std::fs::create_dir_all(npm.join("bin")).unwrap();
         std::fs::write(npm.join("bin/pnpm"), "").unwrap();
         assert_eq!(Pnpm.bin_dir(), Some(npm.join("bin")));
-
-        std::env::remove_var("FUNDEPLOY_NPM_GLOBAL_ROOT");
-        std::env::remove_var("FUNDEPLOY_NODE_ROOT");
     }
 
     #[test]

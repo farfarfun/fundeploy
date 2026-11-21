@@ -7,8 +7,9 @@
 
 use anyhow::{bail, Result};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
-use super::cmd;
+use super::{cmd, par};
 
 /// 解析到的 npm 系工具。pnpm 与 npm 的全局安装子命令不同名，所以要记住是哪个。
 #[derive(Debug, Clone)]
@@ -16,6 +17,18 @@ pub struct Npm {
     bin: PathBuf,
     is_pnpm: bool,
     registry_scope: Option<String>,
+    resolved_registry: OnceLock<String>,
+}
+
+/// 一次包探测的结果：选中了哪个工具、当前装了哪一版、是否被两份安装互相遮挡。
+///
+/// 把三件事并在一轮 `ls -g` 里做完，避免调用方在 `for_package` → `shadow_warning` →
+/// `installed_version` 之间把同一组 Node.js 进程反复起三四遍。
+#[derive(Debug, Clone)]
+pub struct NpmLookup {
+    pub tool: Npm,
+    pub installed: Option<String>,
+    pub shadow_warning: Option<String>,
 }
 
 impl Npm {
@@ -52,27 +65,44 @@ impl Npm {
         Ok(Self::candidates(override_bin)?.remove(0))
     }
 
+    /// 一次完成工具选择、已装版本读取与双份安装检测（并发探测所有候选工具）。
+    pub fn lookup_package(pkg: &str, override_bin: Option<&str>) -> Result<NpmLookup> {
+        let mut all = Self::candidates(override_bin)?;
+        let owned: Vec<Option<String>> = if all.len() > 1 {
+            par::map(&all, all.len(), |n| n.installed_version(pkg))
+        } else {
+            all.iter().map(|n| n.installed_version(pkg)).collect()
+        };
+        let owners: Vec<(String, String)> = all
+            .iter()
+            .zip(&owned)
+            .filter_map(|(n, v)| v.as_ref().map(|ver| (n.name(), ver.clone())))
+            .collect();
+        let shadow_warning = shadow_text(pkg, &owners);
+        let idx = pick(&owned);
+        let installed = owned.into_iter().nth(idx).flatten();
+        let tool = all.remove(idx);
+        Ok(NpmLookup {
+            tool,
+            installed,
+            shadow_warning,
+        })
+    }
+
     /// 伺候某个具体的包该用哪个工具。
     ///
     /// 包已经装了，就用**装了它的那个**，哪怕按偏好本该用另一个。换工具装只会
     /// 在另一个全局根下再堆一份，而 PATH 上跑的还是老的。只有在哪儿都没装时，
     /// 才按偏好顺序挑。
     pub fn for_package(pkg: &str, override_bin: Option<&str>) -> Result<Self> {
-        let mut all = Self::candidates(override_bin)?;
-        let owned: Vec<_> = all.iter().map(|n| n.installed_version(pkg)).collect();
-        Ok(all.remove(pick(&owned)))
+        Ok(Self::lookup_package(pkg, override_bin)?.tool)
     }
 
     /// 同一个包被两个工具各装了一份时的警告。
     ///
     /// 这种状态下 PATH 上跑哪一份是碰运气，而升级只会动其中一份。
     pub fn shadow_warning(&self, pkg: &str) -> Option<String> {
-        let owners: Vec<(String, String)> = Self::candidates(None)
-            .ok()?
-            .iter()
-            .filter_map(|n| n.installed_version(pkg).map(|v| (n.name(), v)))
-            .collect();
-        shadow_text(pkg, &owners)
+        Self::lookup_package(pkg, None).ok()?.shadow_warning
     }
 
     /// 这个工具的名字（pnpm / npm）。
@@ -92,11 +122,13 @@ impl Npm {
             bin,
             is_pnpm,
             registry_scope: None,
+            resolved_registry: OnceLock::new(),
         }
     }
 
     pub fn with_registry_scope(mut self, scope: Option<&str>) -> Self {
         self.registry_scope = scope.map(str::to_string);
+        self.resolved_registry = OnceLock::new();
         self
     }
 
@@ -104,11 +136,15 @@ impl Npm {
         let Some(scope) = &self.registry_scope else {
             return Ok(vec![]);
         };
+        if let Some(cached) = self.resolved_registry.get() {
+            return Ok(vec!["--registry".into(), cached.clone()]);
+        }
         let key = format!("{scope}:registry");
         let registry = cmd::capture([self.bin_str().as_str(), "config", "get", &key])?;
         if matches!(registry.as_str(), "" | "undefined" | "null") {
             bail!("未配置 {key}，请先在 npm/pnpm 配置中设置该私有源。");
         }
+        let _ = self.resolved_registry.set(registry.clone());
         // pnpm 12 不读取 npm_config_registry，显式参数兼容 npm 和 pnpm。
         Ok(vec!["--registry".into(), registry])
     }

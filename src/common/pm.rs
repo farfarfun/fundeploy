@@ -88,6 +88,19 @@ impl Pm {
         join(head, pkgs)
     }
 
+    fn upgrade_argv(self, pkgs: &[&str]) -> Vec<String> {
+        let head: &[&str] = match self {
+            Pm::Apt => &["apt-get", "install", "-y"],
+            Pm::Dnf => &["dnf", "upgrade", "-y"],
+            Pm::Yum => &["yum", "update", "-y"],
+            Pm::Pacman => &["pacman", "-S", "--noconfirm"],
+            Pm::Zypper => &["zypper", "--non-interactive", "update"],
+            Pm::Apk => &["apk", "upgrade"],
+            Pm::Brew => &["brew", "upgrade"],
+        };
+        join(head, pkgs)
+    }
+
     fn remove_argv(self, pkgs: &[&str]) -> Vec<String> {
         let head: &[&str] = match self {
             Pm::Apt => &["apt-get", "remove", "-y"],
@@ -121,6 +134,18 @@ impl Pm {
             }
         }
         cmd::run(self.privileged(self.install_argv(pkgs)))
+    }
+
+    pub fn upgrade(self, pkgs: &[&str]) -> Result<()> {
+        if pkgs.is_empty() {
+            bail!("{} 下没有对应的包可升", self.name());
+        }
+        if let Some(refresh) = self.refresh_argv() {
+            if cmd::run(self.privileged(refresh)).is_err() {
+                crate::ui::warn(format!("{} 刷新索引失败，继续试着升级。", self.name()));
+            }
+        }
+        cmd::run(self.privileged(self.upgrade_argv(pkgs)))
     }
 
     pub fn uninstall(self, pkgs: &[&str]) -> Result<()> {
@@ -167,8 +192,9 @@ mod tests {
     fn 每一家的装卸命令都不需要人回车() {
         for pm in Pm::ALL {
             let i = pm.install_argv(&["x"]).join(" ");
+            let u = pm.upgrade_argv(&["x"]).join(" ");
             let r = pm.remove_argv(&["x"]).join(" ");
-            for argv in [&i, &r] {
+            for argv in [&i, &u, &r] {
                 let auto = argv.contains("-y")
                     || argv.contains("--noconfirm")
                     || argv.contains("--non-interactive")
@@ -177,8 +203,10 @@ mod tests {
                 assert!(auto, "{} 会停在确认上: {argv}", pm.name());
             }
             assert!(i.ends_with(" x"), "包名要在最后: {i}");
+            assert!(u.ends_with(" x"), "包名要在最后: {u}");
             assert!(r.ends_with(" x"), "包名要在最后: {r}");
         }
+        assert_eq!(Pm::Brew.upgrade_argv(&["x"]), ["brew", "upgrade", "x"]);
     }
 
     #[test]

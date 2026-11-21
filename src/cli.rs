@@ -1113,9 +1113,7 @@ fn run_domain(domain: &str) -> Result<()> {
     }
 }
 
-fn list_all() {
-    // 一律先 ui::pad 再上色: pad 算的是终端显示宽度, 带着 ANSI 转义码进去, 那些
-    // 不可见的字节会被当成列宽, 整张表歪得莫名其妙。
+fn list_services() {
     ui::heading("服务");
     for (s, ports) in service::registry::all_with_ports() {
         let ports = ports
@@ -1130,11 +1128,14 @@ fn list_all() {
             s.summary()
         );
     }
+}
+
+fn list_all() {
+    // 一律先 ui::pad 再上色: pad 算的是终端显示宽度, 带着 ANSI 转义码进去, 那些
+    // 不可见的字节会被当成列宽, 整张表歪得莫名其妙。
+    list_services();
     ui::blank();
-    ui::heading("工具");
-    for t in tool::registry::all() {
-        println!("  {}{}", ui::strong(ui::pad(t.name(), 16)), t.summary());
-    }
+    list_tools();
     ui::blank();
     ui::heading("可换源");
     for s in source::registry::all() {
@@ -1261,7 +1262,7 @@ fn service_cmd(name: Option<String>, action: Option<Action>) -> Result<()> {
                 service::registry::names().join("、")
             ),
             None => {
-                list_all();
+                list_services();
                 Ok(())
             }
         };
@@ -1729,9 +1730,8 @@ mod tests {
     #[test]
     fn 无人值守下不带参数打_help_而不是卡住() {
         // 装机脚本和 CI 会走到这条路径，卡在菜单上的表现是「安装挂死」。
-        std::env::set_var("NONINTERACTIVE", "1");
+        let _g = crate::common::env::test_env::EnvGuard::set(&[("NONINTERACTIVE", Some("1"))]);
         no_args().unwrap();
-        std::env::remove_var("NONINTERACTIVE");
     }
 
     #[test]

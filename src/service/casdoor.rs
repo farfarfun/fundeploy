@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use super::config;
 use super::daemon::{Daemon, DaemonSpec, Github, Proc};
-use crate::common::env::{home, str_or};
+use crate::common::env::{expand_tilde, home, opt};
 use crate::common::ini::Ini;
 use crate::common::platform::{Arch, Os};
 use crate::ui;
@@ -20,10 +20,9 @@ pub struct Casdoor {
 }
 
 pub fn from_env() -> Casdoor {
-    let home = PathBuf::from(str_or(
-        "CASDOOR_SERVICE_HOME",
-        &home().join(".farfarfun/casdoor").to_string_lossy(),
-    ));
+    let home = opt("CASDOOR_SERVICE_HOME")
+        .map(|s| expand_tilde(&s))
+        .unwrap_or_else(|| home().join(".farfarfun/casdoor"));
     Casdoor::at(home)
 }
 
@@ -173,18 +172,28 @@ impl Casdoor {
         }
 
         let origin = cfg.get_unique(None, "origin").unwrap_or("");
-        let host = origin.strip_prefix("https://").unwrap_or("");
-        if host == "id.example.com"
-            || !host.contains('.')
-            || !host.split('.').all(|label| {
-                !label.is_empty()
-                    && !label.starts_with('-')
-                    && !label.ends_with('-')
-                    && label
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b == b'-')
-            })
-        {
+        let valid_origin = url::Url::parse(origin).ok().is_some_and(|u| {
+            u.scheme() == "https"
+                && u.username().is_empty()
+                && u.password().is_none()
+                && u.path() == "/"
+                && u.query().is_none()
+                && u.fragment().is_none()
+                && !origin.ends_with('/')
+                && u.host_str().is_some_and(|host| {
+                    host != "id.example.com"
+                        && host.contains('.')
+                        && host.split('.').all(|label| {
+                            !label.is_empty()
+                                && !label.starts_with('-')
+                                && !label.ends_with('-')
+                                && label
+                                    .bytes()
+                                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                        })
+                })
+        });
+        if !valid_origin {
             bail!("{} 中的 origin 必须是真实 HTTPS 域名", path.display());
         }
         let password = cfg.get_unique(None, "initAdminPassword").unwrap_or("");
@@ -209,6 +218,13 @@ impl Daemon for Casdoor {
 
     fn require_checksum(&self) -> bool {
         true
+    }
+
+    fn validate_staging(&self, staging: &std::path::Path) -> Result<()> {
+        if !staging.join("web/build").is_dir() {
+            bail!("Casdoor 发行包缺少 web/build，无法提供登录页面");
+        }
+        Ok(())
     }
 
     fn post_install(&self) -> Result<()> {

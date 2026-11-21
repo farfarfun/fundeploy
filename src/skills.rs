@@ -13,7 +13,7 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
-use crate::common::{cmd, env, par};
+use crate::common::{cmd, env, fs, par};
 use crate::ui;
 
 const DEFAULT_ORG: &str = "farfarfun-skills";
@@ -66,9 +66,10 @@ fn guard(dir: &Path) -> Result<()> {
     if !dir.is_absolute() {
         bail!("FUNDEPLOY_SKILLS_DIR 必须是绝对路径: {}", dir.display());
     }
-    // 已存在就先解析符号链接：/a/b/c 完全可能是一条指向 / 的链接。
-    let real = unfirmlink(dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf()));
-    if real == env::home() {
+    // 拒绝 `..` 并对最近已存在的祖先解析符号链接与 macOS firmlink。
+    let real = fs::resolve_no_parent_dir(dir)?;
+    let home = fs::unfirmlink(env::home().canonicalize().unwrap_or_else(|_| env::home()));
+    if real == home {
         bail!("不能直接拿 $HOME 当目标目录: {}", real.display());
     }
     const SYSTEM: &[&str] = &[
@@ -83,19 +84,6 @@ fn guard(dir: &Path) -> Result<()> {
         bail!("目标目录至少要三层: {}", real.display());
     }
     Ok(())
-}
-
-/// 还原 macOS 的 firmlink。
-///
-/// Catalina 起系统卷只读，`/Users`、`/opt`、`/home` 这些实际在数据卷上，
-/// canonicalize 出来是 `/System/Volumes/Data/<原路径>`。不还原的话上面那张系统
-/// 目录名单在 Mac 上形同虚设——`/home` 解析完变成一个五层深、名字也对不上的
-/// 路径，一路放行。
-fn unfirmlink(p: PathBuf) -> PathBuf {
-    match p.strip_prefix("/System/Volumes/Data") {
-        Ok(rest) => Path::new("/").join(rest),
-        Err(_) => p,
-    }
 }
 
 fn ok_char(c: char) -> bool {
@@ -293,19 +281,27 @@ impl Sync {
         }
     }
 
-    /// 目标目录里已经装着的技能仓库。
-    fn local(&self) -> Vec<String> {
+    /// 目标目录里已经装着的技能仓库（并发探测 `git remote get-url`，跳过 `skip` 里的名字）。
+    fn local_excluding(&self, skip: &std::collections::HashSet<&str>) -> Vec<String> {
         let Ok(rd) = std::fs::read_dir(&self.conf.dir) else {
             return Vec::new();
         };
-        let mut out: Vec<String> = rd
+        let mut candidates: Vec<String> = rd
             .flatten()
             .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|n| valid_repo(n))
-            .filter(|n| self.managed(n))
+            .filter(|n| valid_repo(n) && !skip.contains(n.as_str()))
             .collect();
-        out.sort();
-        out
+        candidates.sort();
+        let flags = par::map(&candidates, par::JOBS, |n| self.managed(n));
+        candidates
+            .into_iter()
+            .zip(flags)
+            .filter_map(|(n, ok)| ok.then_some(n))
+            .collect()
+    }
+
+    fn local(&self) -> Vec<String> {
+        self.local_excluding(&std::collections::HashSet::new())
     }
 
     fn list(&self) -> Result<()> {
@@ -321,17 +317,18 @@ impl Sync {
         for (r, st) in self.remote.iter().zip(states) {
             println!("{}{}", ui::pad(st.label(), 18), r.name);
         }
-        // 远端没有、本地还留着的也要报出来：那多半是上游改名或者删库了，不报的话
-        // 这个目录会一直攒着没人认领的东西。
-        for name in self.local() {
-            if self.url_of(&name).is_none() {
-                let tail = if is_dirty(&self.dir_of(&name)) {
-                    "仅本地，有改动"
-                } else {
-                    "仅本地"
-                };
-                println!("{}{name}", ui::pad(tail, 18));
-            }
+        // 远端没有、本地还留着的也要报出来：跳过已在远端列表里查过的名字，避免重复跑 git。
+        let remote_names: std::collections::HashSet<&str> =
+            self.remote.iter().map(|r| r.name.as_str()).collect();
+        let orphan = self.local_excluding(&remote_names);
+        let dirty_flags = par::map(&orphan, par::JOBS, |n| is_dirty(&self.dir_of(n)));
+        for (name, dirty) in orphan.into_iter().zip(dirty_flags) {
+            let tail = if dirty {
+                "仅本地，有改动"
+            } else {
+                "仅本地"
+            };
+            println!("{}{name}", ui::pad(tail, 18));
         }
         Ok(())
     }
@@ -365,12 +362,10 @@ impl Sync {
             .ok_or_else(|| anyhow::anyhow!("远端没有 {name}"))?
             .to_string();
         let dir = self.dir_of(name);
-        match self.state(name) {
-            State::Foreign => Ok(Did::Skipped(format!(
-                "{} 已经被别的东西占着（不是这个组织的仓库），没动它。",
-                dir.display()
-            ))),
-            State::Missing => {
+        // pull 不关心 Clean vs Dirty（都会 fetch + reset --hard），只判断存在性与归属，
+        // 省掉每个仓库一次多余的 `git status --porcelain`。
+        match std::fs::symlink_metadata(&dir) {
+            Err(_) => {
                 std::fs::create_dir_all(&self.conf.dir)
                     .with_context(|| format!("建目录失败: {}", self.conf.dir.display()))?;
                 // --depth 1：技能仓库要的是内容，历史是纯粹的下载量。
@@ -381,7 +376,11 @@ impl Sync {
                 strip_dot_dirs(&dir)?;
                 Ok(Did::Installed)
             }
-            State::Clean | State::Dirty => {
+            Ok(md) if !md.is_dir() || !self.managed(name) => Ok(Did::Skipped(format!(
+                "{} 已经被别的东西占着（不是这个组织的仓库），没动它。",
+                dir.display()
+            ))),
+            Ok(_) => {
                 let d = dir.to_string_lossy().into_owned();
                 // 本地改动会被覆盖，这是这条命令说好的语义：技能仓库是只读的消费
                 // 端，真要改就去上游改。
@@ -526,8 +525,12 @@ impl Sync {
 /// 「有改动」，删除永远被拒——装上去就再也删不掉了。
 fn is_dirty(dir: &Path) -> bool {
     let Ok(o) = cmd::try_run(["git", "-C", &dir.to_string_lossy(), "status", "--porcelain"]) else {
-        return false;
+        // 跑不了 git status 时保守判脏，避免把损坏或无权限的仓库误删。
+        return true;
     };
+    if !o.success() {
+        return true;
+    }
     o.stdout
         .lines()
         .filter(|l| !l.trim().is_empty())
@@ -624,6 +627,7 @@ pub fn remove(name: Option<&str>, all: bool, yes: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::fs::unfirmlink;
 
     #[test]
     fn 只认带两道杠的仓库名() {

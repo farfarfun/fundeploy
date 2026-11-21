@@ -145,7 +145,7 @@ impl Celery {
             None => spec,
         };
         let spec = match &flower {
-            Some((addr, _)) => spec.entry(format!("http://{}:{fport}", port::display_host(addr))),
+            Some((addr, _)) => spec.entry(port::http_url(addr, fport)),
             None => spec,
         };
         // 注意是脱敏过的：notes 每次 start 都会打一遍。
@@ -294,10 +294,11 @@ fn broker_endpoint(url: &str) -> Option<(String, u16)> {
     // IPv6 字面量写成 [::1]:6379。
     if let Some(tail) = host_port.strip_prefix('[') {
         let (host, after) = tail.split_once(']')?;
-        let port = after
-            .strip_prefix(':')
-            .and_then(|p| p.parse().ok())
-            .unwrap_or(default_port);
+        let port = if after.is_empty() {
+            default_port
+        } else {
+            after.strip_prefix(':')?.parse().ok()?
+        };
         return (!host.is_empty()).then(|| (host.to_string(), port));
     }
     let (host, port) = match host_port.rsplit_once(':') {

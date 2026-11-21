@@ -143,14 +143,18 @@ fn from_release(version: Option<&str>, exe: &Path) -> Result<()> {
     }
     let scratch = fs::Scratch::new("selfup")?;
     let pkg = scratch.path().join(&want);
-    download::to_file(
+    let got_sha = download::to_file_sha256(
         &a.browser_download_url,
         &pkg,
         &format!("fundeploy {newest}"),
     )?;
 
-    let sums = rel.checksums_url().and_then(|u| download::get_text(u).ok());
-    download::verify(&pkg, sums.as_deref(), &want)?;
+    // fundeploy 的 release 附带 SHA256SUMS：既然清单存在，拉取失败就报错而不是静默跳过校验。
+    let sums = match rel.checksums_url() {
+        Some(u) => Some(download::get_text(u).context("拉取校验和清单 SHA256SUMS 失败")?),
+        None => None,
+    };
+    download::verify_hash(&got_sha, sums.as_deref(), &want)?;
     if !archive::looks_gzip(&pkg) {
         bail!("下下来的 {want} 不是 gzip，多半是中间有个什么东西回了一张错误页。");
     }
@@ -166,27 +170,37 @@ fn from_release(version: Option<&str>, exe: &Path) -> Result<()> {
 /// 把 `fresh` 换到 `exe` 上。
 fn swap(fresh: &Path, exe: &Path, ver: &str) -> Result<()> {
     let dir = exe.parent().unwrap_or_else(|| Path::new("."));
-    // 先落到 `exe` 的同目录再 rename：rename 跨不了文件系统，而解包是在缓存目录
-    // 里做的，`~/.cache` 和 `~/.local` 分属两个挂载点并不罕见。
-    let staged = dir.join(format!(".fundeploy-new-{}", std::process::id()));
-    std::fs::copy(fresh, &staged).with_context(|| format!("写不了 {}", staged.display()))?;
-    archive::make_executable(&staged)?;
+    // 先落到 `exe` 的同目录再原子 persist：rename 跨不了文件系统，而 NamedTempFile
+    // 自带随机名与失败自动清理，避免共享目录里的可预测路径与残骸文件。
+    let mut staged = tempfile::Builder::new()
+        .prefix(".fundeploy-new-")
+        .tempfile_in(dir)
+        .with_context(|| format!("写不了 {}", dir.display()))?;
+    let mut src =
+        std::fs::File::open(fresh).with_context(|| format!("读不了 {}", fresh.display()))?;
+    std::io::copy(&mut src, &mut staged)
+        .with_context(|| format!("写不了 {}", staged.path().display()))?;
+    std::io::Write::flush(staged.as_file_mut())
+        .with_context(|| format!("刷盘失败: {}", staged.path().display()))?;
+    archive::make_executable(staged.path())?;
 
-    // 换之前先让新的跑一下。换完才发现它起不来（架构下错了、附件传坏了），旧的
-    // 那份已经没了，人手上就只剩一个跑不起来的 fundeploy——而修它要用的正是
-    // fundeploy。
-    let probe = cmd::try_run([&staged.display().to_string(), "--version"]);
+    // 换之前先让新的跑一下。先关掉可写 fd（用 TempPath 保留自动清理），避免 Linux 上
+    // 执行一个仍被自己以写模式打开的文件报 ETXTBSY (Text file busy)。
+    let staged_path = staged.into_temp_path();
+    let probe = cmd::try_run([&staged_path.display().to_string(), "--version"]);
     let bad = match &probe {
         Err(e) => Some(e.to_string()),
         Ok(o) if !o.success() => Some(o.stderr.trim().to_string()),
         Ok(_) => None,
     };
     if let Some(why) = bad {
-        let _ = std::fs::remove_file(&staged);
         bail!("下下来的那份 fundeploy 跑不起来，已经丢掉，原来那份没动过。\n  {why}");
     }
 
-    std::fs::rename(&staged, exe).with_context(|| format!("换不掉 {}", exe.display()))?;
+    staged_path
+        .persist(exe)
+        .map_err(|e| e.error)
+        .with_context(|| format!("换不掉 {}", exe.display()))?;
     ui::ok(format!("{} 现在是 {ver}。", exe.display()));
     Ok(())
 }
@@ -336,10 +350,10 @@ fn is_build_artifact(exe: &Path) -> bool {
 /// 真去建一个文件，而不是读权限位算：权限位之外还有 ACL、只读挂载、不可变属性，
 /// 算出来的结论和 rename 的实际结果对不上时，错会报在最不该报的那一步上。
 fn writable(dir: &Path) -> bool {
-    let probe = dir.join(format!(".fundeploy-write-test-{}", std::process::id()));
-    let ok = std::fs::File::create(&probe).is_ok();
-    let _ = std::fs::remove_file(&probe);
-    ok
+    tempfile::Builder::new()
+        .prefix(".fundeploy-write-test-")
+        .tempfile_in(dir)
+        .is_ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -856,8 +870,7 @@ mod tests {
 
     /// 这几个测试要动 CARGO_HOME，而环境变量是进程级的，得排队。
     fn 排队() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+        crate::common::env::test_env::EnvGuard::lock()
     }
 
     #[test]

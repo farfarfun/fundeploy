@@ -255,6 +255,9 @@ pub struct Paperclip {
     stop_timeout: Duration,
     update_timeout: Duration,
     log_lines: usize,
+    /// `node_env()` 的按实例缓存：一次命令里 `status` / `upgrade` / `exec` 会多次调它，
+    /// 缓存后免去反复起 `node --version` 和扫 `~/.nvm`。
+    node_env_cache: std::sync::OnceLock<std::result::Result<Vec<EnvEdit>, String>>,
 }
 
 impl Paperclip {
@@ -308,6 +311,7 @@ impl Paperclip {
             stop_timeout: secs("PAPERCLIP_STOP_TIMEOUT_SEC", 300),
             update_timeout: secs("PAPERCLIP_UPDATE_HEALTH_TIMEOUT_SEC", 180),
             log_lines: env::num("PAPERCLIP_LOG_TAIL_LINES", 200),
+            node_env_cache: std::sync::OnceLock::new(),
         }
     }
 
@@ -485,7 +489,7 @@ impl Paperclip {
 
         // payload 被删或损坏而 shim 还在时，官方 CLI 抛的是 node 的原始堆栈，看不出
         // 是安装坏了。失败之后补一次探测把它翻译成能照着做的事；正常路径零开销。
-        if code != Some(0) && !cli_runnable(&bin) {
+        if code != Some(0) && !self.cli_runnable(&bin) {
             ui::warn(format!(
                 "{} 跑不起来，paperclipai 的安装可能已损坏。\n\
                  修复: fundeploy service paperclip install",
@@ -616,10 +620,10 @@ impl Paperclip {
         port::is_listening(&cfg.host, cfg.port) && health_endpoint_ok(cfg)
     }
 
-    /// 等端口和 `/api/health` 就绪。超时返回 false，由调用方决定怎么报。
+    /// 等端口和 `/api/health` 就绪。超时或被盯住的进程提前退出时返回 false。
     ///
     /// 首探就通过时一声不吭：升级编排里 start 已经等过一轮，再打一遍只是噪音。
-    fn wait_healthy(&self, cfg: &Config, timeout: Duration) -> bool {
+    fn wait_healthy(&self, cfg: &Config, timeout: Duration, watch_pid: Option<i32>) -> bool {
         if self.healthy(cfg) {
             return true;
         }
@@ -631,6 +635,11 @@ impl Paperclip {
 
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
+            if let Some(pid) = watch_pid {
+                if !proc::is_alive(pid) {
+                    return self.healthy(cfg);
+                }
+            }
             std::thread::sleep(Duration::from_secs(1));
             if self.healthy(cfg) {
                 return true;
@@ -653,10 +662,25 @@ impl Paperclip {
         if !proc::is_alive(pid) {
             return Ok(());
         }
+        if let Some(reason) = proc::protected(pid) {
+            bail!("postmaster.pid 记录的 PID {pid} {reason}，已中止");
+        }
         // 认准再动手：PID 会被复用，这个文件可能是上次崩溃留下的。
         let cmdline = process_cmdline(pid).unwrap_or_default();
         let dir = cfg.pg_dir.display().to_string();
-        if !cmdline.contains("postgres") || !cmdline.contains(&dir) {
+        let canon = cfg
+            .pg_dir
+            .canonicalize()
+            .ok()
+            .map(|p| p.display().to_string());
+        let matches_dir = |d: &str| {
+            cmdline
+                .split_whitespace()
+                .any(|tok| tok == d || tok.ends_with(&format!("={d}")))
+        };
+        if !cmdline.contains("postgres")
+            || !(matches_dir(&dir) || canon.as_deref().is_some_and(matches_dir))
+        {
             bail!("PID {pid} 跑的不是 {dir} 的 PostgreSQL，没有动它");
         }
 
@@ -674,16 +698,19 @@ impl Paperclip {
 
     // ------------------------------------------------------- fundeploy 托管
 
+    /// 判断一个进程是否属于本实例托管的 Paperclip（即使 PID 文件已删除也能靠环境变量认出）。
+    fn owns_process(&self, pid: i32) -> bool {
+        if proc::protected(pid).is_some() {
+            return false;
+        }
+        let program = self.cli_path().unwrap_or_else(|| self.global_cli_path());
+        proc::managed_process(pid, &self.pid_file(), &program) == Some(true)
+    }
+
     /// fundeploy 托管的那个进程的 PID；没在跑返回 None。
     fn fallback_pid(&self) -> Option<i32> {
         let pid = proc::read_pid_file(&self.pid_file())?;
-        if !proc::is_alive(pid) {
-            return None;
-        }
-        let program = self.cli_path().unwrap_or_else(|| self.global_cli_path());
-        (proc::protected(pid).is_none()
-            && proc::managed_process(pid, &self.pid_file(), &program) == Some(true))
-        .then_some(pid)
+        (proc::is_alive(pid) && self.owns_process(pid)).then_some(pid)
     }
 
     fn start_fallback(&self, cfg: &Config, reason: &str) -> Result<()> {
@@ -737,10 +764,10 @@ impl Paperclip {
         let pid = proc::spawn_detached(&argv, &env::home(), &spawn_env, &self.log_file)?;
         proc::write_pid_file(&self.pid_file(), pid)?;
 
-        if self.wait_healthy(cfg, self.start_timeout) {
+        if self.wait_healthy(cfg, self.start_timeout, Some(pid)) {
             ui::ok(format!(
-                "Paperclip 已启动（PID {pid}，http://{}:{}），健康检查通过。",
-                cfg.host, cfg.port
+                "Paperclip 已启动（PID {pid}，{}），健康检查通过。",
+                port::http_url(&cfg.host, cfg.port)
             ));
             return Ok(());
         }
@@ -782,16 +809,11 @@ impl Paperclip {
 
     fn ensure_port_free(&self) -> Result<()> {
         let cfg = self.config();
+        // 用 owns_process 而不是 fallback_pid()：stop_fallback 刚删掉 PID 文件，
+        // 靠环境变量里的 FUNDEPLOY_SERVICE_PID_FILE 仍能认出残留子进程。
         super::force_free_port("Paperclip", &cfg.host, cfg.port, |pid| {
-            self.fallback_pid() == Some(pid)
-        })?;
-        if port::is_listening(&cfg.host, cfg.port) {
-            bail!(
-                "Paperclip 的端口 {} 仍被占用，已中止重启；请确认占用者后再试",
-                cfg.port
-            );
-        }
-        Ok(())
+            self.owns_process(pid)
+        })
     }
 
     /// 官方 `service stop` 报错之后，判断这是不是「本来就停着」。
@@ -816,7 +838,7 @@ impl Paperclip {
             // 只按端口强停，不去碰服务管理器里那个 PID：那条进程有 KeepAlive 守着，
             // 杀掉只会被立刻拉起来，把「停不下来」变成更难看的「停了又起」。
             super::force_free_port("Paperclip", &cfg.host, cfg.port, |pid| {
-                self.fallback_pid() == Some(pid)
+                self.owns_process(pid)
             })?;
 
             // 重新问一遍状态：强停可能已经解决问题，也可能根本没碰到真正的占用者。
@@ -903,25 +925,31 @@ impl Paperclip {
 
     /// 保证子进程的 PATH 上有个够新的 node，返回要追加的环境改动。
     fn node_env(&self) -> Result<Vec<EnvEdit>> {
-        let current = node_version();
-        if current
-            .as_deref()
-            .is_some_and(|v| !version::is_newer(NODE_MIN, v))
-        {
-            return Ok(Vec::new());
+        let cached = self.node_env_cache.get_or_init(|| {
+            let current = node_version();
+            if current
+                .as_deref()
+                .is_some_and(|v| !version::is_newer(NODE_MIN, v))
+            {
+                return Ok(Vec::new());
+            }
+            if let Some(bin) = nvm_node_bin(NODE_MIN) {
+                let path = format!(
+                    "{}:{}",
+                    bin.display(),
+                    std::env::var("PATH").unwrap_or_default()
+                );
+                return Ok(vec![("PATH".to_string(), Some(path))]);
+            }
+            Err(format!(
+                "需要 Node.js {NODE_MIN}+，当前 {}。可执行: nvm install 24",
+                current.unwrap_or_else(|| "没装".to_string())
+            ))
+        });
+        match cached {
+            Ok(env) => Ok(env.clone()),
+            Err(msg) => bail!("{msg}"),
         }
-        if let Some(bin) = nvm_node_bin(NODE_MIN) {
-            let path = format!(
-                "{}:{}",
-                bin.display(),
-                std::env::var("PATH").unwrap_or_default()
-            );
-            return Ok(vec![("PATH".to_string(), Some(path))]);
-        }
-        bail!(
-            "需要 Node.js {NODE_MIN}+，当前 {}。可执行: nvm install 24",
-            current.unwrap_or_else(|| "没装".to_string())
-        )
     }
 
     fn npm_command(&self) -> Result<(String, Vec<EnvEdit>)> {
@@ -964,7 +992,7 @@ impl Paperclip {
         let reuse = if self.install_via_npx {
             None
         } else {
-            self.cli_path().filter(|b| cli_runnable(b))
+            self.cli_path().filter(|b| self.cli_runnable(b))
         };
 
         let mut argv: Vec<String> = Vec::new();
@@ -1149,14 +1177,8 @@ impl Paperclip {
     // ---------------------------------------------------------------- 预热
 
     fn upgrade_channel(&self, ch: Channel) -> Result<()> {
-        let npmrc = Npmrc::write(NPM_REGISTRY);
-        let npm = self.npm_env(npmrc.as_ref());
-        if !self.using_global_cli() {
-            self.print_network_hint(ch);
-        }
-
         let mut args: Vec<&str> = vec![ch.flag()];
-        // 先问官方要不要动，别自己比版本号。问不出来（离线、还没装）就不阻塞，往下走。
+        // 先问官方要不要动，别自己比版本号；已是最新时直接返回，免得先扫十万个文件算缓存大小。
         if let Some(c) = self.update_check(ch) {
             if c.downgrade {
                 // canary 机器上 --latest 指向的 stable 往往比当前版本旧；官方 update
@@ -1192,6 +1214,14 @@ impl Paperclip {
                 ));
             }
         }
+        let global = self.using_global_cli();
+        let npmrc = (!global).then(|| Npmrc::write(NPM_REGISTRY)).flatten();
+        let npm = if global {
+            Vec::new()
+        } else {
+            self.print_network_hint(ch);
+            self.npm_env(npmrc.as_ref())
+        };
         self.apply_update(&args, &npm)
     }
 
@@ -1265,7 +1295,7 @@ impl Paperclip {
 
         // payload 换过之后配置可能也变了，重新读一次。
         let cfg = self.config();
-        if self.wait_healthy(&cfg, self.update_timeout) {
+        if self.wait_healthy(&cfg, self.update_timeout, None) {
             ui::ok("Paperclip 升级完成，健康检查通过。");
             return Ok(());
         }
@@ -1365,7 +1395,7 @@ impl Service for Paperclip {
             }
             self.must(&["service", "start"])?;
             // launchd 返回成功只表示 job 已加载，入口丢失或进程崩溃仍可能没起来。
-            if !self.wait_healthy(&self.config(), self.start_timeout) {
+            if !self.wait_healthy(&self.config(), self.start_timeout, None) {
                 bail!(
                     "Paperclip 没在 {} 秒内通过健康检查，请用 status / logs 查看原因",
                     self.start_timeout.as_secs()
@@ -1479,9 +1509,14 @@ impl Service for Paperclip {
                 Some(0) => {}
                 other => bail!("npm 卸载 paperclipai 失败（退出码 {other:?}）"),
             }
+            // 清掉 fundeploy 为全局安装写的 shim 与通道/源标记，免得影响下次重装。
+            let _ = std::fs::remove_file(self.global_service_shim_path());
+            let _ = std::fs::remove_file(self.global_prefix().join(".fundeploy-registry"));
+            let _ = std::fs::remove_file(self.global_prefix().join(".fundeploy-channel"));
         } else {
             self.must(&["uninstall"])?;
         }
+        let _ = self.ensure_port_free();
         ui::ok(format!(
             "已卸载 Paperclip 的服务和 CLI；数据留在 {}。",
             self.home.display()
@@ -1498,9 +1533,14 @@ impl Service for Paperclip {
         match name {
             "install-canary" => self.install_channel(Channel::Canary),
             "check" => {
+                let default = if self.using_global_cli() {
+                    self.global_channel()
+                } else {
+                    Channel::Canary
+                };
                 let ch = match args.first() {
                     Some(s) => Channel::parse(s)?,
-                    None => self.channel.unwrap_or(Channel::Canary),
+                    None => self.channel.unwrap_or(default),
                 };
                 self.check(ch)
             }
@@ -1625,8 +1665,12 @@ fn is_executable(p: &Path) -> bool {
     std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
-fn cli_runnable(bin: &Path) -> bool {
-    cmd::try_run([bin.display().to_string().as_str(), "--version"]).is_ok_and(|o| o.success())
+impl Paperclip {
+    fn cli_runnable(&self, bin: &Path) -> bool {
+        let env = self.node_env().unwrap_or_default();
+        cmd::try_run_with([bin.display().to_string().as_str(), "--version"], &env)
+            .is_ok_and(|o| o.success())
+    }
 }
 
 /// `postmaster.pid` 的第一行是 PID，后面还有数据目录、启动时间等若干行，所以不能直接
@@ -1658,23 +1702,15 @@ fn process_cmdline(pid: i32) -> Option<String> {
 }
 
 fn health_endpoint_ok(cfg: &Config) -> bool {
-    let host = match cfg.host.as_str() {
-        "" | "0.0.0.0" | "*" => "127.0.0.1",
-        "::" => "::1",
-        h => h,
-    };
-    // IPv6 字面量在 URL 里要加方括号。
-    let authority = if host.contains(':') {
-        format!("[{host}]")
-    } else {
-        host.to_string()
-    };
-    ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(3))
-        .build()
-        .get(&format!("http://{authority}:{}/api/health", cfg.port))
-        .call()
-        .is_ok()
+    static AGENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
+    let client = AGENT.get_or_init(|| {
+        ureq::AgentBuilder::new()
+            .timeout_connect(Duration::from_secs(3))
+            .timeout_read(Duration::from_secs(3))
+            .build()
+    });
+    let url = format!("{}/api/health", port::http_url(&cfg.host, cfg.port));
+    client.get(&url).call().is_ok()
 }
 
 fn node_version() -> Option<String> {

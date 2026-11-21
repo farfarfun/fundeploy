@@ -423,7 +423,6 @@ mod tests {
 
     /// 环境变量是进程级的，而 cargo test 多线程跑。
     fn 排队() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+        crate::common::env::test_env::EnvGuard::lock()
     }
 }

@@ -36,7 +36,8 @@ fn parse_config_path(line: &str) -> Option<&str> {
 pub fn ensure_private_dir(dir: &Path) -> Result<()> {
     std::fs::create_dir_all(dir).with_context(|| format!("建不出目录 {}", dir.display()))?;
     // 0700：这底下会放口令和库地址。
-    let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+        .with_context(|| format!("设置目录权限 0700 失败: {}", dir.display()))?;
     Ok(())
 }
 
@@ -46,15 +47,31 @@ pub fn ensure_private_dir(dir: &Path) -> Result<()> {
 /// 覆盖一次就等于把一台在跑的机器悄悄指向别的库——而且是在 install/start 这种
 /// 看起来人畜无害的命令里发生的。
 pub fn write_if_absent(path: &Path, content: &str) -> Result<bool> {
+    use std::io::{ErrorKind, Write};
+    use std::os::unix::fs::OpenOptionsExt;
+
     if path.exists() {
         return Ok(false);
     }
     if let Some(dir) = path.parent() {
         ensure_private_dir(dir)?;
     }
-    std::fs::write(path, content).with_context(|| format!("写不了 {}", path.display()))?;
-    // 0600：里面可以放口令。
-    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    // create_new + mode(0o600) 原子建文件：消除先 exists 后 write 的竞态，同时避免
+    // 含口令的配置文件经历 0644 权限窗口。
+    let mut f = match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+    {
+        Ok(f) => f,
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => return Ok(false),
+        Err(e) => return Err(e).with_context(|| format!("写不了 {}", path.display())),
+    };
+    f.write_all(content.as_bytes())
+        .with_context(|| format!("写不了 {}", path.display()))?;
+    f.flush()
+        .with_context(|| format!("写不了 {}", path.display()))?;
     Ok(true)
 }
 

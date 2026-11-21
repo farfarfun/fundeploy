@@ -10,7 +10,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 
 use super::{force_free_port, uninstall_env_var, Service, START_TIMEOUT};
-use crate::common::{cmd, npm::Npm, pip, pip::PipPkg, port, proc};
+use crate::common::{cmd, npm::Npm, par, pip, pip::PipPkg, port, proc};
 use crate::service::spec::{Component, Pkg, ServiceSpec};
 use crate::ui;
 
@@ -19,21 +19,31 @@ use crate::ui;
 /// 一个组件的包管理操作。
 enum Installer {
     Pip(PipPkg),
-    Npm { npm: Npm, pkg: String },
+    Npm {
+        npm: Npm,
+        pkg: String,
+        installed: Option<String>,
+        shadow_warning: Option<String>,
+    },
 }
 
 fn installer(c: &Component) -> Result<Installer> {
     match &c.pkg {
         Pkg::Pip { name, cli } => Ok(Installer::Pip(PipPkg::new(name, cli))),
-        // 用已经装了它的那个工具，不然会在另一个全局根下再装一份。
+        // 一次并发探测选工具、取已装版本并查双份遮挡，免得同一批 Node 进程起三四遍。
         Pkg::Npm {
             name,
             registry_scope,
             ..
-        } => Ok(Installer::Npm {
-            npm: Npm::for_package(name, None)?.with_registry_scope(registry_scope.as_deref()),
-            pkg: name.clone(),
-        }),
+        } => {
+            let lookup = Npm::lookup_package(name, None)?;
+            Ok(Installer::Npm {
+                npm: lookup.tool.with_registry_scope(registry_scope.as_deref()),
+                pkg: name.clone(),
+                installed: lookup.installed,
+                shadow_warning: lookup.shadow_warning,
+            })
+        }
     }
 }
 
@@ -41,21 +51,22 @@ impl Installer {
     fn install(&self, version: Option<&str>) -> Result<()> {
         match self {
             Installer::Pip(p) => p.install(version),
-            Installer::Npm { npm, pkg } => npm.install_global(&npm.spec(pkg, version)),
+            Installer::Npm { npm, pkg, .. } => npm.install_global(&npm.spec(pkg, version)),
         }
     }
 
     fn uninstall(&self) -> bool {
         match self {
             Installer::Pip(p) => p.uninstall(),
-            Installer::Npm { npm, pkg } => npm.uninstall_global(pkg),
+            Installer::Npm { npm, pkg, .. } => npm.uninstall_global(pkg),
         }
     }
 
-    fn version(&self) -> Option<String> {
+    /// 装完后重新查询最新版本（此时不能用装前缓存的 `installed`）。
+    fn fresh_version(&self) -> Option<String> {
         match self {
             Installer::Pip(p) => p.managed_version(),
-            Installer::Npm { npm, pkg } => npm.installed_version(pkg),
+            Installer::Npm { npm, pkg, .. } => npm.installed_version(pkg),
         }
     }
 
@@ -63,25 +74,32 @@ impl Installer {
     fn shadow_warning(&self) -> Option<String> {
         match self {
             Installer::Pip(p) => p.shadow_warning(),
-            Installer::Npm { npm, pkg } => npm.shadow_warning(pkg),
+            Installer::Npm { shadow_warning, .. } => shadow_warning.clone(),
         }
     }
 
-    /// 这份安装是从哪条路线来的，打给人看。
-    fn source(&self) -> String {
+    /// 一次探出状态卡片要展示的（版本、安装来源），避免重复起子进程。
+    fn status_probe(&self) -> (Option<String>, String) {
         match self {
-            Installer::Pip(p) => match p.mode() {
-                pip::Mode::UvTool => "uv tool".into(),
-                pip::Mode::Pip => "pip".into(),
-            },
-            Installer::Npm { npm, .. } => npm.name(),
+            Installer::Pip(p) => {
+                let (ver, mode) = p.probe_status();
+                let src = match mode {
+                    pip::Mode::UvTool => "uv tool".into(),
+                    pip::Mode::Pip => "pip".into(),
+                };
+                (ver, src)
+            }
+            Installer::Npm { npm, installed, .. } => (installed.clone(), npm.name()),
         }
     }
 }
 
 /// 已安装版本。查不出来（没装、或者 npm 本身不可用）都是 None。
 fn installed_version(c: &Component) -> Option<String> {
-    installer(c).ok()?.version()
+    match installer(c).ok()? {
+        Installer::Pip(p) => p.managed_version(),
+        Installer::Npm { installed, .. } => installed,
+    }
 }
 
 /// CLI 在 PATH 上吗。这是「能不能启动」的判据——包装没装进哪个环境无所谓，
@@ -225,10 +243,8 @@ fn by_package(spec: &ServiceSpec) -> Vec<&Component> {
 }
 
 fn versions(spec: &ServiceSpec) -> Vec<Option<String>> {
-    by_package(spec)
-        .into_iter()
-        .map(installed_version)
-        .collect()
+    let pkgs = by_package(spec);
+    par::map(&pkgs, par::JOBS, |c| installed_version(c))
 }
 
 /// 组件在版本清单里的抬头。
@@ -299,6 +315,11 @@ pub trait Upstream {
     // ------------------------------------------------------------ 生命周期
 
     fn install(&self, version: Option<&str>) -> Result<()> {
+        let _ = self.install_and_report(version)?;
+        Ok(())
+    }
+
+    fn install_and_report(&self, version: Option<&str>) -> Result<Vec<Option<String>>> {
         let spec = self.spec();
         spec.validate()?;
 
@@ -310,7 +331,9 @@ pub trait Upstream {
             pip::require_any_installer()?;
         }
 
-        for c in by_package(spec) {
+        let pkgs = by_package(spec);
+        let mut installers = Vec::with_capacity(pkgs.len());
+        for c in &pkgs {
             let want = version.or(c.version.as_deref());
             let inst = installer(c)?;
             let what = package_label(spec, c);
@@ -323,16 +346,19 @@ pub trait Upstream {
             if let Some(w) = inst.shadow_warning() {
                 ui::warn(w);
             }
+            installers.push(inst);
         }
 
         self.post_install()?;
 
+        // 直接复用刚才挑出来的 installer 查装后版本，免得为 npm 包再跑一遍双工具探针。
+        let after: Vec<Option<String>> = par::map(&installers, par::JOBS, Installer::fresh_version);
         ui::blank();
         ui::heading("已安装版本");
-        for c in by_package(spec) {
-            ui::kv(package_label(spec, c), installed_version(c).as_deref());
+        for (c, ver) in pkgs.iter().zip(&after) {
+            ui::kv(package_label(spec, c), ver.as_deref());
         }
-        Ok(())
+        Ok(after)
     }
 
     fn upgrade(&self) -> Result<()> {
@@ -350,7 +376,7 @@ pub trait Upstream {
 
         // 停了服又没换成包，服务此刻是停的。不说清楚的话，操作者看到的是一条
         // 安装报错，会以为「失败了所以什么都没变」，而实际上服务已经下线了。
-        self.install(None).map_err(|e| {
+        let after = self.install_and_report(None).map_err(|e| {
             if was_running {
                 e.context(format!(
                     "换包失败，而服务已经被停掉了——它现在是停的。\n\
@@ -362,7 +388,6 @@ pub trait Upstream {
             }
         })?;
 
-        let after = versions(spec);
         ui::blank();
         ui::heading("版本变化");
         for (i, c) in by_package(spec).into_iter().enumerate() {
@@ -399,7 +424,7 @@ pub trait Upstream {
         // 先确认源上真有这个版本再动手。装是逐个组件装的，第二个组件装不上而第一个
         // 已经降级，会停在组件之间版本不一致的中间态上——那比没降级更难收拾。
         for c in by_package(spec) {
-            if let Installer::Npm { npm, pkg: name } = installer(c)? {
+            if let Installer::Npm { npm, pkg: name, .. } = installer(c)? {
                 if npm.latest_version(&format!("{name}@{version}")).is_none() {
                     bail!("npm 源上没有 {name}@{version}，已中止（没有改动任何安装）。",);
                 }
@@ -584,25 +609,38 @@ pub trait Upstream {
         let spec = self.spec();
         let mut card = ui::Card::new(&spec.name).section("包");
 
-        for c in by_package(spec) {
-            let inst = installer(c);
-            let version = inst.as_ref().ok().and_then(|i| i.version());
+        let pkgs = by_package(spec);
+        let probed: Vec<Result<(Option<String>, String)>> = par::map(&pkgs, par::JOBS, |c| {
+            let inst = installer(c)?;
+            Ok(inst.status_probe())
+        });
+        for (c, res) in pkgs.iter().zip(probed) {
             let name = package_label(spec, c);
-            card = match (&version, &inst) {
-                (Some(v), Ok(i)) => card.row(&name, format!("{v} · {}", i.source())),
-                (None, Ok(_)) => card.row_state(&name, ui::State::Idle, "未安装"),
-                (_, Err(e)) => card.row_state(&name, ui::State::Down, format!("查不到（{e}）")),
+            card = match res {
+                Ok((Some(v), src)) => card.row(&name, format!("{v} · {src}")),
+                Ok((None, _)) => card.row_state(&name, ui::State::Idle, "未安装"),
+                Err(e) => card.row_state(&name, ui::State::Down, format!("查不到（{e}）")),
             };
         }
 
         // 分节：包名和组件名长得几乎一样（都是「后端 funfluid-api」这种），
         // 不分节看起来就是同一组东西重复了两遍。
         card = card.section("运行");
+        let avail: Vec<bool> = spec.components.iter().map(cli_available).collect();
+        let need_ports: Vec<u16> = spec
+            .components
+            .iter()
+            .zip(&avail)
+            .filter(|(c, &ok)| ok && c.cli.status.is_empty())
+            .map(|(c, _)| c.port)
+            .collect();
+        let holders_map = port::holders_many(&need_ports);
+
         let mut up = 0usize;
         let mut delegated: Vec<&Component> = Vec::new();
-        for c in &spec.components {
+        for (c, &ok) in spec.components.iter().zip(&avail) {
             let at = format!("{}:{}", c.host, c.port);
-            if !cli_available(c) {
+            if !ok {
                 card = card.row_state(&c.label, ui::State::Idle, format!("未安装 · {at}"));
                 continue;
             }
@@ -612,7 +650,11 @@ pub trait Upstream {
                 continue;
             }
             // 上游没给 status，就报端口实况——这也正是别人关心的那件事。
-            card = match port::listener_pid(c.port) {
+            let listener = holders_map
+                .get(&c.port)
+                .and_then(|hs| hs.iter().find(|h| h.protos.contains(&"tcp")))
+                .map(|h| h.pid);
+            card = match listener {
                 Some(pid) => {
                     up += 1;
                     card.row_state(
@@ -630,7 +672,7 @@ pub trait Upstream {
         }
 
         // 一个组件都没装上时才提示怎么装；装了一半的情况留给上面那几行自己说。
-        if spec.components.iter().all(|c| !cli_available(c)) {
+        if avail.iter().all(|&ok| !ok) {
             card = card.note(format!("装上: fundeploy service {} install", spec.name));
         }
         // 交给上游的那几个不算进分子分母：它们的状态这会儿还不知道。

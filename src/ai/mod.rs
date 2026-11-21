@@ -15,7 +15,7 @@ use anyhow::{bail, Result};
 use clap::ValueEnum;
 
 use crate::common::platform::{Os, Platform};
-use crate::common::{cmd, download, env, fs};
+use crate::common::{cmd, download, env, fs, par};
 use crate::dev::Dev;
 use crate::ui;
 
@@ -163,29 +163,36 @@ impl Ai {
         self.bins.iter().find_map(|b| cmd::find(b).map(|p| (*b, p)))
     }
 
-    pub fn status(&self) -> Result<()> {
-        ui::heading(self.name);
-        match self.located() {
-            Some((bin, path)) => {
-                let mut argv: Vec<String> = vec![path.clone()];
-                argv.extend(self.version_args.iter().map(|s| s.to_string()));
-                let ver = match cmd::try_run(&argv) {
-                    Ok(o) if o.success() => {
-                        let out = if o.stdout.trim().is_empty() {
-                            o.stderr
-                        } else {
-                            o.stdout
-                        };
-                        out.lines().next().unwrap_or("").trim().to_string()
-                    }
-                    _ => "问不出版本".to_string(),
+    fn probe_status(&self) -> Option<(&'static str, String, String)> {
+        let (bin, path) = self.located()?;
+        let mut argv: Vec<String> = vec![path.clone()];
+        argv.extend(self.version_args.iter().map(|s| s.to_string()));
+        let ver = match cmd::try_run(&argv) {
+            Ok(o) if o.success() => {
+                let out = if o.stdout.trim().is_empty() {
+                    o.stderr
+                } else {
+                    o.stdout
                 };
-                ui::kv(format!("{bin}  {path}"), Some(&ver));
+                out.lines().next().unwrap_or("").trim().to_string()
             }
+            _ => "问不出版本".to_string(),
+        };
+        Some((bin, path, ver))
+    }
+
+    fn print_status(&self, probed: Option<(&'static str, String, String)>) {
+        ui::heading(self.name);
+        match probed {
+            Some((bin, path, ver)) => ui::kv(format!("{bin}  {path}"), Some(&ver)),
             None => ui::kv(self.bins.join(" / "), Some("未安装")),
         }
         let have: Vec<&str> = self.methods().iter().map(|m| m.key()).collect();
         ui::kv("可用装法", Some(&have.join(" / ")));
+    }
+
+    pub fn status(&self) -> Result<()> {
+        self.print_status(self.probe_status());
         Ok(())
     }
 
@@ -247,7 +254,7 @@ impl Ai {
             // 卸一个 codex 要连按三次 y，于是人养成了闭眼按 y 的习惯。
             ui::confirm_destructive(
                 &format!("要卸掉 {} 吗", self.name),
-                &format!("FUNDEPLOY_{}_UNINSTALL_YES", self.env_name()),
+                &env::uninstall_yes_var(self.name),
             )?;
         }
 
@@ -281,10 +288,6 @@ impl Ai {
             ));
         }
         Ok(())
-    }
-
-    fn env_name(&self) -> String {
-        self.name.to_ascii_uppercase().replace(['-', '.'], "_")
     }
 
     fn official_run(&self, args: &[String]) -> Result<()> {
@@ -414,10 +417,12 @@ pub fn each(method: Option<Method>, f: impl Fn(&Ai) -> Result<()>) -> Result<()>
     Ok(())
 }
 
-/// 列出所有工具的状态。
+/// 列出所有工具的状态（并发探版本，按固定顺序打印）。
 pub fn list() -> Result<()> {
-    for t in registry::all() {
-        t.status()?;
+    let all = registry::all();
+    let probed = par::map(&all, par::JOBS, Ai::probe_status);
+    for (t, info) in all.iter().zip(probed) {
+        t.print_status(info);
         ui::blank();
     }
     ui::hint(format!(
@@ -432,8 +437,7 @@ mod tests {
     use super::*;
 
     fn 排队() -> std::sync::MutexGuard<'static, ()> {
-        static M: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        M.lock().unwrap_or_else(|e| e.into_inner())
+        crate::common::env::test_env::EnvGuard::lock()
     }
 
     #[test]
@@ -539,8 +543,8 @@ mod tests {
     #[test]
     fn 卸载开关的名字由工具名推出() {
         assert_eq!(
-            registry::find("claude").unwrap().env_name(),
-            "CLAUDE".to_string()
+            env::uninstall_yes_var(registry::find("claude").unwrap().name),
+            "FUNDEPLOY_CLAUDE_UNINSTALL_YES"
         );
     }
 

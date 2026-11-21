@@ -28,11 +28,16 @@ fn query(args: &[&str]) -> String {
 
 #[cfg(target_os = "linux")]
 pub(super) fn sample() -> Samples {
-    let mut result = rows(&query(&[
-        "nvidia-smi",
-        "--query-gpu=name,utilization.gpu",
-        "--format=csv,noheader,nounits",
-    ]));
+    static HAS_NVIDIA_SMI: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let mut result = if *HAS_NVIDIA_SMI.get_or_init(|| crate::common::cmd::has("nvidia-smi")) {
+        rows(&query(&[
+            "nvidia-smi",
+            "--query-gpu=name,utilization.gpu",
+            "--format=csv,noheader,nounits",
+        ]))
+    } else {
+        Samples::new()
+    };
     if let Ok(entries) = std::fs::read_dir("/sys/class/drm") {
         for entry in entries.flatten() {
             let card = entry.file_name().to_string_lossy().into_owned();
@@ -107,6 +112,21 @@ pub(super) fn sample() -> Samples {
 
 #[cfg(windows)]
 pub(super) fn sample() -> Samples {
+    // PowerShell 启动 + CIM 查询耗时数百毫秒，monitor 2s 刷一次时做 6s 短缓存以降低额外开销。
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant};
+
+    const CACHE_TTL: Duration = Duration::from_secs(6);
+    static CACHE: OnceLock<Mutex<Option<(Instant, Samples)>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(None));
+    if let Ok(guard) = cache.lock() {
+        if let Some((at, ref cached)) = *guard {
+            if at.elapsed() < CACHE_TTL {
+                return cached.clone();
+            }
+        }
+    }
+
     // WDDM 按进程、引擎分别计数。同一引擎的进程值相加，每张卡取最忙的引擎。
     let script = r#"
 $engines = @{}
@@ -123,13 +143,17 @@ foreach ($gpu in ($engines.Keys | Sort-Object)) {
     "GPU $gpu,$([Math]::Min(100, [int]$busy))"
 }
 "#;
-    std::process::Command::new("powershell.exe")
+    let fresh = std::process::Command::new("powershell.exe")
         .args(["-NoProfile", "-NonInteractive", "-Command", script])
         .output()
         .ok()
         .filter(|o| o.status.success())
         .map(|o| rows(&String::from_utf8_lossy(&o.stdout)))
-        .unwrap_or_default()
+        .unwrap_or_default();
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some((Instant::now(), fresh.clone()));
+    }
+    fresh
 }
 
 #[cfg(test)]

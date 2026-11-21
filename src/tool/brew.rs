@@ -211,12 +211,12 @@ mod tests {
 
     #[test]
     fn 脚本地址默认指向官方且可以覆盖() {
+        let _g = crate::common::env::test_env::EnvGuard::set(&[("BREW_INSTALL_URL", None)]);
         let b = Brew::from_env();
         assert!(b.install_url.ends_with("/install.sh"));
         assert!(b.uninstall_url.ends_with("/uninstall.sh"));
 
         std::env::set_var("BREW_INSTALL_URL", "https://example.invalid/x.sh");
         assert_eq!(Brew::from_env().install_url, "https://example.invalid/x.sh");
-        std::env::remove_var("BREW_INSTALL_URL");
     }
 }

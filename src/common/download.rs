@@ -10,11 +10,13 @@ use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::{BufReader, Read, Write};
 use std::path::Path;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use crate::ui;
 
-/// 单次请求的超时。GitHub 偶发会把连接挂住不返回，没有超时就表现为命令卡死。
+/// 单次读/写停滞的超时。用 `timeout_read` 而不是整条请求总超时：大体积安装包在慢网下
+/// 可能需要超过一分钟，只要数据仍在流就不会被中途掐断；一旦链路卡死 60 秒才中止。
 const TIMEOUT: Duration = Duration::from_secs(60);
 
 /// 建连超时。
@@ -74,8 +76,18 @@ impl Rewrite {
         match self {
             Rewrite::Off => url.to_string(),
             // 已经带过前缀就不再套一层，否则反复执行会越拼越长。
-            Rewrite::HubProxy(p) if url.starts_with(p.as_str()) => url.to_string(),
-            Rewrite::HubProxy(p) => format!("{p}{url}"),
+            Rewrite::HubProxy(p) => {
+                let prefix = if p.ends_with('/') {
+                    p.clone()
+                } else {
+                    format!("{p}/")
+                };
+                if url.starts_with(prefix.as_str()) {
+                    url.to_string()
+                } else {
+                    format!("{prefix}{url}")
+                }
+            }
             Rewrite::MirrorRaw(_) if host != "raw.githubusercontent.com" => url.to_string(),
             Rewrite::MirrorRaw(base) => {
                 let path = https_path(url).unwrap_or_else(|| "/".into());
@@ -106,22 +118,26 @@ fn is_github_host(host: &str) -> bool {
 }
 
 /// https URL 的主机名，小写。不是 https 就返回 None。
-fn https_host(url: &str) -> Option<String> {
-    let rest = url.strip_prefix("https://")?;
-    let host = rest.split('/').next()?;
-    if host.is_empty() {
+fn https_host(raw: &str) -> Option<String> {
+    let parsed = url::Url::parse(raw).ok()?;
+    if parsed.scheme() != "https" {
         return None;
     }
-    Some(host.to_ascii_lowercase())
+    parsed.host_str().map(str::to_ascii_lowercase)
 }
 
-/// https URL 里主机名之后的部分，以 / 开头。
-fn https_path(url: &str) -> Option<String> {
-    let rest = url.strip_prefix("https://")?;
-    match rest.find('/') {
-        Some(i) => Some(rest[i..].to_string()),
-        None => Some("/".into()),
+/// https URL 里主机名之后的部分（含 query），以 / 开头。
+fn https_path(raw: &str) -> Option<String> {
+    let parsed = url::Url::parse(raw).ok()?;
+    if parsed.scheme() != "https" {
+        return None;
     }
+    let mut out = parsed.path().to_string();
+    if let Some(q) = parsed.query() {
+        out.push('?');
+        out.push_str(q);
+    }
+    Some(out)
 }
 
 /// 直连 GitHub 时提示一次可以配镜像。
@@ -139,35 +155,42 @@ pub fn hint_mirror() {
     );
 }
 
-fn agent_connecting(connect: Duration) -> ureq::Agent {
+fn build_agent(connect: Duration) -> ureq::Agent {
     ureq::AgentBuilder::new()
         .timeout_connect(connect)
-        .timeout(TIMEOUT)
+        .timeout_read(TIMEOUT)
+        .timeout_write(TIMEOUT)
         .build()
 }
 
-fn agent() -> ureq::Agent {
-    agent_connecting(CONNECT)
+fn agent() -> &'static ureq::Agent {
+    static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
+    AGENT.get_or_init(|| build_agent(CONNECT))
+}
+
+fn probe_agent() -> &'static ureq::Agent {
+    static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
+    AGENT.get_or_init(|| build_agent(PROBE_CONNECT))
 }
 
 /// 取一段文本（API 响应）。
 pub fn get_text(url: &str) -> Result<String> {
-    get_text_connecting(url, CONNECT)
+    get_text_with(agent(), url)
 }
 
 /// 和 [`get_text`] 一样，但建连超时短一些。
 ///
 /// 用在「这一个源连不上就换下一个」的探测上。
 pub fn get_text_probe(url: &str) -> Result<String> {
-    get_text_connecting(url, PROBE_CONNECT)
+    get_text_with(probe_agent(), url)
 }
 
-fn get_text_connecting(url: &str, connect: Duration) -> Result<String> {
+fn get_text_with(client: &ureq::Agent, url: &str) -> Result<String> {
     let url = Rewrite::from_env().apply(url);
-    let mut req = agent_connecting(connect)
-        .get(&url)
-        .set("User-Agent", "fundeploy")
-        .set("Accept", "application/vnd.github+json");
+    let mut req = client.get(&url).set("User-Agent", "fundeploy");
+    if https_host(&url).as_deref() == Some("api.github.com") {
+        req = req.set("Accept", "application/vnd.github+json");
+    }
     if let Some(t) = github_token(&url) {
         req = req.set("Authorization", &format!("Bearer {t}"));
     }
@@ -201,9 +224,14 @@ fn github_token(url: &str) -> Option<String> {
 
 /// 下载到文件，带进度条。
 ///
-/// 先写临时文件再 rename：下载中断不会留下一个长度正确、内容残缺的目标文件，
-/// 那种残骸下一次执行会被当成「已经下好了」。
+/// 先写同目录临时文件再原子 persist：下载中断不会留下残骸文件，出错时自动清理。
 pub fn to_file(url: &str, dest: &Path, label: &str) -> Result<()> {
+    let _ = to_file_sha256(url, dest, label)?;
+    Ok(())
+}
+
+/// 同 [`to_file`]，并在流式写入时同步计算并返回文件的小写十六进制 SHA-256，省去二次全盘读取。
+pub fn to_file_sha256(url: &str, dest: &Path, label: &str) -> Result<String> {
     let url = Rewrite::from_env().apply(url);
     let resp = agent()
         .get(&url)
@@ -216,34 +244,46 @@ pub fn to_file(url: &str, dest: &Path, label: &str) -> Result<()> {
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
 
-    if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("建目录失败: {}", parent.display()))?;
-    }
-    let tmp = dest.with_extension("part");
-    let mut out = File::create(&tmp).with_context(|| format!("写入失败: {}", tmp.display()))?;
+    let parent = dest
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent).with_context(|| format!("建目录失败: {}", parent.display()))?;
+    let mut tmp = tempfile::Builder::new()
+        .prefix(".download-")
+        .suffix(".part")
+        .tempfile_in(parent)
+        .with_context(|| format!("建临时文件失败: {}", parent.display()))?;
 
     let bar = progress(total, label);
     let mut reader = resp.into_reader();
+    let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 64 * 1024];
     let mut done: u64 = 0;
-    loop {
-        let n = reader.read(&mut buf).context("读取响应流失败")?;
-        if n == 0 {
-            break;
+    let stream_res = (|| -> Result<()> {
+        loop {
+            let n = reader.read(&mut buf).context("读取响应流失败")?;
+            if n == 0 {
+                break;
+            }
+            tmp.write_all(&buf[..n])
+                .with_context(|| format!("写入失败: {}", tmp.path().display()))?;
+            hasher.update(&buf[..n]);
+            done += n as u64;
+            bar.set_position(done);
         }
-        out.write_all(&buf[..n])
-            .with_context(|| format!("写入失败: {}", tmp.display()))?;
-        done += n as u64;
-        bar.set_position(done);
-    }
-    out.flush().ok();
-    drop(out);
+        tmp.as_file()
+            .flush()
+            .with_context(|| format!("刷盘失败: {}", tmp.path().display()))?;
+        Ok(())
+    })();
     bar.finish_and_clear();
+    stream_res?;
 
-    std::fs::rename(&tmp, dest)
-        .with_context(|| format!("重命名失败: {} -> {}", tmp.display(), dest.display()))?;
-    Ok(())
+    tmp.persist(dest)
+        .map_err(|e| e.error)
+        .with_context(|| format!("重命名失败: {}", dest.display()))?;
+    Ok(hex::encode(hasher.finalize()))
 }
 
 fn progress(total: u64, label: &str) -> ProgressBar {
@@ -326,6 +366,24 @@ pub fn verify(path: &Path, checksums: Option<&str>, filename: &str) -> Result<()
     Ok(())
 }
 
+/// 校验已经算好的 sha256 摘要，免去再次全盘读取文件。
+pub fn verify_hash(got: &str, checksums: Option<&str>, filename: &str) -> Result<()> {
+    let Some(sums) = checksums else {
+        ui::warn("未取到 checksums.txt，跳过校验。");
+        return Ok(());
+    };
+    let Some(want) = expected_sha256(sums, filename) else {
+        ui::warn(format!(
+            "checksums.txt 里没有 {filename} 的条目，跳过校验。"
+        ));
+        return Ok(());
+    };
+    if got != want {
+        bail!("{filename} 校验失败\n  期望 {want}\n  实际 {got}");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -344,6 +402,12 @@ mod tests {
         assert_eq!(
             r.apply("https://github.com/o/r/releases/download/v1/x"),
             "https://ghproxy.test/https://github.com/o/r/releases/download/v1/x"
+        );
+        // 漏了末尾斜杠时自动补齐，避免拼出非法主机名。
+        let r2 = Rewrite::HubProxy("https://ghproxy.test".into());
+        assert_eq!(
+            r2.apply("https://github.com/o/r"),
+            "https://ghproxy.test/https://github.com/o/r"
         );
     }
 
@@ -449,10 +513,7 @@ mod tests {
 
     impl 临时环境 {
         fn 设(pairs: &[(&'static str, Option<&str>)]) -> Self {
-            static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-            // panic 会毒化这把锁，但它保护的只是「别同时跑」，没有要保持一致的
-            // 共享状态，直接接着用。
-            let _锁 = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let _锁 = crate::common::env::test_env::EnvGuard::lock();
             let 旧值 = pairs
                 .iter()
                 .map(|(k, v)| {

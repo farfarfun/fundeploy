@@ -32,26 +32,52 @@ pub fn kill(ports: &[u16], yes: bool) -> Result<()> {
     let found = scan(ports);
     show(&found);
 
-    let mut targets: Vec<(u16, &Holder)> = Vec::new();
+    // 同一个 PID 可能同时监听多个目标端口，按 PID 去重，避免计数虚高和重复等待。
+    let mut by_pid: BTreeMap<i32, (Vec<u16>, &Holder)> = BTreeMap::new();
+    let mut warned_protected = std::collections::BTreeSet::new();
     for (&port, hs) in &found {
         for h in hs {
             match proc::protected(h.pid) {
-                Some(why) => ui::warn(format!("跳过 {} ({})：{why}。", h.pid, name(h))),
-                None => targets.push((port, h)),
+                Some(why) => {
+                    if warned_protected.insert(h.pid) {
+                        ui::warn(format!("跳过 {} ({})：{why}。", h.pid, name(h)));
+                    }
+                }
+                None => {
+                    by_pid
+                        .entry(h.pid)
+                        .and_modify(|(ps, _)| ps.push(port))
+                        .or_insert_with(|| (vec![port], h));
+                }
             }
         }
     }
 
-    if !targets.is_empty() {
+    if !by_pid.is_empty() {
+        // 确认前记录每个 PID 的进程快照，防止用户输入期间 PID 已被系统复用到别的进程。
+        let snapshots: Vec<(i32, Vec<u16>, &Holder, Option<proc::StopTarget>)> = by_pid
+            .into_iter()
+            .map(|(pid, (ps, h))| (pid, ps, h, proc::StopTarget::snapshot(pid)))
+            .collect();
         ui::blank();
         if !yes {
-            ui::confirm_destructive(&format!("要结束上面这 {} 个进程吗", targets.len()), ENV_YES)?;
+            ui::confirm_destructive(
+                &format!("要结束上面这 {} 个进程吗", snapshots.len()),
+                ENV_YES,
+            )?;
         }
-        for (port, h) in &targets {
-            ui::step(format!("停 {} ({})，占着 {port}", h.pid, name(h)));
+        for (pid, ps, h, snap) in &snapshots {
+            if let Some(target) = snap {
+                if let Err(e) = target.recheck(*pid) {
+                    ui::warn(format!("跳过 {pid} ({})：{e}", name(h)));
+                    continue;
+                }
+            }
+            let plist: Vec<String> = ps.iter().map(u16::to_string).collect();
+            ui::step(format!("停 {pid} ({})，占着 {}", name(h), plist.join("、")));
             // 绝不按进程组发信号：这些 PID 是从端口反查出来的，它们的进程组里
             // 很可能坐着调用者自己的 shell。
-            proc::stop_pid(h.pid, GRACE, false)?;
+            proc::stop_pid(*pid, GRACE, false)?;
         }
     }
 

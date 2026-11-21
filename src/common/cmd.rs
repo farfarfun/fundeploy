@@ -36,7 +36,12 @@ impl Output {
 fn render(argv: &[String]) -> String {
     argv.iter()
         .map(|a| {
-            if a.is_empty() || a.contains([' ', '"', '\'', '$', '*', '?', '&', '|', ';', '\n']) {
+            if a.is_empty()
+                || a.contains([
+                    ' ', '\t', '"', '\'', '$', '*', '?', '&', '|', ';', '\n', '(', ')', '<', '>',
+                    '`', '\\', '[', ']', '~', '#', '{', '}',
+                ])
+            {
                 format!("'{}'", a.replace('\'', r"'\''"))
             } else {
                 a.clone()
@@ -259,6 +264,16 @@ where
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     apply_env(&mut c, env);
+    // 让子进程自成进程组：超时时按 `-pgid` 整组强杀，避免像 `git ls-remote` 派生的
+    // `ssh` 孙进程滞留并一直占着管道写端。
+    #[cfg(unix)]
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        c.pre_exec(|| {
+            let _ = libc::setpgid(0, 0);
+            Ok(())
+        });
+    }
     let mut child = c
         .spawn()
         .with_context(|| format!("起不了进程: {}", render(&argv)))?;
@@ -281,10 +296,16 @@ where
             }));
         }
         if Instant::now() >= deadline {
+            #[cfg(unix)]
+            unsafe {
+                let pgid = child.id() as i32;
+                if pgid > 0 {
+                    libc::kill(-pgid, libc::SIGKILL);
+                }
+            }
             let _ = child.kill();
             let _ = child.wait();
-            // 不去 join 那两个线程：被杀的进程若留下了还攥着管道写端的孙子进程，
-            // 读会一直阻塞，而超时这条路本来就不要输出。
+            // 不去 join 那两个线程：若有脱离进程组的后代仍攥着管道写端，超时也不该卡住。
             return Ok(None);
         }
         std::thread::sleep(POLL);
@@ -590,7 +611,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("out");
         // 删变量和写变量两种改动都要生效；cwd 决定了 out 落在哪儿。
-        std::env::set_var("__FD_TICK_DROP", "存在");
+        let _g = crate::common::env::test_env::EnvGuard::set(&[("__FD_TICK_DROP", Some("存在"))]);
         let code = spawn_status_ticking(
             [
                 "sh",
@@ -606,7 +627,6 @@ mod tests {
             &mut || {},
         )
         .unwrap();
-        std::env::remove_var("__FD_TICK_DROP");
         assert_eq!(code, Some(0));
         assert_eq!(std::fs::read_to_string(&out).unwrap(), "有/无");
     }

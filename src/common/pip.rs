@@ -173,15 +173,28 @@ impl PipPkg {
     /// 格式不统一，而且有些包根本没有 `--version`。
     pub fn version_on_path(&self) -> Option<String> {
         let py = self.cli_python()?;
-        let script = format!(
-            "import importlib.metadata as m\n\
-             try: print(m.version({pkg:?}))\n\
-             except Exception: pass\n",
-            pkg = self.pkg
-        );
-        let out = cmd::try_run([&*py.to_string_lossy(), "-c", &script]).ok()?;
+        // 通过 argv[1] 传包名而不是字符串插值，避免特殊字符影响脚本语法。
+        const SCRIPT: &str = "import importlib.metadata as m, sys\n\
+             try: print(m.version(sys.argv[1]))\n\
+             except Exception: pass\n";
+        let out = cmd::try_run([&*py.to_string_lossy(), "-c", SCRIPT, &self.pkg]).ok()?;
         let v = out.stdout.trim();
         (!v.is_empty()).then(|| v.to_string())
+    }
+
+    /// 一次探出版本和来源模式，避免 status 路径里重复执行 `uv tool list`。
+    pub fn probe_status(&self) -> (Option<String>, Mode) {
+        let on_path = self.version_on_path();
+        if self.explicit_pip.is_some() || !cmd::has("uv") {
+            return (on_path, Mode::Pip);
+        }
+        let uv_ver = self.uv_tool_version();
+        let mode = if uv_ver.is_some() {
+            Mode::UvTool
+        } else {
+            Mode::Pip
+        };
+        (on_path.or(uv_ver), mode)
     }
 
     /// 优先报告实际运行和升级的那份；CLI 不在 PATH 时兼容旧工具环境。

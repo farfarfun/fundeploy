@@ -213,8 +213,7 @@ mod tests {
     use super::*;
 
     fn 排队() -> std::sync::MutexGuard<'static, ()> {
-        static M: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        M.lock().unwrap_or_else(|e| e.into_inner())
+        crate::common::env::test_env::EnvGuard::lock()
     }
 
     #[test]

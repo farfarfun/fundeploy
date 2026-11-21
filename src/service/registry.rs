@@ -20,32 +20,41 @@ use super::upstream::{self, Upstream};
 use super::venv;
 use super::Service;
 use crate::args;
-use crate::common::env::{home, opt as env_opt, port as env_port, str_or as env_str};
+use crate::common::env::{expand_tilde, home, opt as env_opt, port as env_port, str_or as env_str};
 use crate::common::platform::{self, Platform};
+use crate::common::port;
 use crate::ui;
+
+/// 静态服务表：`(服务名, 构造器)`。
+///
+/// `names()` 和 `find()` 走这张表按需构造，避免单查一个服务时把 15 个服务全建一遍、
+/// 读一堆无关的磁盘配置甚至触发别的服务的告警。
+type ServiceCtor = fn() -> Box<dyn Service>;
+
+const SERVICES: &[(&str, ServiceCtor)] = &[
+    ("farfarfun-web", || upstream::declared(farfarfun_web())),
+    ("funfluid", || upstream::declared(funfluid_web())),
+    ("funlesson", || upstream::declared(funlesson_web())),
+    ("courseware", || upstream::declared(courseware())),
+    ("fungame", || upstream::declared(fungame_web())),
+    ("funflix", || upstream::declared(funflix_web())),
+    ("funread", || upstream::boxed(funread_web())),
+    ("funmill", || upstream::boxed(funmill())),
+    ("new-api", || daemon::boxed(new_api())),
+    ("code-server", || daemon::declared(code_server())),
+    ("sub2api", || daemon::boxed(sub2api())),
+    ("casdoor", || daemon::boxed(casdoor::from_env())),
+    ("airflow", || venv::boxed(Airflow::from_env())),
+    ("celery", || venv::boxed(Celery::from_env())),
+    ("paperclip", || Box::new(Paperclip::from_env())),
+];
 
 pub fn all() -> Vec<Box<dyn Service>> {
     all_with_ports().into_iter().map(|(s, _)| s).collect()
 }
 
 pub(crate) fn all_with_ports() -> Vec<(Box<dyn Service>, Vec<u16>)> {
-    let services: Vec<Box<dyn Service>> = vec![
-        upstream::declared(farfarfun_web()),
-        upstream::declared(funfluid_web()),
-        upstream::declared(funlesson_web()),
-        upstream::declared(courseware()),
-        upstream::declared(fungame_web()),
-        upstream::declared(funflix_web()),
-        upstream::boxed(funread_web()),
-        upstream::boxed(funmill()),
-        daemon::boxed(new_api()),
-        daemon::declared(code_server()),
-        daemon::boxed(sub2api()),
-        daemon::boxed(casdoor::from_env()),
-        venv::boxed(Airflow::from_env()),
-        venv::boxed(Celery::from_env()),
-        Box::new(Paperclip::from_env()),
-    ];
+    let services: Vec<Box<dyn Service>> = SERVICES.iter().map(|(_, ctor)| ctor()).collect();
     // ports() 可能从磁盘读取当前配置，排序和展示共用本次查询的结果。
     let mut services: Vec<_> = services
         .into_iter()
@@ -60,11 +69,17 @@ pub(crate) fn all_with_ports() -> Vec<(Box<dyn Service>, Vec<u16>)> {
 }
 
 pub fn names() -> Vec<String> {
-    all().iter().map(|s| s.name().to_string()).collect()
+    SERVICES
+        .iter()
+        .map(|(name, _)| (*name).to_string())
+        .collect()
 }
 
 pub fn find(name: &str) -> Option<Box<dyn Service>> {
-    all().into_iter().find(|s| s.name() == name)
+    SERVICES
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, ctor)| ctor())
 }
 
 // ---------------------------------------------------------------- farfarfun-web
@@ -620,10 +635,9 @@ pub struct NewApi {
 }
 
 fn new_api() -> NewApi {
-    let home = PathBuf::from(env_str(
-        "NEW_API_SERVICE_HOME",
-        &home().join("opt/new-api").to_string_lossy(),
-    ));
+    let home = env_opt("NEW_API_SERVICE_HOME")
+        .map(|s| expand_tilde(&s))
+        .unwrap_or_else(|| home().join("opt/new-api"));
     let data = home.join("data");
     let configured_port = if env_opt("NEW_API_FORCE_SCRIPT_PORT").as_deref() == Some("1") {
         None
@@ -670,7 +684,7 @@ fn new_api() -> NewApi {
         },
         vec![proc],
     )
-    .entry(format!("http://{host}:{port}"))
+    .entry(port::http_url(&host, port))
     .note("SQL_DSN 等配置写在 data/.env 里，它的 PORT 优先于 NEW_API_PORT。");
 
     NewApi { spec }
@@ -689,26 +703,42 @@ fn env_file_value(path: &PathBuf, key: &str) -> Option<String> {
         .rev()
         .filter_map(|line| {
             let line = line.trim();
-            let line = line.strip_prefix("export ").unwrap_or(line);
+            if line.is_empty() || line.starts_with('#') {
+                return None;
+            }
+            let line = line
+                .strip_prefix("export")
+                .filter(|r| r.starts_with(char::is_whitespace))
+                .map_or(line, str::trim_start);
             let (k, v) = line.split_once('=')?;
-            (k.trim() == key).then(|| v.to_string())
-        })
-        .map(|v| {
-            // 去掉行尾注释和包裹的引号。
-            let v = v.split('#').next().unwrap_or("").trim();
-            v.trim_matches(['"', '\'']).to_string()
+            (k.trim() == key).then(|| parse_env_rhs(v))
         })
         .find(|v| !v.is_empty())
+}
+
+/// 解析 `.env` 右值：支持引号内的 `#` 不被截断，也支持不带引号时的行尾 `#` 注释。
+fn parse_env_rhs(raw: &str) -> String {
+    let s = raw.trim();
+    if let Some(rest) = s.strip_prefix('"') {
+        if let Some((quoted, _)) = rest.split_once('"') {
+            return quoted.to_string();
+        }
+    }
+    if let Some(rest) = s.strip_prefix('\'') {
+        if let Some((quoted, _)) = rest.split_once('\'') {
+            return quoted.to_string();
+        }
+    }
+    s.split('#').next().unwrap_or("").trim().to_string()
 }
 
 // ---------------------------------------------------------------- code-server
 
 fn code_server() -> DaemonSpec {
     let workspace = home();
-    let home = PathBuf::from(env_str(
-        "CODE_SERVER_SERVICE_HOME",
-        &workspace.join("opt/code-server").to_string_lossy(),
-    ));
+    let home = env_opt("CODE_SERVER_SERVICE_HOME")
+        .map(|s| expand_tilde(&s))
+        .unwrap_or_else(|| workspace.join("opt/code-server"));
     let host = env_str("CODE_SERVER_HOST", "127.0.0.1");
     let port = env_port("CODE_SERVER_PORT", 8803);
 
@@ -750,7 +780,7 @@ fn code_server() -> DaemonSpec {
         },
         vec![proc],
     )
-    .entry(format!("http://{host}:{port}"))
+    .entry(port::http_url(&host, port))
     .note("没设 PASSWORD 的话，登录密码在首次启动的日志里（log/main.log）。")
 }
 
@@ -762,10 +792,9 @@ pub struct Sub2Api {
 }
 
 fn sub2api() -> Sub2Api {
-    let home = PathBuf::from(env_str(
-        "SUB2API_SERVICE_HOME",
-        &home().join("opt/sub2api").to_string_lossy(),
-    ));
+    let home = env_opt("SUB2API_SERVICE_HOME")
+        .map(|s| expand_tilde(&s))
+        .unwrap_or_else(|| home().join("opt/sub2api"));
     let data = home.join("data");
     let env_file = data.join("sub2api.env");
 
@@ -809,7 +838,7 @@ fn sub2api() -> Sub2Api {
         },
         vec![proc],
     )
-    .entry(format!("http://{host}:{port}"))
+    .entry(port::http_url(&host, port))
     .note("库地址、JWT 密钥、管理员口令写在 data/sub2api.env 里。");
 
     Sub2Api { spec }
@@ -916,10 +945,7 @@ mod tests {
     /// 一个测试 `set_var` 的那一瞬间，另一个测试读到的就是它。表现是偶发失败，
     /// 重跑又好了——最难查的那种。
     fn 排队() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        // 某个测试 panic 会毒化这把锁，但锁保护的只是「别同时跑」，
-        // 没有需要保持一致的共享状态，所以直接接着用。
-        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+        crate::common::env::test_env::EnvGuard::lock()
     }
 
     fn argv(spec: &ServiceSpec, key: &str, pick: fn(&CliShape) -> &Vec<Arg>) -> Vec<String> {

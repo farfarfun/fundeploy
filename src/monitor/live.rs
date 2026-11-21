@@ -33,9 +33,10 @@ pub(super) struct Screen {
 impl Screen {
     pub fn open() -> io::Result<Self> {
         terminal::enable_raw_mode()?;
+        // 先构造 Screen 再进备用屏幕：若 execute! 失败，Drop 仍会自动恢复 raw mode。
         let screen = Self {
             offset: 0,
-            color: std::env::var_os("NO_COLOR").is_none(),
+            color: std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty()),
         };
         execute!(io::stdout(), EnterAlternateScreen, Hide)?;
         Ok(screen)

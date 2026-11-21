@@ -51,6 +51,15 @@ impl Marker {
 
     /// 把区块内容换成 `body`。没有区块就追加一个。
     pub fn write(&self, path: &Path, body: &[String]) -> Result<()> {
+        self.write_with_mode(path, body, None)
+    }
+
+    /// 同 [`write`]，但按指定权限原子落盘（适合 `~/.ssh/config` 这类要求 `0600` 的文件）。
+    pub fn write_mode(&self, path: &Path, body: &[String], mode: u32) -> Result<()> {
+        self.write_with_mode(path, body, Some(mode))
+    }
+
+    fn write_with_mode(&self, path: &Path, body: &[String], mode: Option<u32>) -> Result<()> {
         let mut lines = read_lines(path)?;
         let mut block = vec![self.begin.clone()];
         block.extend(body.iter().cloned());
@@ -67,7 +76,7 @@ impl Marker {
                 lines.extend(block);
             }
         }
-        save(path, &lines)
+        save(path, &lines, mode)
     }
 
     /// 删掉区块。返回是否真的删了点什么。
@@ -83,7 +92,7 @@ impl Marker {
         if start > 0 && lines.get(start - 1).is_some_and(|l| l.trim().is_empty()) {
             lines.remove(start - 1);
         }
-        save(path, &lines)?;
+        save(path, &lines, None)?;
         Ok(true)
     }
 }
@@ -96,15 +105,12 @@ fn read_lines(path: &Path) -> Result<Vec<String>> {
     }
 }
 
-fn save(path: &Path, lines: &[String]) -> Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).with_context(|| format!("建目录失败: {}", dir.display()))?;
-    }
+fn save(path: &Path, lines: &[String], mode: Option<u32>) -> Result<()> {
     let mut text = lines.join("\n");
     if !text.is_empty() {
         text.push('\n');
     }
-    std::fs::write(path, text).with_context(|| format!("写不了 {}", path.display()))
+    crate::common::fs::write_atomic_mode(path, &text, mode)
 }
 
 #[cfg(test)]

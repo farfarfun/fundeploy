@@ -169,10 +169,9 @@ pub fn upgrade(d: &dyn Dev, method: Option<Method>) -> Result<()> {
     let m = resolve(method);
     ui::heading(format!("升级 {}（{}）", d.name(), m.label()));
     match m {
-        // 包管理器那边「升级」就是再装一遍：装过了它自己会升，没装过就装上。
         Method::Pkg => {
             let (pm, pkgs) = pkg_plan(d)?;
-            pm.install(pkgs)?;
+            pm.upgrade(pkgs)?;
             ui::ok(format!("{} 已是 {} 源里的最新版。", d.name(), pm.name()));
             Ok(())
         }
@@ -245,10 +244,7 @@ pub fn uninstall(d: &dyn Dev, method: Option<Method>, yes: bool) -> Result<()> {
     if !yes {
         ui::confirm_destructive(
             &format!("要卸掉 {} 吗", d.name()),
-            &format!(
-                "FUNDEPLOY_{}_UNINSTALL_YES",
-                d.name().to_ascii_uppercase().replace(['-', '.'], "_")
-            ),
+            &env::uninstall_yes_var(d.name()),
         )?;
     }
 
@@ -469,8 +465,7 @@ mod tests {
     }
 
     fn 排队() -> std::sync::MutexGuard<'static, ()> {
-        static M: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        M.lock().unwrap_or_else(|e| e.into_inner())
+        crate::common::env::test_env::EnvGuard::lock()
     }
 
     #[test]
