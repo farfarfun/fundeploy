@@ -3,6 +3,21 @@
 版本号以 `Cargo.toml` 里的 `version` 为准；发布由推同版本的 `v*` tag 触发（见
 `.github/workflows/release.yml`），因此「有 tag ＝ 已发布」。
 
+## [0.3.32] - 2026-11-21
+
+### 安全与修复
+
+- 加固文件系统与归档解包：阻止路径穿越、符号链接逃逸和特殊设备条目，`unzip` 剥离特殊权限位，修复目录查找在循环符号链接下死循环。
+- 配置文件与 `~/.ssh/config` / `known_hosts` 改为原子写入与最小权限；密钥文件首次生成消除 TOCTOU 竞争与 `0644` 暴露窗口。
+- 下载与自升级统一使用流式 SHA-256 校验、临时文件暂存与读写超时；`install.sh` 校验 `PROXY` 协议与软链保护。
+- 修复进程存活判断（正确处理 `EPERM` 与僵尸进程）、超时命令子进程组清理、`Ini::set(None, ...)` 写入位置、`dev`/`tool` 包管理器升级命令误走安装，以及 IPv6 URL 拼接与无参数 `fundeploy service` 列表范围。
+- 修复 Daemon / Venv / Casdoor / Airflow / Celery / Paperclip 的启停等待、暂存回滚、日志有界读取、归属核对与清理边界问题。
+
+### 性能与体验
+
+- 并发化 npm/pip、上游服务、AI CLI、Skills 仓库、GitHub 诊断与 macOS 端口探测，批量查询服务端口占用，缓存 HTTP Client、`Paperclip::node_env` 与平台 GPU 探测，显著缩短状态查询与单元测试耗时。
+- 统一测试环境变量互斥锁并修复交互终端下运行单元测试偶发挂起的问题；CI 补充 Windows 编译与 clippy 检查。
+
 ## [0.3.31] - 2026-11-20
 
 ### 新增
