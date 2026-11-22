@@ -3,6 +3,17 @@
 版本号以 `Cargo.toml` 里的 `version` 为准；发布由推同版本的 `v*` tag 触发（见
 `.github/workflows/release.yml`），因此「有 tag ＝ 已发布」。
 
+## [0.3.33] - 2026-11-22
+
+### 新增
+
+- `fundeploy service funmill` 完整接入 `funmill` CLI 能力：新增 `services`、`install-backend`、`upgrade-backend`、`dagu`、`windmill`、`start-one`、`stop-one`、`restart-one`、`status-one`、`run-api`、`server` 与原样透传 `cli` 动作，支持在命令行和交互菜单中单独升级或重启 Dagu/Windmill 与 API。
+- `dagu upgrade` / `upgrade-backend` 在编排后端运行中时会自动先停服、执行 `funmill install <后端> --force` 升级并展示版本变化，再重新拉起并校验端口；支持 `FUNMILL_UPGRADE_BACKEND=1` 在升级 `funmill-api` 时连带升级后端。
+
+### 改进
+
+- `funmill` 启动前检查与后端解析对齐上游 `api.env` 配置优先级（`FUNMILL_CONFIG` / `~/.farfarfun/funmill/api/api.env` > 环境变量），并在 `status` 中展示配置文件、数据目录与已安装的 Dagu 版本。
+
 ## [0.3.32] - 2026-11-21
 
 ### 安全与修复
