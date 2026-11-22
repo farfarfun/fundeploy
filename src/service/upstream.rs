@@ -9,7 +9,7 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 
-use super::{force_free_port, uninstall_env_var, Service, START_TIMEOUT};
+use super::{force_free_port, uninstall_env_var, Extra, Service, START_TIMEOUT};
 use crate::common::{cmd, npm::Npm, par, pip, pip::PipPkg, port, proc};
 use crate::service::spec::{Component, Pkg, ServiceSpec};
 use crate::ui;
@@ -310,6 +310,17 @@ pub trait Upstream {
     /// status 末尾追加的服务专属信息。
     fn extra_status(&self) -> Result<()> {
         Ok(())
+    }
+
+    /// 服务声明的额外动作。绝大多数上游服务没有。
+    fn extras(&self) -> &'static [Extra] {
+        &[]
+    }
+
+    /// 执行一个额外动作。
+    fn extra(&self, name: &str, args: &[String]) -> Result<()> {
+        let _ = args;
+        bail!("{} 声明了动作 {name} 却没有实现它", self.spec().name)
     }
 
     // ------------------------------------------------------------ 生命周期
@@ -774,6 +785,12 @@ impl<T: Upstream> Service for Adapter<T> {
     }
     fn uninstall(&self) -> Result<()> {
         self.0.uninstall()
+    }
+    fn extras(&self) -> &'static [Extra] {
+        self.0.extras()
+    }
+    fn extra(&self, name: &str, args: &[String]) -> Result<()> {
+        self.0.extra(name, args)
     }
 }
 

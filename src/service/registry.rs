@@ -14,6 +14,7 @@ use super::casdoor;
 use super::celery::Celery;
 use super::config;
 use super::daemon::{self, DaemonSpec, Github, Proc};
+use super::funmill::Funmill;
 use super::paperclip::Paperclip;
 use super::spec::{Arg, CliShape, Component, Pkg, ServiceSpec};
 use super::upstream::{self, Upstream};
@@ -39,7 +40,7 @@ const SERVICES: &[(&str, ServiceCtor)] = &[
     ("fungame", || upstream::declared(fungame_web())),
     ("funflix", || upstream::declared(funflix_web())),
     ("funread", || upstream::boxed(funread_web())),
-    ("funmill", || upstream::boxed(funmill())),
+    ("funmill", || upstream::boxed(Funmill::from_env())),
     ("new-api", || daemon::boxed(new_api())),
     ("code-server", || daemon::declared(code_server())),
     ("sub2api", || daemon::boxed(sub2api())),
@@ -535,98 +536,6 @@ impl Upstream for FunreadWeb {
     }
 }
 
-// ---------------------------------------------------------------- funmill
-
-/// funmill 有两处个性：API 和编排后端由同一个 pip 包提供（后端二进制还得让上游
-/// 自己再下一次），以及它强制 X-API-Key 鉴权且不给默认值。
-pub struct Funmill {
-    spec: ServiceSpec,
-    /// 要编排的第三方后端；None 表示后端归别处管。
-    backend: Option<String>,
-}
-
-fn funmill() -> Funmill {
-    let pkg = env_str("FUNMILL_PACKAGE", "funmill-api");
-    let version = env_opt("FUNMILL_VERSION");
-    // none 表示这台机器的编排后端归别处管（已经在用 windmill，或者外部托管）。
-    let backend = env_str("FUNMILL_BACKEND", "dagu");
-    let backend = (backend != "none").then_some(backend);
-
-    let mut components = Vec::new();
-    if let Some(b) = &backend {
-        components.push(
-            Component::new(
-                "backend",
-                &format!("编排后端 {b}"),
-                Pkg::pip(&pkg, "funmill"),
-                "127.0.0.1",
-                env_port("FUNMILL_BACKEND_PORT", 8813),
-            )
-            .version(version.clone())
-            .cli_shape(
-                CliShape::new()
-                    .start(args!["start", b.clone()])
-                    .stop(args!["stop", b.clone()])
-                    .status(args!["status", b.clone()]),
-            ),
-        );
-    }
-
-    let mut api = Component::new(
-        "api",
-        "Funmill API",
-        Pkg::pip(&pkg, "funmill"),
-        "127.0.0.1",
-        env_port("FUNMILL_API_PORT", 8812),
-    )
-    .version(version)
-    .cli_shape(
-        CliShape::new()
-            .start(args!["start"])
-            .run(args!["run"])
-            .stop(args!["stop"])
-            .status(args!["status"]),
-    );
-    if let Some(b) = &backend {
-        api = api.env("FUNMILL_BACKEND", b);
-    }
-    components.push(api);
-
-    let spec = ServiceSpec::new("funmill", "funmill 任务执行 API", components)
-        .entry_at("api", "/docs")
-        // 端口是上游写死的，CLI 不收 --host/--port；这里的端口只拿来探测死活。
-        .note("端口由上游固定，改不了；FUNMILL_*_PORT 只影响 fundeploy 的探测。")
-        .note("PID 和日志归 funmill 自己管，在 ~/.farfarfun/funmill/services/<名字>/ 下。");
-
-    Funmill { spec, backend }
-}
-
-impl Upstream for Funmill {
-    fn spec(&self) -> &ServiceSpec {
-        &self.spec
-    }
-
-    /// 上游强制 X-API-Key 鉴权，而且没有默认值。缺了照样能起来，但之后每个请求
-    /// 都是 401——与其让人对着一个「启动成功」的服务查半天，不如在这儿就拦住。
-    fn ensure_config(&self) -> Result<()> {
-        if env_opt("FUNMILL_API_KEY").is_none() {
-            anyhow::bail!(
-                "funmill 强制 X-API-Key 鉴权，启动前先 export FUNMILL_API_KEY=...（上游没有默认值）"
-            );
-        }
-        Ok(())
-    }
-
-    /// 编排后端是个二进制，pip 包里没有，得让上游自己去下。
-    fn post_install(&self) -> Result<()> {
-        let Some(b) = &self.backend else {
-            return Ok(());
-        };
-        ui::step(format!("安装编排后端 {b}"));
-        crate::common::cmd::run(["funmill", "install", b])
-    }
-}
-
 // ---------------------------------------------------------------- new-api
 
 /// new-api 自己要守着，而且端口最终由它读的 `.env` 说了算。
@@ -697,7 +606,7 @@ impl daemon::Daemon for NewApi {
 }
 
 /// 从 `KEY=VALUE` 风格的文件里取一个值。取最后一条，和 shell 里重复赋值的语义一致。
-fn env_file_value(path: &PathBuf, key: &str) -> Option<String> {
+pub(super) fn env_file_value(path: &std::path::Path, key: &str) -> Option<String> {
     let text = std::fs::read_to_string(path).ok()?;
     text.lines()
         .rev()
@@ -1182,16 +1091,20 @@ mod tests {
             fungame_web(),
             funflix_web(),
             funread_web().spec,
-            funmill().spec,
+            Funmill::from_env().spec,
         ]
     }
 
     #[test]
     fn funmill_的两个组件来自同一个包() {
         let _排队 = 排队();
+        let missing_cfg = "/nonexistent/fundeploy/funmill-api.env";
+        std::env::set_var("FUNMILL_CONFIG", missing_cfg);
+        std::env::remove_var("FUNMILL_BACKEND");
         // 两个进程、一个包。装/卸要按包去重，否则同一个包装两遍，
         // 卸载时第二遍还会多报一句「卸载失败」。
-        let spec = funmill().spec;
+        let spec = Funmill::from_env().spec;
+        std::env::remove_var("FUNMILL_CONFIG");
         assert_eq!(spec.components.len(), 2);
         let names: Vec<&str> = spec.components.iter().map(|c| c.pkg.name()).collect();
         assert_eq!(names, ["funmill-api", "funmill-api"]);
@@ -1200,8 +1113,12 @@ mod tests {
     #[test]
     fn funmill_先起后端再起_api() {
         let _排队 = 排队();
+        let missing_cfg = "/nonexistent/fundeploy/funmill-api.env";
+        std::env::set_var("FUNMILL_CONFIG", missing_cfg);
+        std::env::remove_var("FUNMILL_BACKEND");
         // 声明顺序就是启动顺序：API 连的是后端，后端没起来 API 起来也没用。
-        let spec = funmill().spec;
+        let spec = Funmill::from_env().spec;
+        std::env::remove_var("FUNMILL_CONFIG");
         assert_eq!(spec.components[0].key, "backend");
         assert_eq!(spec.components[1].key, "api");
         assert_eq!(
@@ -1214,8 +1131,12 @@ mod tests {
     #[test]
     fn funmill_的参数里不出现_host_和_port() {
         let _排队 = 排队();
+        let missing_cfg = "/nonexistent/fundeploy/funmill-api.env";
+        std::env::set_var("FUNMILL_CONFIG", missing_cfg);
+        std::env::remove_var("FUNMILL_BACKEND");
         // 上游 CLI 不收这两个，传了直接报参数错误；声明里的端口只拿来探测死活。
-        let spec = funmill().spec;
+        let spec = Funmill::from_env().spec;
+        std::env::remove_var("FUNMILL_CONFIG");
         for key in ["backend", "api"] {
             for pick in [
                 (|c: &CliShape| &c.start) as fn(&CliShape) -> &Vec<Arg>,
@@ -1234,27 +1155,35 @@ mod tests {
     #[test]
     fn funmill_后端设成_none_就只剩_api() {
         let _排队 = 排队();
+        let missing_cfg = "/nonexistent/fundeploy/funmill-api.env";
+        std::env::set_var("FUNMILL_CONFIG", missing_cfg);
         std::env::set_var("FUNMILL_BACKEND", "none");
-        let f = funmill();
+        let f = Funmill::from_env();
         assert!(f.backend.is_none());
         assert_eq!(f.spec.components.len(), 1);
         assert_eq!(f.spec.components[0].key, "api");
         // 后端归别处管时，就别再往 API 的环境里塞 FUNMILL_BACKEND 了。
         assert!(f.spec.components[0].env.is_empty());
         std::env::remove_var("FUNMILL_BACKEND");
+        std::env::remove_var("FUNMILL_CONFIG");
     }
 
     #[test]
     fn funmill_没有_api_key_时不让启动() {
         let _排队 = 排队();
+        let missing_cfg = "/nonexistent/fundeploy/funmill-api.env";
+        std::env::set_var("FUNMILL_CONFIG", missing_cfg);
         // 缺了照样能起来，但之后每个请求都是 401——那比起不来更难查。
         std::env::remove_var("FUNMILL_API_KEY");
-        let err = Upstream::ensure_config(&funmill()).unwrap_err().to_string();
+        let err = Upstream::ensure_config(&Funmill::from_env())
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("FUNMILL_API_KEY"), "实际: {err}");
 
         std::env::set_var("FUNMILL_API_KEY", "k");
-        assert!(Upstream::ensure_config(&funmill()).is_ok());
+        assert!(Upstream::ensure_config(&Funmill::from_env()).is_ok());
         std::env::remove_var("FUNMILL_API_KEY");
+        std::env::remove_var("FUNMILL_CONFIG");
     }
 
     #[test]

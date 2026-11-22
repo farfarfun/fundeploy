@@ -220,6 +220,21 @@ Node 还开着那棵树里的文件。
 `paperclip` 额外转发官方 CLI 的动作：`install-canary`、`check`、`backup`、`channels`、
 `doctor`、`health`、`onboard`、`logs`、`plugin`、`service-install`。
 
+`funmill` 除整套启停/升级外，还完整接入了上游 `funmill` CLI 能力，包括：
+`services`、`install-backend`、`upgrade-backend`、`dagu`、`windmill`、`start-one`、
+`stop-one`、`restart-one`、`status-one`、`run-api`、`server` 与原样透传 `cli`。例如：
+
+```bash
+fundeploy service funmill dagu upgrade          # 升级 dagu 到最新（运行中自动停服再拉起）
+fundeploy service funmill dagu restart          # 单独重启 dagu
+fundeploy service funmill upgrade-backend dagu  # 同 dagu upgrade，等价于 funmill install dagu --force
+fundeploy service funmill restart-one api       # 单独重启 Funmill API
+fundeploy service funmill server status dagu    # 对应 funmill server status dagu
+fundeploy service funmill cli --help            # 原样透传参数给 funmill
+```
+
+`funmill` 启动前会同时检查环境变量与 `~/.farfarfun/funmill/api/api.env`（或 `FUNMILL_CONFIG`）中的 `FUNMILL_API_KEY`；执行 `FUNMILL_UPGRADE_BACKEND=1 fundeploy service funmill upgrade` 可在升级 `funmill-api` 时一并升级编排后端。
+
 `fundeploy service paperclip install` 和 `fundeploy service paperclip install-canary` 在
 新安装时默认从 npm 镜像下载，安装到用户目录；
 无需设置环境变量。`upgrade` 跟随安装时选择的通道和实际成功使用的源；镜像失败时会

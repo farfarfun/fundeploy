@@ -1331,7 +1331,17 @@ fn no_action_hint(who: &str, domain: &str, extras: &[Extra]) -> String {
 /// 额外动作跟标准动作并列进菜单：对使用者来说它们同样是「这东西能做的事」。
 fn action_labels(standard: Vec<String>, extras: &[Extra]) -> Vec<String> {
     let mut labels = standard;
-    labels.extend(extras.iter().map(|e| format!("{:<9}{}", e.name, e.about)));
+    let width = extras
+        .iter()
+        .map(|e| ui::cols(e.name) + 2)
+        .max()
+        .unwrap_or(9)
+        .max(9);
+    labels.extend(
+        extras
+            .iter()
+            .map(|e| format!("{}{}", ui::pad(e.name, width), e.about)),
+    );
     labels
 }
 

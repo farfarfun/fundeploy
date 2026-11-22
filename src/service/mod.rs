@@ -28,6 +28,7 @@ pub mod casdoor;
 pub mod celery;
 pub mod config;
 pub mod daemon;
+pub mod funmill;
 pub mod paperclip;
 pub mod registry;
 pub mod spec;
