@@ -3,6 +3,12 @@
 版本号以 `Cargo.toml` 里的 `version` 为准；发布由推同版本的 `v*` tag 触发（见
 `.github/workflows/release.yml`），因此「有 tag ＝ 已发布」。
 
+## [0.3.34] - 2026-11-23
+
+### 修复
+
+- 修复上游服务（如 `funflix`、`funread`、`funlesson`、`courseware`、`fungame`、`funfluid`、`funmill`）在 `stop` / `restart` 时，进程收到 `SIGTERM` 后已释放监听端口但自身未退出导致的假停止与重启失败：停服前记录端口监听快照并在失败时解析上游输出/`status` 中的残留 PID，经归属核实与确认后强制收尾；无人值守下对无法核实归属的 PID 保持拒绝误杀并中止。
+
 ## [0.3.33] - 2026-11-22
 
 ### 新增
