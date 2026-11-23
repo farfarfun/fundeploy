@@ -3,6 +3,12 @@
 版本号以 `Cargo.toml` 里的 `version` 为准；发布由推同版本的 `v*` tag 触发（见
 `.github/workflows/release.yml`），因此「有 tag ＝ 已发布」。
 
+## [0.3.35] - 2026-11-24
+
+### 变更
+
+- `farfarfun-web` 默认安装的 npm 包改为带 scope 的 `@farfarfun/farfarfun-web`（CLI 名与 `@farfarfun:registry` 私有源保持不变），并在 README 补充旧包迁移说明。
+
 ## [0.3.34] - 2026-11-23
 
 ### 修复
