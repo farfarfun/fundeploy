@@ -61,6 +61,46 @@ where
         .collect()
 }
 
+/// 跑一个命令，stdout/stderr 实时直通终端，同时把输出（各自截断在上限内）捕获返回。
+///
+/// 给上游 `stop` 这类「既要让操作者实时看到原样输出，又要在失败时解析其中 PID」的命令用。
+pub fn spawn_tee<I, S>(args: I, envs: &[(String, String)]) -> Result<Output>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let edits: Vec<EnvEdit> = envs
+        .iter()
+        .map(|(k, v)| (k.clone(), Some(v.clone())))
+        .collect();
+    spawn_tee_in(args, &edits, None)
+}
+
+/// 同 [`spawn_tee`]，支持工作目录与环境删改。
+pub fn spawn_tee_in<I, S>(args: I, env: &[EnvEdit], cwd: Option<&std::path::Path>) -> Result<Output>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let argv = to_argv(args);
+    let mut c = command(&argv, env, cwd)?;
+    c.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = c
+        .spawn()
+        .with_context(|| format!("起不了进程: {}", render(&argv)))?;
+
+    let out = drain_tee(child.stdout.take(), std::io::stdout());
+    let err = drain_tee(child.stderr.take(), std::io::stderr());
+    let status = child
+        .wait()
+        .with_context(|| format!("等不到结果: {}", render(&argv)))?;
+    Ok(Output {
+        code: status.code(),
+        stdout: out.join().unwrap_or_default(),
+        stderr: err.join().unwrap_or_default(),
+    })
+}
+
 /// 跑一个命令，stdout/stderr 直通终端，额外导出 `envs`。退出码原样返回
 /// （`None` 表示被信号终止）。
 ///
@@ -314,6 +354,39 @@ where
 
 /// 轮询子进程是否退出的间隔。探测命令都是秒级的，这个精度足够，开销可以忽略。
 const POLL: Duration = Duration::from_millis(20);
+
+/// `spawn_tee` 单个流最多保留的字节数：足够解析提示里的 PID，也不会被失控输出撑爆内存。
+const TEE_CAPTURE_LIMIT: usize = 64 * 1024;
+
+/// 边把子进程输出实时转发到终端，边留一份有界副本供调用方检查。
+fn drain_tee<R, W>(pipe: Option<R>, mut sink: W) -> std::thread::JoinHandle<String>
+where
+    R: Read + Send + 'static,
+    W: std::io::Write + Send + 'static,
+{
+    std::thread::spawn(move || {
+        let mut captured = Vec::new();
+        let Some(mut p) = pipe else {
+            return String::new();
+        };
+        let mut buf = [0u8; 4096];
+        loop {
+            match p.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    let chunk = &buf[..n];
+                    let _ = sink.write_all(chunk);
+                    let _ = sink.flush();
+                    if captured.len() < TEE_CAPTURE_LIMIT {
+                        let take = (TEE_CAPTURE_LIMIT - captured.len()).min(n);
+                        captured.extend_from_slice(&chunk[..take]);
+                    }
+                }
+            }
+        }
+        String::from_utf8_lossy(&captured).into_owned()
+    })
+}
 
 /// 在后台把一根管子读干，返回取内容的句柄。
 fn drain(pipe: Option<impl Read + Send + 'static>) -> std::thread::JoinHandle<String> {
@@ -655,6 +728,18 @@ mod tests {
         assert_eq!(out.code, Some(4));
         assert_eq!(out.stdout.trim(), "hi");
         assert_eq!(out.stderr.trim(), "bad");
+    }
+
+    #[test]
+    fn spawn_tee_捕获标准输出标准错误和退出码() {
+        let out = spawn_tee(
+            ["sh", "-c", "echo out-line; echo err-line >&2; exit 5"],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(out.code, Some(5));
+        assert!(out.stdout.contains("out-line"), "stdout: {:?}", out.stdout);
+        assert!(out.stderr.contains("err-line"), "stderr: {:?}", out.stderr);
     }
 
     #[test]

@@ -7,9 +7,15 @@
 //! 生命周期写在 [`Upstream`] 的默认方法里，服务自己只给一份 [`ServiceSpec`]；
 //! 有个性的地方（例如启动前要生成配置文件）覆盖对应的钩子。
 
+use std::collections::BTreeSet;
+use std::time::{Duration, Instant};
+
 use anyhow::{anyhow, bail, Context, Result};
 
-use super::{force_free_port, uninstall_env_var, Extra, Service, START_TIMEOUT};
+use super::{
+    force_free_port, uninstall_env_var, Extra, Service, ENV_KILL_PORT_YES, FORCE_GRACE,
+    START_TIMEOUT,
+};
 use crate::common::{cmd, npm::Npm, par, pip, pip::PipPkg, port, proc};
 use crate::service::spec::{Component, Pkg, ServiceSpec};
 use crate::ui;
@@ -169,36 +175,358 @@ fn start_component(spec: &ServiceSpec, c: &Component) -> Result<()> {
     Ok(())
 }
 
-/// 停一个组件。best effort：未安装、没在运行都不算错。
-fn stop_component(spec: &ServiceSpec, c: &Component) {
+/// 上游组件停止参数。供 [`Upstream`] 与 [`super::funmill::Funmill`] 的单组件停止共用。
+pub(super) struct UpstreamStop<'a> {
+    pub label: &'a str,
+    pub host: &'a str,
+    pub port: u16,
+    pub stop_argv: &'a [String],
+    pub status_argv: Option<&'a [String]>,
+    pub env: &'a [(String, String)],
+    pub match_tokens: &'a [String],
+}
+
+struct LingeringProc {
+    pid: i32,
+    snap: proc::StopTarget,
+    owned: bool,
+}
+
+fn format_pid(pid: i32, snap: &proc::StopTarget) -> String {
+    let name = snap.name();
+    if name.is_empty() {
+        format!("PID {pid}")
+    } else {
+        format!("PID {pid}（{name}）")
+    }
+}
+
+/// 从上游 CLI 输出里提取明确标为 `pid` 的进程号（保留出现顺序并去重）。
+///
+/// 兼容常见写法：`（pid 3123645）`、`pid=1234`、`PID: 1234`、`PID：1234`、`pid 1234`。
+/// 要求 `pid` 前面不是 ASCII 字母/数字/下划线，且后面必须紧跟分隔符，避免把端口号、
+/// 超时秒数或 `rapid 10`、`pid2` 误当成 PID。
+pub(super) fn extract_pids(text: &str) -> Vec<i32> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 3 <= bytes.len() {
+        let is_pid = bytes[i..i + 3].eq_ignore_ascii_case(b"pid");
+        let boundary_before =
+            i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_');
+        if is_pid && boundary_before {
+            let rest = &text[i + 3..];
+            let mut chars = rest.chars().peekable();
+            let mut saw_sep = false;
+            let mut saw_delim = false;
+            while let Some(&ch) = chars.peek() {
+                if ch.is_ascii_whitespace() {
+                    saw_sep = true;
+                    chars.next();
+                } else if !saw_delim && matches!(ch, '=' | ':' | '：') {
+                    saw_sep = true;
+                    saw_delim = true;
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            if saw_sep {
+                let mut digits = String::new();
+                while let Some(&ch) = chars.peek() {
+                    if ch.is_ascii_digit() {
+                        digits.push(ch);
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+                let boundary_after = chars
+                    .peek()
+                    .is_none_or(|ch| !(ch.is_ascii_alphabetic() || *ch == '_'));
+                if boundary_after {
+                    if let Ok(pid) = digits.parse::<i32>() {
+                        if pid > 0 && !out.contains(&pid) {
+                            out.push(pid);
+                        }
+                    }
+                }
+            }
+            i += 3;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+fn component_match_tokens(c: &Component) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut push = |raw: &str| {
+        let base = raw.rsplit('/').next().unwrap_or(raw).to_ascii_lowercase();
+        if base.len() < 3 {
+            return;
+        }
+        if !out.contains(&base) {
+            out.push(base.clone());
+        }
+        if base.contains('-') {
+            let under = base.replace('-', "_");
+            if !out.contains(&under) {
+                out.push(under);
+            }
+        }
+    };
+    push(c.pkg.cli());
+    push(c.pkg.name());
+    out
+}
+
+fn wait_released_listeners(
+    pre_listeners: &[(i32, proc::StopTarget)],
+    port: u16,
+    timeout: Duration,
+) {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let cur: BTreeSet<i32> = port::holders(port)
+            .into_iter()
+            .filter(|h| h.protos.contains(&"tcp"))
+            .map(|h| h.pid)
+            .collect();
+        let any_draining = pre_listeners.iter().any(|(pid, snap)| {
+            !cur.contains(pid) && proc::is_alive(*pid) && snap.recheck(*pid).is_ok()
+        });
+        if !any_draining || Instant::now() >= deadline {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn stop_lingering_procs(label: &str, port: u16, lingering: &[LingeringProc]) -> Result<()> {
+    let all_desc: Vec<String> = lingering
+        .iter()
+        .map(|p| format_pid(p.pid, &p.snap))
+        .collect();
+    if port::is_taken(port) {
+        ui::warn(format!("{label} 的进程 {} 仍在运行。", all_desc.join("、")));
+    } else {
+        ui::warn(format!(
+            "{label} 的端口 {port} 已释放，但进程 {} 仍在运行。",
+            all_desc.join("、")
+        ));
+    }
+
+    let mut targets = Vec::with_capacity(lingering.len());
+    let mut owned_desc = Vec::new();
+    for p in lingering {
+        if let Some(reason) = proc::protected(p.pid) {
+            bail!(
+                "{label} 的残留进程 {} {reason}，已中止",
+                format_pid(p.pid, &p.snap)
+            );
+        }
+        let consent = if p.owned {
+            owned_desc.push(format_pid(p.pid, &p.snap));
+            None
+        } else {
+            Some(proc::StopTarget::confirm(
+                p.pid,
+                &format!("{label} 上游报告的残留进程"),
+            )?)
+        };
+        targets.push((p, consent));
+    }
+
+    if !owned_desc.is_empty()
+        && !ui::confirm_default_yes(
+            &format!("强制停止 {label} 的残留进程 {} 吗", owned_desc.join("、")),
+            ENV_KILL_PORT_YES,
+        )
+    {
+        bail!("已取消，{label} 的残留进程仍在运行");
+    }
+
+    for (p, consent) in targets {
+        if !proc::is_alive(p.pid) {
+            continue;
+        }
+        match consent {
+            Some(target) => target.recheck(p.pid)?,
+            None => p.snap.recheck(p.pid)?,
+        }
+        ui::step(format!(
+            "强制停止 {label} 残留进程 {}",
+            format_pid(p.pid, &p.snap)
+        ));
+        proc::stop_pid(p.pid, FORCE_GRACE, p.owned)?;
+        if proc::is_alive(p.pid) {
+            bail!(
+                "{label} 的残留进程 {} 仍在运行，停止失败",
+                format_pid(p.pid, &p.snap)
+            );
+        }
+    }
+    Ok(())
+}
+
+/// 停一个上游组件并收尾：既兜住「仍占着端口」，也兜住「已释放端口但进程卡在退出里」。
+///
+/// Web 服务收到 SIGTERM 后常常第一时间关掉监听 socket、但进程本身还在排空连接或
+/// 卡在清理钩子里；上游 `stop` 只等一轮 SIGTERM 超时就报错返回，留下活着的 PID 和
+/// PID 文件。只看端口是否释放会把这种半死不活的进程当成「已停止」，紧接着的 `start`
+/// 立刻撞上「已在运行（pid ...）」。
+pub(super) fn stop_upstream_component(req: &UpstreamStop<'_>) -> Result<()> {
+    let pre_listeners: Vec<(i32, proc::StopTarget)> = port::holders(req.port)
+        .into_iter()
+        .filter(|h| h.protos.contains(&"tcp"))
+        .filter_map(|h| proc::StopTarget::snapshot(h.pid).map(|snap| (h.pid, snap)))
+        .collect();
+
+    let out = cmd::spawn_tee(req.stop_argv, req.env);
+    let stop_ok = out.as_ref().is_ok_and(cmd::Output::success);
+
+    let mut reported_pids = Vec::new();
+    let mut status_says_running = false;
+    if !stop_ok {
+        if let Ok(o) = &out {
+            for pid in extract_pids(&o.stdout)
+                .into_iter()
+                .chain(extract_pids(&o.stderr))
+            {
+                if !reported_pids.contains(&pid) {
+                    reported_pids.push(pid);
+                }
+            }
+        }
+        let has_alive_reported = reported_pids.iter().any(|&pid| proc::is_alive(pid));
+        if !has_alive_reported {
+            if let Some(status_argv) = req.status_argv {
+                let env_edits: Vec<cmd::EnvEdit> = req
+                    .env
+                    .iter()
+                    .map(|(k, v)| (k.clone(), Some(v.clone())))
+                    .collect();
+                if let Ok(Some(st)) =
+                    cmd::try_run_timeout_with(status_argv, &env_edits, Duration::from_secs(5))
+                {
+                    if st.success() {
+                        status_says_running = true;
+                        for pid in extract_pids(&st.stdout)
+                            .into_iter()
+                            .chain(extract_pids(&st.stderr))
+                        {
+                            if !reported_pids.contains(&pid) {
+                                reported_pids.push(pid);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if stop_ok && !pre_listeners.is_empty() {
+        wait_released_listeners(&pre_listeners, req.port, Duration::from_secs(2));
+    }
+
+    let cur_listener_pids: BTreeSet<i32> = port::holders(req.port)
+        .into_iter()
+        .filter(|h| h.protos.contains(&"tcp"))
+        .map(|h| h.pid)
+        .collect();
+
+    let mut lingering: Vec<LingeringProc> = Vec::new();
+    for (pid, snap) in &pre_listeners {
+        if cur_listener_pids.contains(pid) || !proc::is_alive(*pid) || snap.recheck(*pid).is_err() {
+            continue;
+        }
+        lingering.push(LingeringProc {
+            pid: *pid,
+            snap: snap.clone(),
+            owned: true,
+        });
+    }
+    for &pid in &reported_pids {
+        if cur_listener_pids.contains(&pid)
+            || lingering.iter().any(|p| p.pid == pid)
+            || !proc::is_alive(pid)
+        {
+            continue;
+        }
+        let Some(snap) = proc::StopTarget::snapshot(pid) else {
+            continue;
+        };
+        let owned = proc::process_matches_tokens(pid, req.match_tokens);
+        lingering.push(LingeringProc { pid, snap, owned });
+    }
+
+    if !lingering.is_empty() {
+        stop_lingering_procs(req.label, req.port, &lingering)?;
+    } else if !stop_ok {
+        if port::is_taken(req.port) {
+            ui::warn(format!(
+                "{} 的停止命令失败，端口 {} 仍被占用，继续按端口检查。",
+                req.label, req.port
+            ));
+        } else if status_says_running {
+            bail!(
+                "{} 的停止命令失败，且上游 status 仍报告在运行（未解析到残留 PID）",
+                req.label
+            );
+        } else {
+            ui::info(format!(
+                "{} 的停止命令报错，但端口 {} 已释放。",
+                req.label, req.port
+            ));
+        }
+    }
+
+    force_free_port(req.label, req.host, req.port, |pid| {
+        let same_pre = pre_listeners
+            .iter()
+            .find(|(p, _)| *p == pid)
+            .is_some_and(|(_, snap)| snap.recheck(pid).is_ok());
+        (same_pre && reported_pids.contains(&pid))
+            || proc::process_matches_tokens(pid, req.match_tokens)
+    })
+}
+
+/// 停一个组件。未安装、没在运行都不算错；但残留进程或占着的端口没清掉必须报错。
+fn stop_component(spec: &ServiceSpec, c: &Component) -> Result<()> {
     if !cli_available(c) {
         ui::info(format!("{} 未安装，跳过。", c.label));
-        return;
+        return force_free_port(&c.label, &c.host, c.port, |_| false);
     }
     if c.cli.stop.is_empty() {
         ui::warn(format!("{} 没有声明 stop 的调用方式，跳过。", c.label));
-        return;
+        return force_free_port(&c.label, &c.host, c.port, |_| false);
     }
     ui::step(format!("停止 {}", c.label));
 
     let Ok(argv) = c.render(&c.cli.stop, &spec.components) else {
         ui::warn(format!("{} 的 stop 参数渲染失败，跳过。", c.label));
-        return;
+        return force_free_port(&c.label, &c.host, c.port, |_| false);
     };
-    let argv = with_program(c, argv);
-    if cmd::spawn_status(&argv, &c.env).ok().flatten() != Some(0) {
-        if port::is_taken(c.port) {
-            ui::warn(format!(
-                "{} 的停止命令失败，端口 {} 仍被占用，继续按端口检查。",
-                c.label, c.port
-            ));
-        } else {
-            ui::info(format!(
-                "{} 的停止命令报错，但端口 {} 已释放。",
-                c.label, c.port
-            ));
-        }
-    }
+    let stop_argv = with_program(c, argv);
+    let status_argv = if c.cli.status.is_empty() {
+        None
+    } else {
+        c.render(&c.cli.status, &spec.components)
+            .ok()
+            .map(|a| with_program(c, a))
+    };
+    let tokens = component_match_tokens(c);
+    stop_upstream_component(&UpstreamStop {
+        label: &c.label,
+        host: &c.host,
+        port: c.port,
+        stop_argv: &stop_argv,
+        status_argv: status_argv.as_deref(),
+        env: &c.env,
+        match_tokens: &tokens,
+    })
 }
 
 /// 把程序名拼到渲染好的参数前面。
@@ -562,7 +890,9 @@ pub trait Upstream {
                 Ok(a) => with_program(last, a),
                 Err(e) => {
                     for c in started.iter().rev() {
-                        stop_component(spec, c);
+                        if let Err(stop_err) = stop_component(spec, c) {
+                            ui::warn(format!("{}: {stop_err}", c.label));
+                        }
                     }
                     return Err(e);
                 }
@@ -585,7 +915,9 @@ pub trait Upstream {
         if !started.is_empty() {
             ui::blank();
             for c in started.iter().rev() {
-                stop_component(spec, c);
+                if let Err(stop_err) = stop_component(spec, c) {
+                    ui::warn(format!("{}: {stop_err}", c.label));
+                }
             }
         }
         result
@@ -594,13 +926,14 @@ pub trait Upstream {
     fn stop(&self) -> Result<()> {
         let spec = self.spec();
         // 逆序停：先停依赖别人的那个，它才不会在被依赖方消失后报一堆连接错误。
+        let mut result = Ok(());
         for c in spec.components.iter().rev() {
-            stop_component(spec, c);
+            if let Err(e) = stop_component(spec, c) {
+                ui::warn(format!("{}: {e}", c.label));
+                result = result.and(Err(e));
+            }
         }
-        // 上游的 stop 普遍只发 SIGTERM 不强杀，拒绝退出的进程会让「已停止」变成假话。
-        for c in spec.components.iter().rev() {
-            force_free_port(&c.label, &c.host, c.port, |_| false)?;
-        }
+        result?;
         ui::info("已停止（best effort）。");
         Ok(())
     }
@@ -982,6 +1315,31 @@ mod tests {
             msg.contains("demo-api server run --port 18811"),
             "没给出前台复跑的命令: {msg}"
         );
+    }
+
+    #[test]
+    fn 从上游输出里提取_pid_且不误抓端口号和无关词() {
+        assert_eq!(
+            extract_pids("funflix-api 在 10s 内未退出（pid 3123645）"),
+            [3123645]
+        );
+        assert_eq!(extract_pids("api is running: pid=4200\n"), [4200]);
+        assert_eq!(extract_pids("running, PID: 8899\nPID：9900"), [8899, 9900]);
+        assert_eq!(extract_pids("pid 1234 and pid=1234"), [1234]);
+        assert!(extract_pids("未在运行").is_empty());
+        assert!(extract_pids("rapid 10s 端口 18810 pid2 99 pid 10ms").is_empty());
+    }
+
+    #[test]
+    fn 组件标识词包含命令名包名及下划线形式() {
+        let c = Component::new(
+            "frontend",
+            "前端 funflix-web",
+            Pkg::npm("@farfarfun/funflix-web", "funflix-web"),
+            "127.0.0.1",
+            8810,
+        );
+        assert_eq!(component_match_tokens(&c), ["funflix-web", "funflix_web"]);
     }
 
     #[test]

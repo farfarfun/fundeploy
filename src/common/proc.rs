@@ -161,13 +161,17 @@ fn signal(target: i32, sig: libc::c_int) {
 }
 
 /// 记录确认框中展示的目标，避免用户输入期间 PID 已经换成另一个进程。
-#[derive(PartialEq)]
+#[derive(Clone, PartialEq)]
 pub(crate) struct StopTarget {
     name: std::ffi::OsString,
     started: u64,
 }
 
 impl StopTarget {
+    pub(crate) fn name(&self) -> String {
+        self.name.to_string_lossy().into_owned()
+    }
+
     pub(crate) fn snapshot(pid: i32) -> Option<Self> {
         use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
         let pid = Pid::from_u32(pid as u32);
@@ -297,6 +301,45 @@ pub(crate) fn managed_process(pid: i32, pid_file: &Path, install_dir: &Path) -> 
     Some(runs_script && process.cmd().get(1).is_some_and(matches))
 }
 
+/// 检查某个进程的名称、可执行路径或命令行是否包含上游服务的标识词（按边界分段匹配，忽略大小写）。
+///
+/// 给上游 CLI 报告的残留 PID 做归属核实，避免陈旧 PID 文件里的数字被系统复用到
+/// 无关进程后遭到误杀。
+pub(crate) fn process_matches_tokens(pid: i32, tokens: &[String]) -> bool {
+    if tokens.is_empty() || pid <= 0 {
+        return false;
+    }
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let pid = Pid::from_u32(pid as u32);
+    let mut system = System::new();
+    let fields = ProcessRefreshKind::nothing()
+        .with_exe(UpdateKind::Always)
+        .with_cmd(UpdateKind::Always);
+    system.refresh_processes_specifics(ProcessesToUpdate::Some(&[pid]), false, fields);
+    let Some(process) = system.process(pid) else {
+        return false;
+    };
+    let mut haystacks = Vec::new();
+    if let Some(name) = process.name().to_str() {
+        haystacks.push(name.to_ascii_lowercase());
+    }
+    if let Some(exe) = process.exe().and_then(|p| p.to_str()) {
+        haystacks.push(exe.to_ascii_lowercase());
+    }
+    for arg in process.cmd() {
+        if let Some(s) = arg.to_str() {
+            haystacks.push(s.to_ascii_lowercase());
+        }
+    }
+    haystacks.iter().any(|h| {
+        h.split([
+            '/', '\\', ':', '=', '.', ' ', '\t', ',', ';', '(', ')', '[', ']',
+        ])
+        .filter(|seg| !seg.is_empty())
+        .any(|seg| tokens.iter().any(|tok| seg == tok))
+    })
+}
+
 /// 后台起一个进程，返回它的 PID。
 ///
 /// 做了三件 `nohup cmd &` 会做的事：输出重定向到日志、脱离终端、自成进程组。
@@ -410,6 +453,20 @@ mod tests {
 
     fn tmp() -> tempfile::TempDir {
         tempfile::tempdir().unwrap()
+    }
+
+    #[test]
+    fn 按标识词核实进程归属() {
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "sleep 30", "funflix-api"])
+            .spawn()
+            .unwrap();
+        let pid = child.id() as i32;
+        assert!(process_matches_tokens(pid, &["funflix-api".into()]));
+        assert!(!process_matches_tokens(pid, &["funread-api".into()]));
+        assert!(!process_matches_tokens(pid, &[]));
+        let _ = child.kill();
+        let _ = child.wait();
     }
 
     #[test]

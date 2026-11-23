@@ -19,8 +19,8 @@ use anyhow::{anyhow, bail, Result};
 
 use super::registry::env_file_value;
 use super::spec::{CliShape, Component, Pkg, ServiceSpec};
-use super::upstream::Upstream;
-use super::{force_free_port, Extra, START_TIMEOUT};
+use super::upstream::{stop_upstream_component, Upstream, UpstreamStop};
+use super::{Extra, START_TIMEOUT};
 use crate::args;
 use crate::common::{cmd, env, port, proc};
 use crate::ui;
@@ -476,19 +476,26 @@ impl Funmill {
         let listen_port = self.component_port(target);
         ui::step(format!("停止 {label}"));
 
-        let argv = build_component_argv(config, "stop", target);
-        if cmd::spawn_status(&argv, &[]).ok().flatten() != Some(0) {
-            if port::is_taken(listen_port) {
-                ui::warn(format!(
-                    "{label} 的停止命令失败，端口 {listen_port} 仍被占用，继续按端口检查。"
-                ));
-            } else {
-                ui::info(format!(
-                    "{label} 的停止命令报错，但端口 {listen_port} 已释放。"
-                ));
-            }
-        }
-        force_free_port(&label, "127.0.0.1", listen_port, |_| false)?;
+        let stop_argv = build_component_argv(config, "stop", target);
+        let status_argv = build_component_argv(config, "status", target);
+        let match_tokens = if target == "api" {
+            vec![
+                "funmill".to_string(),
+                "funmill-api".to_string(),
+                "funmill_api".to_string(),
+            ]
+        } else {
+            vec![target.to_ascii_lowercase()]
+        };
+        stop_upstream_component(&UpstreamStop {
+            label: &label,
+            host: "127.0.0.1",
+            port: listen_port,
+            stop_argv: &stop_argv,
+            status_argv: Some(&status_argv),
+            env: &[],
+            match_tokens: &match_tokens,
+        })?;
         ui::ok(format!("{label} 已停止。"));
         Ok(())
     }
