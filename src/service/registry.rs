@@ -90,7 +90,7 @@ fn farfarfun_web() -> ServiceSpec {
         "frontend",
         "官网 farfarfun-web",
         Pkg::Npm {
-            name: env_str("FARFARFUN_WEB_FRONTEND_PACKAGE", "farfarfun-web"),
+            name: env_str("FARFARFUN_WEB_FRONTEND_PACKAGE", "@farfarfun/farfarfun-web"),
             cli: "farfarfun-web".into(),
             registry_scope: Some("@farfarfun".into()),
         },
@@ -873,7 +873,7 @@ mod tests {
         let frontend = spec.component("frontend").unwrap();
         assert!(
             matches!(&frontend.pkg, Pkg::Npm { name, cli, registry_scope }
-            if name == "farfarfun-web" && cli == "farfarfun-web"
+            if name == "@farfarfun/farfarfun-web" && cli == "farfarfun-web"
                 && registry_scope.as_deref() == Some("@farfarfun"))
         );
         assert_eq!(spec.entry_url().as_deref(), Some("http://127.0.0.1:8800"));

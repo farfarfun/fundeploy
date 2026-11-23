@@ -166,7 +166,7 @@ Python 包统一通过 `uv pip install` 安装和升级。已有 CLI 时复用�
 
 | 服务 | 说明 |
 | --- | --- |
-| `farfarfun-web` | farfarfun 组织官网，单个 npm 包 `farfarfun-web`（8800） |
+| `farfarfun-web` | farfarfun 组织官网，单个 npm 包 `@farfarfun/farfarfun-web`（8800） |
 | `funfluid` | funfluid 前后端（18806 / 8806） |
 | `funlesson` | funlesson 前后端（18814 / 8814） |
 | `courseware` | 交互课程平台，API + 同步 Worker + 前端（8008 / 8817）；安装 `courseware-api` 与 `@farfarfun/courseware-web` |
@@ -193,9 +193,12 @@ Courseware 默认前端端口为 8817，避免与 funlesson 的 8814 冲突；�
 阻止公网访问 TCP 8805；其他服务要对外暴露就显式设对应的 `*_HOST` / `*_ADDRESS`
 环境变量。
 
-`farfarfun-web` 的版本查询、安装和升级复用 npm/pnpm 的 `@farfarfun:registry`
-及已有认证，与 `fungame` 的前端使用同一个私有源。包名仍为无 scope 的
-`farfarfun-web`，无需更改默认公共源；能安装 `fungame` 的环境可直接执行：
+`@farfarfun/farfarfun-web` 的版本查询、安装和升级使用 npm/pnpm 的 `@farfarfun:registry`
+及已有认证，与 `fungame` 的前端共用私有源。
+
+从旧包 `farfarfun-web` 迁移时，先执行 `fundeploy service farfarfun-web stop`，再用原先安装它的
+包管理器卸载旧包（`npm uninstall -g farfarfun-web` 或 `pnpm remove -g farfarfun-web`），以免同名命令冲突。
+随后安装并启动新包。
 
 ```bash
 fundeploy service farfarfun-web install

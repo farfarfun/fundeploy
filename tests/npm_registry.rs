@@ -4,9 +4,9 @@ use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 
 #[test]
-fn farfarfun_install_and_rollback_use_the_fungame_registry() {
+fn farfarfun_website_uses_the_scoped_package_and_registry() {
     for tool in ["npm", "pnpm"] {
-        for action in ["install", "rollback", "missing-registry"] {
+        for action in ["install", "upgrade", "rollback", "missing-registry"] {
             let dir = tempfile::tempdir().unwrap();
             let log = dir.path().join("calls");
             let bin = dir.path().join(tool);
@@ -39,17 +39,17 @@ esac
 
             let mut command = Command::new(env!("CARGO_BIN_EXE_fundeploy"));
             command.args(["service", "farfarfun-web"]);
-            if action == "rollback" {
-                command.args(["rollback", "0.1.8"]);
-            } else {
-                command.arg("install");
-            }
+            match action {
+                "rollback" => command.args(["rollback", "0.1.8"]),
+                "missing-registry" => command.arg("install"),
+                _ => command.arg(action),
+            };
             let output = command
                 .env("PATH", dir.path())
                 .env_remove("npm_config_registry")
                 .env_remove("NPM_CONFIG_REGISTRY")
                 .env_remove("FARFARFUN_WEB_FRONTEND_VERSION")
-                .env("FARFARFUN_WEB_FRONTEND_PACKAGE", "farfarfun-web")
+                .env_remove("FARFARFUN_WEB_FRONTEND_PACKAGE")
                 .env("FARFARFUN_WEB_FRONTEND_HOST", "127.0.0.1")
                 .env("FARFARFUN_WEB_FRONTEND_PORT", port.to_string())
                 .env("FUNDEPLOY_TEST_NPM_LOG", &log)
@@ -78,9 +78,9 @@ esac
                 "0.1.9"
             };
             let query = if action == "rollback" {
-                "farfarfun-web@0.1.8"
+                "@farfarfun/farfarfun-web@0.1.8"
             } else {
-                "farfarfun-web"
+                "@farfarfun/farfarfun-web"
             };
             assert!(
                 calls.contains(&format!(
@@ -90,7 +90,7 @@ esac
             );
             assert!(
                 calls.contains(&format!(
-                    "{install} -g farfarfun-web@{version} --registry https://private.example/npm/"
+                    "{install} -g @farfarfun/farfarfun-web@{version} --registry https://private.example/npm/"
                 )),
                 "{calls}"
             );
