@@ -357,24 +357,24 @@ fn stop_recovers_when_port_already_closed_before_stop_is_called() {
 }
 
 #[test]
-fn stop_refuses_to_kill_unrelated_pid_reported_by_upstream_in_noninteractive_mode() {
+fn stop_kills_unverified_pid_reported_by_upstream_by_default() {
     let env = Env::new();
 
-    // 模拟陈旧 PID 已被系统复用到无关进程（命令行不含 funflix-api，也没占端口，且忽略 SIGTERM）。
-    let mut unrelated = spawn_ignoring_sigterm(&env.state_dir.join("unrelated.ready"), None);
-    let unrelated_pid = unrelated.id() as i32;
-    fs::write(env.state_dir.join("api.pid"), format!("{unrelated_pid}\n")).unwrap();
+    // 即使上游报告的残留 PID 命令行未包含服务标识词，默认也应按「是」强停收尾，避免卡住停服与重启。
+    let mut lingering = spawn_ignoring_sigterm(&env.state_dir.join("lingering.ready"), None);
+    let lingering_pid = lingering.id() as i32;
+    fs::write(env.state_dir.join("api.pid"), format!("{lingering_pid}\n")).unwrap();
 
     let out = env.run(&["service", "funflix", "stop"], &[]);
-    let still_alive = is_alive(unrelated_pid);
-    let _ = unrelated.kill();
-    let _ = unrelated.wait();
+    let _ = lingering.wait();
 
     assert!(
-        !out.status.success(),
-        "无法确认归属的 PID 在无人值守下必须中止停止"
+        out.status.success(),
+        "默认同意强停残留进程时 stop 应成功\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
     );
-    assert!(still_alive, "无关进程绝不能被误杀");
+    assert!(!is_alive(lingering_pid), "残留进程应已被强停");
 }
 
 #[test]

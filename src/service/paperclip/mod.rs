@@ -1189,14 +1189,16 @@ impl Paperclip {
                     or_unknown(&c.target),
                     or_unknown(&c.current)
                 ));
-                ui::confirm_destructive(
+                if !ui::confirm_default_yes(
                     &format!(
                         "确认把 Paperclip 从 {} 降到 {}？（不会备份数据库，要备份先执行 backup）",
                         or_unknown(&c.current),
                         or_unknown(&c.target)
                     ),
                     DOWNGRADE_YES,
-                )?;
+                ) {
+                    bail!("已取消。");
+                }
                 args.push("-y");
             } else if !c.available {
                 ui::info(format!(

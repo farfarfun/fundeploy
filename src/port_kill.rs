@@ -60,11 +60,13 @@ pub fn kill(ports: &[u16], yes: bool) -> Result<()> {
             .map(|(pid, (ps, h))| (pid, ps, h, proc::StopTarget::snapshot(pid)))
             .collect();
         ui::blank();
-        if !yes {
-            ui::confirm_destructive(
+        if !yes
+            && !ui::confirm_default_yes(
                 &format!("要结束上面这 {} 个进程吗", snapshots.len()),
                 ENV_YES,
-            )?;
+            )
+        {
+            bail!("已取消。");
         }
         for (pid, ps, h, snap) in &snapshots {
             if let Some(target) = snap {

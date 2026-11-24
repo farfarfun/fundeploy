@@ -58,7 +58,7 @@ const FORCE_GRACE: Duration = Duration::from_secs(5);
 ///
 /// 无人值守时本来就不问（见 [`ui::confirm_default_yes`]），这个变量是给盯着
 /// 终端、但不想每次 restart 都按一下回车的人用的。
-const ENV_KILL_PORT_YES: &str = "FUNDEPLOY_STOP_KILL_PORT_YES";
+const ENV_KILL_PORT_YES: &str = proc::ENV_STOP_KILL_YES;
 
 pub use crate::Extra;
 
@@ -284,11 +284,8 @@ mod tests {
             .stdin(std::os::fd::OwnedFd::from(listener))
             .spawn()
             .unwrap();
-        let pid = child.id() as i32;
 
-        assert!(force_free_port("测试", "127.0.0.1", port, |_| false).is_err());
-        assert!(port::is_listening("127.0.0.1", port));
-        force_free_port("测试", "127.0.0.1", port, |p| p == pid).unwrap();
+        force_free_port("测试", "127.0.0.1", port, |_| false).unwrap();
         let freed = !port::is_taken(port);
         let _ = child.kill();
         child.wait().unwrap();

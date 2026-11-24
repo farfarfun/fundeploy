@@ -160,6 +160,9 @@ fn signal(target: i32, sig: libc::c_int) {
     }
 }
 
+/// 跳过服务停止强杀确认的环境变量名（交互终端下也不再询问）。
+pub(crate) const ENV_STOP_KILL_YES: &str = "FUNDEPLOY_STOP_KILL_PORT_YES";
+
 /// 记录确认框中展示的目标，避免用户输入期间 PID 已经换成另一个进程。
 #[derive(Clone, PartialEq)]
 pub(crate) struct StopTarget {
@@ -194,19 +197,11 @@ impl StopTarget {
         }
         let target = Self::snapshot(pid)
             .with_context(|| format!("{source} 的 PID {pid} 无法读取，已中止停止操作"))?;
-        let who = format!(
-            "{source} 的 PID {pid}（{}）无法确认归属",
+        let prompt = format!(
+            "{source} 的 PID {pid}（{}）无法确认归属，仍要终止这个进程吗？",
             target.name.to_string_lossy()
         );
-        if !crate::ui::interactive() {
-            anyhow::bail!("{who}，无人值守时保留该进程");
-        }
-        let prompt = format!("{who}，仍要终止这个进程吗？");
-        if !inquire::Confirm::new(&prompt)
-            .with_default(false)
-            .prompt()
-            .unwrap_or(false)
-        {
+        if !crate::ui::confirm_default_yes(&prompt, ENV_STOP_KILL_YES) {
             anyhow::bail!("已保留 PID {pid}，中止停止操作");
         }
         Ok(target)
@@ -457,8 +452,9 @@ mod tests {
 
     #[test]
     fn 按标识词核实进程归属() {
+        // 用分号避免 dash 把单条命令直接 exec 成 sleep 而覆盖掉参数里的 funflix-api。
         let mut child = std::process::Command::new("sh")
-            .args(["-c", "sleep 30", "funflix-api"])
+            .args(["-c", "sleep 30; true", "funflix-api"])
             .spawn()
             .unwrap();
         let pid = child.id() as i32;
